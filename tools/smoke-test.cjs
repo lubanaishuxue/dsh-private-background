@@ -331,30 +331,56 @@ async function main() {
   check('status row becomes a pane', glass.css.includes('[data-composer-dock]'));
   check('status row gets its own radius', /\[data-composer-dock\][^{]*\{[^}]*border-radius: 12px/.test(glass.css));
   check('status row stays flat in solid mode', !/\[data-composer-dock\][^{]*\{[^}]*backdrop-filter/.test(base.css));
-  // 两处「费用明细」都是计费器自己的 .cm-btn，画 --dsw-alias-button-elevated-fill；
-  // 这个 token 不在 SURFACE_TOKENS 里，暗色主题下它解析成静态的 #43454a，
-  // 重混够不到，所以它们一直是黑胶囊。头部的那个在 header.actions 槽里。
+  // 「费用明细」是计费器自己的 .cm-btn，画 --dsw-alias-button-elevated-fill；这个 token
+  // 不在 SURFACE_TOKENS 里，暗色主题下它解析成静态的 #43454a，重混够不到，所以它一直
+  // 是黑胶囊。计费器把这个按钮注册了两处 —— 头部槽里一颗、这条状态栏里一颗，用户只留
+  // 下面那颗，所以头部那颗整条 display: none。
   check('cost pill in the dock is frosted', glass.css.includes('[data-composer-dock] .cm-btn'));
   check(
-    'cost pill in the header is frosted',
-    glass.css.includes('[data-slot="conversation.session.header.actions"] .cm-btn'),
-  );
-  check(
-    'cost pills keep the host border width',
+    'cost pill keeps the host border width',
     /\[data-composer-dock\] \.cm-btn[^{]*\{[^}]*border: 1px solid/.test(glass.css),
   );
-  check('cost pills stay flat in solid mode', !base.css.includes('conversation.session.header.actions'));
+  check(
+    'cost pill stays flat in solid mode',
+    !/\[data-composer-dock\] \.cm-btn[^{]*\{[^}]*backdrop-filter/.test(base.css),
+  );
+  // 隐藏不受「质感」开关管辖：它不是装饰，是「同一颗按钮出现了两次」这个问题的修复，
+  // 实心模式下也不该冒出来。所以断言落在 base（mode=glass 之外的实心档）上。
+  const HEADER_COST_SEL = '[data-slot="conversation.session.header.actions"] .cm-btn';
+  check('header cost entry is hidden', base.css.includes(HEADER_COST_SEL));
+  check(
+    'header cost entry is display: none',
+    new RegExp(`\\[data-slot="conversation\\.session\\.header\\.actions"\\] \\.cm-btn \\{[^}]*display: none`).test(base.css),
+  );
+  // 收口在头部槽里，否则底部那颗（以及统计弹窗里的）会被一起藏掉。
+  check('header cost rule is scoped to the slot', !/^html\[data-dshbg-on\] \.cm-btn \{/m.test(base.css));
 
   // 头部那排胶囊（智能体团队 / 标准模式 / 4 个子智能体）全部由 header.actions 这一个槽
   // 渲染，宿主只给它一个空壳 div，所以「槽里每个 button」正好等于「标题旁边那排胶囊」。
+  // 但下拉触发器（_trigger / _switcherTrigger）要排除：给一个开下拉的按钮常驻一块底色，
+  // 读起来像「按下去没弹起来」，玻璃应该出现在弹出来的面板里。
   check(
     'header chips are frosted as a row',
     glass.css.includes('[data-slot="conversation.session.header.actions"] button'),
   );
   check(
-    'header chips keep the hairline border',
-    /\[data-slot="conversation\.session\.header\.actions"\] button \{[^}]*border: \.5px solid/.test(glass.css),
+    'popover triggers are left bare',
+    glass.css.includes('[data-slot="conversation.session.header.actions"] button:not([class*="_trigger"])'),
   );
+  check(
+    'header chips keep the hairline border',
+    /\[data-slot="conversation\.session\.header\.actions"\] button:not\(\[class\*="_trigger"\]\) \{[^}]*border: \.5px solid/.test(glass.css),
+  );
+  // 面板本身宿主已经磨砂过（--dsw-specific-menu + --dsw-menu-backdrop-filter 画在 ::before 上），
+  // 但里面的成员卡画 --dsw-alias-bg-layer-2，是主题自己的深色层，透在面板里就是一块黑洞。
+  // 面板虽然 position:fixed，DOM 上仍是槽的后代，所以用槽收口 —— workflow 面板里也有一个
+  // _memberButton，不收口会一起被套上。
+  const MEMBER_SEL = '[data-slot="conversation.session.header.actions"] button[class*="_member"]';
+  check('team roster member card is frosted', glass.css.includes(MEMBER_SEL));
+  const memberRule = glass.css.slice(glass.css.indexOf(`${MEMBER_SEL} {`), glass.css.indexOf(`${MEMBER_SEL} {`) + 400);
+  check('member card is a chip, not a second pane', memberRule.includes('inset 0 1px 0 0') && !memberRule.includes('0 10px 30px'));
+  check('member card keeps the hairline border', memberRule.includes('border: .5px solid'));
+  check('member card stays flat in solid mode', !base.css.includes('_member"'));
 
   console.log('\ntitle marquee');
   // 标题是面包屑，宿主封顶 220px + text-overflow: ellipsis。CSS 自己算不出「藏了多少」，

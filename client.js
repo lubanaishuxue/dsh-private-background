@@ -799,6 +799,12 @@ ${pane}
      * The `.cm-btn`s keep their host border width (`1px`) - only the colour moves. The other
      * chips have no border at all, so they get the chip's `.5px` hairline; a full pixel on
      * both sides would visibly fatten a 28px-tall control.
+     *
+     * `:not([class*="_trigger"])` keeps the popover triggers bare. 智能体团队 and 4 个子智能体
+     * are `<button class="..._trigger">` / `<button class="..._switcherTrigger">`, and a
+     * permanent pill around a dropdown opener reads as a pressed button that never unpresses -
+     * the popover that opens is where the glass belongs. 标准模式 is a filled chip in the
+     * host's own design (`--dsw-alias-state-business-tertiary`), so it stays filled here too.
      */
     function statusGlassCss(settings) {
       if (settings.composerStyle !== 'glass') return '';
@@ -812,11 +818,43 @@ ${prefixed('html[data-dshbg-on]', [dock])} {
   border-radius: 12px !important;
 ${glassPane(blur)}
 }
-${prefixed('html[data-dshbg-on]', [`${headerSlot} button`])} {
+${prefixed('html[data-dshbg-on]', [`${headerSlot} button:not([class*="_trigger"])`])} {
 ${glassChip(blur)}
 }
-${prefixed('html[data-dshbg-on]', [`${dock} .cm-btn`, `${headerSlot} .cm-btn`])} {
+${prefixed('html[data-dshbg-on]', [`${dock} .cm-btn`])} {
 ${glassChip(blur, '1px')}
+}
+`;
+    }
+
+    /**
+     * Glass inside the popovers hanging off the header.
+     *
+     * The panels themselves are already frosted - the host paints them with
+     * `--dsw-specific-menu` plus `--dsw-menu-backdrop-filter` on a `::before` - but their
+     * contents are not. The team roster's member cards paint `--dsw-alias-bg-layer-2`, which
+     * resolves to the theme's own dark layer, so inside an otherwise see-through panel they
+     * read as black holes punched in it.
+     *
+     * These are cards *inside* an existing pane, not panes themselves, so the chip recipe is
+     * the right one: heavier fill to keep the name readable, hairline edge, and no drop shadow
+     * - a second shadow under an already-elevated panel is just noise.
+     *
+     * `button[class*="_member"]` and not `[class*="_member"]`: the card's own children are
+     * `_memberName`, `_memberText`, `_memberDot` and `_memberModel`, and the card for the
+     * current session also carries `_memberCurrent` - so neither `$=` nor a bare `*=` picks
+     * out the card alone. Only the card itself is a button.
+     *
+     * Scoped through the header slot even though the panel is `position: fixed`: fixed only
+     * changes where it paints, not where it sits in the tree, and the workflow-run panel has
+     * a `_memberButton` of its own that must not be caught here.
+     */
+    function menuGlassCss(settings) {
+      if (settings.composerStyle !== 'glass') return '';
+      const headerSlot = '[data-slot="conversation.session.header.actions"]';
+      return `
+${prefixed('html[data-dshbg-on]', [`${headerSlot} button[class*="_member"]`])} {
+${glassChip(clamp(settings.glassBlur, 0, 40))}
 }
 `;
     }
@@ -1021,9 +1059,18 @@ ${restores}
      *
      * Dialogs get a near-opaque fill on top: a statistics modal at panel opacity puts
      * the wallpaper straight through the numbers.
+     *
+     * The header entry is hidden outright. The plugin registers the same `费用明细` button
+     * twice - once in `conversation.session.header.actions`, once in
+     * `conversation.composer.dock` - and only the dock one is wanted. Its own config key
+     * (`hideSessionCostHeader`) does the same thing, but that lives in the plugin's ledger,
+     * which it rewrites on every usage tick; a hand-edited value would be overwritten before
+     * the next launch. Hiding it here is scoped to the header slot, so the dock entry and
+     * the statistics dialog are untouched.
      */
     const CM_PANELS = ['.cm-section', '.cm-footer-stack.simple', '.cm-simple-summary'];
     const CM_DIALOGS = ['.cm-stat-dialog', '.cm-qguide', '.cm-peak-alert'];
+    const CM_HEADER_ENTRY = '[data-slot="conversation.session.header.actions"] .cm-btn';
 
     function costMeterCss(settings) {
       const alpha = clamp(settings.surface, 0, 100);
@@ -1039,6 +1086,9 @@ ${prefixed('html[data-dshbg-on] body', CM_DIALOGS)} {
   --dsw-alias-bg-layer-2: color-mix(in srgb, var(--dshbg-raw-l2) ${cardFill}%, transparent) !important;
 }
 html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
+${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
+  display: none !important;
+}
 `;
     }
 
@@ -1062,6 +1112,7 @@ html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
         composerGlassCss(settings),
         sidebarGlassCss(settings),
         statusGlassCss(settings),
+        menuGlassCss(settings),
       ].join('');
     }
 
