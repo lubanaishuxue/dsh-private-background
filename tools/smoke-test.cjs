@@ -11,7 +11,7 @@
  * whether the sidebar token is re-mixed at all.
  *
  * Usage:
- *   node tools/smoke-test.cjs ["client.js"] [--dump]
+ *   node tools/smoke-test.js ["D:/dsh-plugins/custom-background/client.js"] [--dump]
  */
 const fs = require('fs');
 const path = require('path');
@@ -33,6 +33,7 @@ const BASE_SETTINGS = {
   dim: 0,
   surface: 20,
   chatSurface: 78,
+  composerSurface: 85,
   fullWindow: false,
   font: 'theme',
   fontColor: '#f7f8fa',
@@ -249,6 +250,19 @@ async function main() {
   const chatLow = await emit({ chatSurface: 12 });
   check('conversation opacity moves independently', chatLow.css.includes('var(--dshbg-raw-base) 12%') && chatLow.css.includes('var(--dshbg-raw-base) 20%'));
 
+  console.log('\ncomposer opacity');
+  // [data-composer-card] is the element that paints the message box, so overriding the
+  // input token on it covers the fill without a second background rule.
+  const composerRule = /html\[data-dshbg-on\] \[data-composer-card\]\s*\{([^}]*)\}/.exec(base.css);
+  check('message box gets its own input token', composerRule !== null);
+  if (composerRule !== null) {
+    check('uses the composer value, not the panel one', composerRule[1].includes('var(--dshbg-raw-input) 85%'), composerRule[1].trim().slice(0, 80));
+    check('composer override carries !important', /!important/.test(composerRule[1]));
+  }
+  const composerLow = await emit({ composerSurface: 30 });
+  check('composer opacity moves independently', composerLow.css.includes('var(--dshbg-raw-input) 30%'));
+  check('panel input token still at its own value', composerLow.css.includes('var(--dshbg-raw-input) 28%'));
+
   console.log('\nwindow caption buttons');
   // Electron paints min/max/close natively, so no rule on the frame can reach them. The
   // preload publishes the overlay colour from a hidden probe it appends to <body>, and
@@ -349,6 +363,7 @@ async function main() {
   if (process.argv.includes('--dump')) console.log(`\n--- config page strings (tail) ---\n${blob.slice(-1400)}\n--- len ${blob.length} ---`);
   check('scope switch is on the page', blob.includes('同时应用到左侧对话栏'));
   check('conversation opacity control is on the page', blob.includes('对话区不透明度'));
+  check('composer opacity control is on the page', blob.includes('输入框不透明度'));
   check('panel opacity control is still there', blob.includes('面板不透明度'));
 
   console.log('\nslot registration');

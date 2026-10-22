@@ -54,6 +54,7 @@ window.__ModuleLoader__.load({
       dim: 30,
       surface: 55,
       chatSurface: 78,
+      composerSurface: 85,
       fullWindow: false,
       font: 'theme',
       fontColor: '#f7f8fa',
@@ -118,6 +119,8 @@ window.__ModuleLoader__.load({
         surfaceHint: '调低背景更明显；文字发虚时把它调高。',
         chatSurface: '对话区不透明度',
         chatSurfaceHint: '对话区单独一档。看字吃力就往上拉，想多露点壁纸就往下拉。',
+        composerSurface: '输入框不透明度',
+        composerSurfaceHint: '发消息那个框单独一档。框里的字发虚就往上拉。',
         reset: '恢复默认',
         autoSaved: '改动即时生效并自动保存',
         diagnostics: '样式 / 激活 / 框架 / 三栏',
@@ -156,6 +159,8 @@ window.__ModuleLoader__.load({
         surfaceHint: 'Lower values reveal more of the wallpaper; raise it if text gets muddy.',
         chatSurface: 'Conversation opacity',
         chatSurfaceHint: 'Its own setting for the conversation area. Raise it when reading is hard, lower it to show more wallpaper.',
+        composerSurface: 'Composer opacity',
+        composerSurfaceHint: 'Its own setting for the message box. Raise it if the text you are typing looks washed out.',
         reset: 'Reset',
         autoSaved: 'Changes apply and save immediately',
         diagnostics: 'style / active / frame / columns',
@@ -206,6 +211,11 @@ window.__ModuleLoader__.load({
         surface: clamp(parsed.surface === undefined ? fallback.surface : parsed.surface, 0, 100),
         chatSurface: clamp(
           parsed.chatSurface === undefined ? fallback.chatSurface : parsed.chatSurface,
+          0,
+          100,
+        ),
+        composerSurface: clamp(
+          parsed.composerSurface === undefined ? fallback.composerSurface : parsed.composerSurface,
           0,
           100,
         ),
@@ -580,6 +590,27 @@ html[data-dshbg-on] ${frameSelector()} > div:nth-of-type(2) {
     }
 
     /**
+     * The message box gets its own opacity too.
+     *
+     * `[data-composer-card]` is the element that paints `background: var(--dsw-specific-input-major)`,
+     * so overriding that one token *on that element* is enough - a custom property declared
+     * on an element applies to that element's own declarations as well, which is why no
+     * separate `background` rule is needed here.
+     *
+     * This is the one surface where the wallpaper is least welcome: it sits directly under
+     * the text being typed, and a bright patch behind the placeholder makes it read as a
+     * rendering glitch rather than as a design choice.
+     */
+    function composerCss(settings) {
+      const alpha = clamp(settings.composerSurface, 0, 100);
+      return `
+html[data-dshbg-on] [data-composer-card] {
+  --dsw-specific-input-major: color-mix(in srgb, var(--dshbg-raw-input) ${alpha}%, transparent) !important;
+}
+`;
+    }
+
+    /**
      * Window chrome. The layout paints the drag strip as a `::before` over the frame's
      * top padding filled with the sidebar colour, so at panel opacity it reads as a
      * band. Clearing it makes the strip reveal whatever is underneath at that x
@@ -759,6 +790,7 @@ html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
         wallpaperCss(settings, value),
         tokenCss(settings),
         chatSurfaceCss(settings),
+        composerCss(settings),
         chromeCss(settings),
         captionCss(tone),
         bottomRowCss(settings),
@@ -1301,6 +1333,16 @@ html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
               onChange: (value) => patchSettings({ chatSurface: value }),
             }),
             h('p', { className: 'dshbg-hint' }, text.chatSurfaceHint),
+            h(Slider, {
+              label: text.composerSurface,
+              value: settings.composerSurface,
+              min: 0,
+              max: 100,
+              step: 1,
+              suffix: '%',
+              onChange: (value) => patchSettings({ composerSurface: value }),
+            }),
+            h('p', { className: 'dshbg-hint' }, text.composerSurfaceHint),
           ),
         );
       }

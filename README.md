@@ -1,6 +1,6 @@
 # @local/dsh-custom-background
 
-给 DSH 换底图。图片、渐变、纯色三种来源，可调模糊、压暗、面板不透明度、**对话区独立不透明度**与字体颜色。
+给 DSH 换底图。图片、渐变、纯色三种来源，可调模糊、压暗、面板不透明度，**对话区与输入框各自独立一档**，以及字体颜色。
 
 所有配置都在 **设置 → 插件 → 已安装插件 → 界面背景** 这一页，改完即时生效、自动保存。
 
@@ -38,11 +38,18 @@
 
 **顶部标题栏也一样，但处理方式不同。** 布局把拖拽区画成框架上的 `::before`，铺的是侧栏色。只改工作区时不能把它整条打透——它正压在左栏上方，打透就等于在左栏头顶盖一条壁纸。布局在框架上发布了侧栏的实时宽度 `--dsh-windows-sidebar-width`（折叠时为 `0px`），所以这条通栏被画成渐变：到侧栏宽度为止是侧栏色，之后才透明。左栏读起来仍是一整块连续表面，工作区露出壁纸，折叠时整条自动变透明。
 
-## 三、对话区为什么单独一档
+## 三、对话区和输入框为什么各自一档
 
-面板和对话区的诉求是相反的：外壳越玻璃越好看，正文越实越好读。一个滑杆只能取中间值，两边都不满意。
+面板和正文的诉求是相反的：外壳越玻璃越好看，正文越实越好读。一个滑杆只能取中间值，两边都不满意。
 
-所以对话区（中间那一栏）在本地覆盖 `--dsw-alias-bg-base`，而不是在已有底色上再叠一层——两层半透明会合成一个谁都没设过的数。默认 78%，看字吃力往上拉，想多露壁纸往下拉。
+两处各自覆盖自己的 token，而不是在已有底色上再叠一层——两层半透明会合成一个谁都没设过的数，滑杆就没有手感了。
+
+| 位置 | 覆盖点 | 默认 |
+|---|---|---|
+| 对话区（中间那一栏） | `--dsw-alias-bg-base` | 78% |
+| 输入框（`[data-composer-card]`） | `--dsw-specific-input-major` | 85% |
+
+输入框给得更高，因为它是全屏唯一一处**壁纸正压在你要打的字下面**的地方：亮色斑块透过来，读起来像渲染故障，而不像设计。`[data-composer-card]` 正好打在画底色的那个元素上，所以只覆盖一个 token 就够——自定义属性声明在元素上，对该元素自己的声明同样生效，不需要再补一条 `background`。
 
 ## 四、设置页为什么是不透明的
 
@@ -94,7 +101,7 @@ client.js
 ├─ 亮度        lumaOfCss / lumaOfImage / measureLuma / toneOf
 ├─ 状态        state + subscribe / commit / patchSettings
 ├─ 选择器      frameSelector / workAreaColumns / bottomRowSelector
-├─ 样式        wallpaper / token / chatSurface / chrome / caption / bottomRow / font / configPage / costMeter
+├─ 样式        wallpaper / token / chatSurface / composer / chrome / caption / bottomRow / font / configPage / costMeter
 ├─ 安装        installStyles（apply 内注入 <style>，ctx.effect 托管清理）
 ├─ 组件        Switch / Segmented / Slider
 └─ 页面        ConfigPage（注册到 plugins.bundle.config）
@@ -126,7 +133,7 @@ client.js
 node tools/smoke-test.cjs
 ```
 
-69 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区独立不透明度、标题栏渐变、标题栏按钮探针、设置页及其作用域、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
+75 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏渐变、标题栏按钮探针、设置页及其作用域、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
 
 `--dump` 可打印实际产出的 CSS：
 
