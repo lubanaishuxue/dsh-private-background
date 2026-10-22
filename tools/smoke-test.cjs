@@ -329,14 +329,45 @@ async function main() {
       base.css.includes('var(--dshbg-raw-l1) !important'),
   );
   // 菜单更糟：宿主把底色画在 [class*="_material"] 上，而 --dsw-menu-surface-fill 暗色下只有
-  // 45%（#43454a73），全靠 40px 的 backdrop-filter 糊——压在壁纸上那层模糊不落地，正文就
-  // 直接穿过菜单自己的字。`/` 命令菜单是全宽弹在转写区上的，最难看。
+  // 45%（rgba(67,69,74,.45)），全靠 40px 的 backdrop-filter 糊。实测：45% 合成出来是
+  // #4f6c80，说明文字只有 3.0:1 —— **不到 WCAG AA**，这就是当初正文穿过菜单的真因。
+  // 76% 是量出来的下限（合成 #303c45、6.1:1），62% 会让背景上的大字透出鬼影。
   check(
-    'menu material is opaque',
-    base.css.includes('[data-menu-material] > [class*="_material"]') &&
-      /\[data-menu-material\] > \[class\*="_material"\][\s\S]{0,40}?\{[^}]*var\(--dshbg-raw-l1\)/.test(base.css),
+    'menu material is dark glass, not opaque',
+    /\[data-menu-material\] > \[class\*="_material"\][\s\S]{0,40}?\{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) 76%, transparent\)/.test(
+      base.css,
+    ),
   );
-  check('composer command menu is opaque even outside the primitive', base.css.includes('_itemDescription'));
+  check(
+    'menu material keeps the host 40px blur',
+    /\[data-menu-material\] > \[class\*="_material"\][\s\S]{0,300}?backdrop-filter: blur\(40px\) saturate\(150%\)/.test(
+      base.css,
+    ),
+  );
+  // `/` 命令菜单（.Z9Jnlq_menu）自己既没有底色、也没有 backdrop-filter —— 规则里只有
+  // max-height / box-shadow / padding / position / overflow:hidden。所以底色和模糊都得插件给，
+  // 少给一样就是「76% 透明但背后没糊」。
+  check(
+    'composer command menu carries its own fill and blur',
+    /\[class\*="_menu"\]:has\(\[class\*="_itemDescription"\]\)[\s\S]{0,60}?\{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) 76%, transparent\)[\s\S]{0,300}?backdrop-filter: blur\(40px\)/.test(
+      base.css,
+    ),
+  );
+  // 万一 `/` 菜单本来就坐在原语的材料层上，两条 76% 会叠成 94%（1 - 0.24²）。
+  // 材料层让位，保证只有一层玻璃、一层模糊。
+  check(
+    'menu glass never stacks to 94%',
+    /\[data-menu-material\]:has\(\[class\*="_itemDescription"\]\) > \[class\*="_material"\][\s\S]{0,40}?\{[^}]*background: transparent/.test(
+      base.css,
+    ),
+  );
+  // 宿主那条 overflow 渐隐画的是**不透明**的 --dsw-specific-menu，压在玻璃上就是一条实色带。
+  check(
+    'menu overflow fade follows the glass',
+    /\[class\*="_menu"\]:has\(\[class\*="_itemDescription"\]\)\[data-overflow-below\]::after[\s\S]{0,40}?\{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) 76%, transparent\)/.test(
+      base.css,
+    ),
+  );
   // 悬停卡和 tooltip 是「反色表面」：宿主的 --dsw-hovercard-bg 写死 #2C2C2E，字色写死
   // #fff / #cfd3d6，两套主题都是深的。所以不能转浅色玻璃（白字会糊掉），只能做
   // 「深色玻璃」——保留宿主自己的颜色、只把 alpha 拿掉，再用 backdrop-filter 磨平背后。

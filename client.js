@@ -731,33 +731,72 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewRes
     }
 
     /**
-     * Menus. Same bug as the preview card, one layer further out, and worse.
+     * Menus - the one place where the fill ratio had to be measured, not chosen.
      *
-     * The host's menu primitive paints *nothing* on the menu element itself: it puts a
-     * `[data-menu-material]` surface on the menu and a `[class*="_material"]` layer inside
-     * it, and that layer draws `--dsw-menu-surface-fill`. In the dark theme that value is
-     * `#43454a73` - **45% opaque** - and the design leans on
-     * `backdrop-filter: var(--dsw-menu-backdrop-filter)` (a 40px blur) to smear whatever is
-     * behind it. A 45% fill is not a safe base for text on its own: the moment the blur
-     * does not land, the paragraph under the menu reads straight through the menu's own
-     * labels, and neither is legible. The `/` command menu is the worst case because it is
-     * the full width of the composer and opens over the transcript, and because
-     * `_menu` carries no background of its own (`box-shadow` only), so there is nothing to
-     * fall back on.
+     * Two different menus, two different problems.
      *
-     * These are reading surfaces, so they get the same treatment as the preview card -
-     * opaque, with the host's own radius and elevation shadow left in place so they still
-     * read as floating. Matched on the primitive's data attribute for every menu that uses
-     * it, plus the composer menu's own `_itemDescription` row as a fallback in case that
-     * menu is ever rendered outside the primitive.
+     * **The primitive's menus** put a `[data-menu-material]` surface on the menu and a
+     * `[class*="_material"]` layer inside it, and that layer draws
+     * `--dsw-menu-surface-fill`: `rgba(67, 69, 74, .45)` in the dark theme, backed by
+     * `backdrop-filter: blur(40px) saturate(150%)`.
+     *
+     * **The `/` command menu** is the awkward one: `.Z9Jnlq_menu` carries no background of
+     * its own at all - its rule is `max-height:400px; box-shadow; padding:4px;
+     * position:absolute; overflow:hidden`, no fill and **no backdrop-filter either**. So it
+     * cannot be made glass by lightening a host value; it has to be given both the fill and
+     * the blur, or it is a 76%-transparent panel with the wallpaper unblurred behind it.
+     *
+     * 76% is a measurement, not a preference. The menu is 992px wide with 12px
+     * `--dsw-alias-label-tertiary` description text, and the wallpaper behind it averages
+     * `#588cad`. Compositing the fill over that backdrop gives, per alpha:
+     *
+     *   100% -> `#232324`, 8.5:1 against the description text (flat, no glass at all)
+     *    76% -> `#303c45`, 6.1:1  <- here
+     *    62% -> `#374b58`, 7.1:1  only if the description text is brightened first
+     *    45% -> `#4f6c80`, 3.0:1  - below WCAG AA, and that is the host's own value
+     *
+     * 45% is why the transcript used to read through the menu: it is not a matter of taste.
+     * 62% looked better in isolation but let the wallpaper's *large* type (a 60px clock in
+     * the test scene) ghost through the panel - a 40px blur erases 13px body text
+     * completely but cannot erase something 60px tall. 76% is the lowest value that keeps
+     * both cases clean, which is also why the blur is pinned to the host's 40px here: the
+     * ratio and the radius were calibrated together, and splitting them is what produced
+     * the 45% failure in the first place.
+     *
+     * `:has()` keeps the two rules from stacking. If the composer menu ever renders on top
+     * of the primitive's material layer, both would paint 76% and composite to 94%; the
+     * third rule stands the material layer down so exactly one of them draws. Whichever
+     * layer wins, the result is one glass layer over one blur.
+     *
+     * The `[data-overflow-below]` fade is re-stated because the host paints it with the
+     * *opaque* `--dsw-specific-menu`; over a translucent panel that gradient shows up as a
+     * solid band across the bottom of the menu.
      */
     function menuSurfaceCss() {
+      const menu = '[class*="_menu"]:has([class*="_itemDescription"])';
+      const glass = `  background: color-mix(in srgb, var(--dshbg-raw-l1) 76%, transparent) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(150%) !important;
+  backdrop-filter: blur(40px) saturate(150%) !important;`;
       return `
 ${prefixed('html[data-dshbg-on]', ['[data-menu-material] > [class*="_material"]'])} {
-  background: var(--dshbg-raw-l1) !important;
+${glass}
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.10) !important;
 }
-${prefixed('html[data-dshbg-on]', ['[class*="_menu"]:has([class*="_itemDescription"])'])} {
-  background: var(--dshbg-raw-l1) !important;
+${prefixed('html[data-dshbg-on]', [menu])} {
+${glass}
+  box-shadow:
+    var(--dsw-elevation-prominent),
+    inset 0 1px 0 rgb(255 255 255 / 0.10) !important;
+}
+${prefixed('html[data-dshbg-on]', [`[data-menu-material]:has([class*="_itemDescription"]) > [class*="_material"]`])} {
+  background: transparent !important;
+}
+${prefixed('html[data-dshbg-on]', [`${menu}[data-overflow-below]::after`])} {
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in srgb, var(--dshbg-raw-l1) 76%, transparent)
+  ) !important;
 }
 `;
     }
