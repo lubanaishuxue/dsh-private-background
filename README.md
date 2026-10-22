@@ -61,8 +61,8 @@
 
 | 档 | 谁 | 什么时候开 |
 |---|---|---|
-| 转写区 | 文件卡片、交付卡片、代码块、**内联 code 芯片** | **常开** |
-| 输入框 | `[data-composer-card]`、底部状态栏、两处**「费用明细」胶囊** | 跟随「质感」开关 |
+| 转写区 | 文件卡片、交付卡片、代码块、**内联 code 芯片**、**用户消息气泡** | **常开** |
+| 输入框 | `[data-composer-card]`、底部状态栏、头部那排胶囊、两处**「费用明细」胶囊** | 跟随「质感」开关 |
 | 侧栏 | 新会话按钮、左下角计费器 | 只在**整窗**作用域下开 |
 
 **转写区常开**：它们是内容不是外壳，压在工作区的壁纸上面。一块实色卡片铺在壁纸中间，读起来就是画面上打了个洞。所以「质感」切回实心只说明输入框要实心，不该连带把整篇对话里的代码块和文件卡都拉回实色。
@@ -77,7 +77,9 @@
 |---|---|---|
 | 输入框 | `[data-composer-card]` | 官方 data 属性 |
 | 底部状态栏 | `[data-composer-dock]` | 官方 data 属性（宿主的 `InputBar.dock`） |
+| 头部胶囊 | `[data-slot="conversation.session.header.actions"] button` | 槽位 data 属性；`_headerActions` 里只渲染这一个槽，所以「槽里每个 button」正好是标题旁边那一排 |
 | 费用明细胶囊 | `[data-composer-dock] .cm-btn`、`[data-slot="conversation.session.header.actions"] .cm-btn` | 槽位 data 属性 + 计费器自己的类名 |
+| 用户气泡 | `[data-chat-flow-kind="user"] [class*="_bubble"]` | flow item 的 data 属性 + 本地类名 |
 | 代码块 | `[class*="_block_"]:has([data-code-block-banner])` | 类名是 `_block_<hash>_<line>`，`_block_` 这半截能跨版本存活 |
 | 附件卡 | `[class*="_fileCard"]` | 类名是 `<hash>_fileCard`，`_fileCard` 是稳定那半截 |
 | 交付卡 | `[data-presented-file]`（备用：`[class$="_file"]:has(> [class$="_fileBody"])`） | 见下 |
@@ -88,6 +90,10 @@
 **状态栏为什么原来像一行散字。** `[data-composer-dock]` 自己不铺任何底色——它只是把 `conversation.composer.dock` 槽和右侧的上下文计量表（34% 那个环）摆成一行，所以转写区的文字会直接从它下面穿过去。铺一块面板之后它才真正读作「状态栏」，而不是贴着窗口边的一行无主文字。它原本 `padding-top: 4px`、下边距为 0，字是贴着底边压的，所以面板化时把内边距补成对称的 `3px 8px`，外加 `box-sizing: border-box` 免得 16px 横向内边距把盒子撑出容器。
 
 **两处「费用明细」为什么一直是黑胶囊。** 它们是计费器自己的 `.cm-btn`，画 `var(--dsw-alias-button-elevated-fill)`。这个 token 不在 `SURFACE_TOKENS` 里，而且暗色主题下它解析成**静态中性色 `#43454a`**——重混只改写 token，够不到一个静态值，所以它们从头到尾没被碰过。位置有两处：一处是会话头部（`conversation.session.header.actions` 槽），一处就是底部状态栏，两处都铺。这里跟内联芯片的唯一差别是**边框保持宿主的 1px**：按钮是块级元素，把它削到 `.5px` 只会让一条本来不该动的边变细，而内联芯片那套 `0.5px` 是为了避免行内重排才必须的。
+
+**头部那排胶囊为什么用一个槽就能全选中。** `_headerActions` 这个容器里只渲染了 `renderSlot("conversation.session.header.actions")` 一个东西，所以「这个槽里的每个 button」正好等于「标题旁边那排」：智能体团队、标准模式、4 个子智能体、费用明细。它们全都是宿主用 `background: 0 0; border: 0` 画的纯文字按钮，铺上玻璃才从一排散字变成一排面板。这些按钮本来没有边框，所以给的是芯片那套 `.5px` 发丝边；只有 `.cm-btn`（费用明细）保留自己的 1px——给一个 28px 高的控件两侧各加 1px 会明显变胖。
+
+**用户气泡是内容，所以常开。** 它画 `--dsw-specific-bubble`，同样不在重混列表里，暗色主题下就是一块不透明深灰。归属跟文件卡、代码块一致：它属于转写区，所以「质感」切回实心不影响它。选择器用 flow item 的 `data-chat-flow-kind="user"` 收口——`_bubble` 这个本地名在别的模块里也有（轨迹、终端），不加这层限定会误伤。
 
 **交付卡为什么要这么绕。** 它画的是 `var(--deliverable-fill)`，而那是 `--dsw-static-neutral-850` ——**静态中性色，不是语义 token**，所以 token 重混这条路径根本够不到它，卡片一直是实色。只能整块铺玻璃。但光写 `[class$="_file"]` 会误伤另外两个同名尾巴：输入框里 24px 高的附件片（`v1kfCW_file`）和变更文件行（`PWz36q_file`），给它们套玻璃只会变成两块怪斑。交付卡自带一个 `_fileBody` 直接子节点，另外两个没有，于是用 `:has(> …)` 把它挑出来。首选钩子其实是卡上的 `data-presented-file`，类名那套留作后备。
 
@@ -105,6 +111,19 @@
 壁纸本身在 `html::before` 上已经糊过了，所以面板自己的 `backdrop-filter` 主要是补饱和度、给边缘定形，不是靠它做模糊。这样长对话里几十个代码块也不会把 GPU 拖死。
 
 > 已知边界：`backdrop-filter` 会给 `position:fixed` 的后代改定位基准。输入框模块里没有 fixed 元素（查过），但宿主以后若在里面塞浮层，可能出现偏移。新会话按钮在侧栏收起时是 `position:fixed` 的悬浮按钮，它自己没有定位后代，所以安全。
+
+### 标题超长就滚动
+
+会话标题是面包屑，宿主封顶 `max-width: 220px` + `text-overflow: ellipsis`，长名字从第 220px 起就没了。纯 CSS 补不了这个洞：滚动的距离是 `scrollWidth - clientWidth`，没有任何长度单位能表达「藏了多少」。
+
+所以分成两半：**clip 在样式表里，距离由 JS 量出来交给 Web Animation**。
+
+- 动的是 `text-indent` 而不是 `transform`。要动的是元素**内部**的文字；`transform` 会把整个盒子——连悬停底色和点击区域——拖到旁边那几个胶囊上面去。
+- 量之前必须先 `cancel()` 正在跑的动画。`text-indent` 会把文字整体左移，`scrollWidth` 报的就是移动后的溢出边，不先停就会越量越小、标题一路往左爬。
+- 重新测量的触发源只有标题自己：一个盯面包屑的 `ResizeObserver`，加一个**过滤过**的 `MutationObserver`。转写区每吐一个 token 都在改 DOM，全局监听会让跑马灯一秒重启几十次。
+- 面包屑的当前那一节是 `<span>`，祖先才是 `<button>`，两个都要选中。`_crumbSeg` / `_crumbSep` / `_crumbs` 也含 `_crumb` 子串，所以按名字排除，而不是靠层级位置猜。
+- 动画节奏是「停 → 滑到尾部 → 停 → 滑回来」，不是匀速跑圈：速度按距离算，`7s + 每像素 60ms`，上限 26s。停的两段各占 14%，所以扫一眼就能读到开头。
+- 关掉壁纸时动画跟着停——因为配套的 `text-overflow: clip` 在激活作用域里，没有它，滑动的标题会一直把省略号钉在右边。
 
 ## 四、设置页为什么是不透明的
 
@@ -191,7 +210,7 @@ client.js
 node tools/smoke-test.cjs
 ```
 
-109 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、液态玻璃三档归属与两套配方（面板 / 芯片）、底部状态栏与费用明细胶囊、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
+118 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、液态玻璃三档归属与两套配方（面板 / 芯片）、底部状态栏、头部胶囊、用户气泡、两处费用明细、标题滚动选择器、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
 
 `--dump` 可打印实际产出的 CSS：
 

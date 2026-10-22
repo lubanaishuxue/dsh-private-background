@@ -126,7 +126,7 @@ window.__ModuleLoader__.load({
         glass: '质感',
         glassSolid: '实心',
         glassLiquid: '液态玻璃',
-        glassHint: '液态玻璃让输入框、底部状态栏、代码块、文件卡片一起变磨砂半透明，边缘带一道高光。字压在图上更容易读，因为背景被磨平了。',
+        glassHint: '液态玻璃让输入框、底部状态栏、头部胶囊、代码块、文件卡片、消息气泡一起变磨砂半透明，边缘带一道高光。字压在图上更容易读，因为背景被磨平了。',
         glassHintSolid: '实心：各自按上面的不透明度铺底色，没有模糊和高光。',
         glassBlur: '玻璃模糊',
         reset: '恢复默认',
@@ -172,7 +172,7 @@ window.__ModuleLoader__.load({
         glass: 'Surface finish',
         glassSolid: 'Solid',
         glassLiquid: 'Liquid glass',
-        glassHint: 'Liquid glass turns the message box, the status row, code blocks and file cards into frosted panes with a lit edge. Text stays readable because the backdrop is flattened, not just dimmed.',
+        glassHint: 'Liquid glass turns the message box, the status row, the header chips, code blocks, file cards and message bubbles into frosted panes with a lit edge. Text stays readable because the backdrop is flattened, not just dimmed.',
         glassHintSolid: 'Solid: each surface just fills with its own opacity - no blur, no highlight.',
         glassBlur: 'Glass blur',
         reset: 'Reset',
@@ -714,11 +714,16 @@ html[data-dshbg-on] [data-composer-card] {
       const blur = clamp(settings.glassBlur, 0, 40);
       const block = `[class*="_block_"]:has([data-code-block-banner])`;
       const inlineCode = `[class*="_markdown_"] :not(pre) > code`;
+      // The user's own message. `_bubble` paints `--dsw-specific-bubble`, another token
+      // that is not in the remix list, so it stays the theme's opaque grey no matter what
+      // the wallpaper is doing. Scoped by the flow item's `data-chat-flow-kind="user"` so
+      // the same local name in other modules (trajectory, terminal) is not touched.
+      const bubble = '[data-chat-flow-kind="user"] [class*="_bubble"]';
       // Separate array entries, never one comma-joined string: `prefixed()` prefixes each
       // *item*, so a comma inside an item would leave its tail unprefixed.
       const deliverable = ['[data-presented-file]', `[class$="_file"]:has(> [class$="_fileBody"])`];
       return `
-${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, block])} {
+${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, block, bubble])} {
 ${glassPane(blur)}
 }
 ${prefixed('html[data-dshbg-on]', [`${block} [class*="_bannerWrap"]`, `${block} pre`])} {
@@ -768,33 +773,38 @@ ${pane}
     }
 
     /**
-     * Glass on the composer's status row and on the two cost-detail entries.
+     * Glass on the composer's status row, the session-header chips, and the cost entries.
      *
      * The row is `[data-composer-dock]`, the host's `InputBar` dock. It carries the
      * `conversation.composer.dock` slot plus the context meter, and it paints no background
      * of its own - which is why the transcript scrolls straight through it and the row reads
      * as loose text sitting on the window edge rather than as a status bar.
      *
-     * Both `费用明细` entries are the cost meter's own `.cm-btn`s: one in the session header
-     * (`conversation.session.header.actions`), one in this dock. They paint
-     * `--dsw-alias-button-elevated-fill`, which is not in `SURFACE_TOKENS`, and in the dark
-     * theme that token resolves to the static `#43454a`. A static neutral is invisible to a
-     * remix that only rewrites tokens, so these stayed black pills while everything around
-     * them went frosted.
+     * The header chips all live in one slot. `_headerActions` renders nothing but
+     * `renderSlot("conversation.session.header.actions")`, so "every button in that slot" is
+     * exactly "the chips next to the title" - 智能体团队, 标准模式, 4 个子智能体, and the cost
+     * entry. All of them are `<button>`s the host draws with `background: 0 0; border: 0`,
+     * i.e. bare text; frosting them is what turns that strip into one row of panes.
      *
-     * Gated on the finish switch with the composer, not always on: this row is composer
-     * chrome sitting directly under the message box, so "solid" has to mean solid here too,
-     * or the status bar would be the only frosted thing in a solid window.
+     * The two `费用明细` entries are the cost meter's own `.cm-btn`s, one in that header slot
+     * and one in this dock. They paint `--dsw-alias-button-elevated-fill`, which is not in
+     * `SURFACE_TOKENS`, and in the dark theme that token resolves to the static `#43454a`. A
+     * static neutral is invisible to a remix that only rewrites tokens, so these stayed black
+     * pills while everything around them went frosted.
      *
-     * The pills keep their host border width (`1px`) - only the colour moves. Shrinking a
-     * block-level button's border to `.5px` thins an edge that is not inline and does not
-     * need the reflow trick.
+     * Gated on the finish switch with the composer, not always on: the status row is composer
+     * chrome sitting directly under the message box, and the header row has to match it, so
+     * "solid" has to mean solid here too.
+     *
+     * The `.cm-btn`s keep their host border width (`1px`) - only the colour moves. The other
+     * chips have no border at all, so they get the chip's `.5px` hairline; a full pixel on
+     * both sides would visibly fatten a 28px-tall control.
      */
     function statusGlassCss(settings) {
       if (settings.composerStyle !== 'glass') return '';
       const blur = clamp(settings.glassBlur, 0, 40);
       const dock = '[data-composer-dock]';
-      const pills = [`${dock} .cm-btn`, '[data-slot="conversation.session.header.actions"] .cm-btn'];
+      const headerSlot = '[data-slot="conversation.session.header.actions"]';
       return `
 ${prefixed('html[data-dshbg-on]', [dock])} {
   box-sizing: border-box !important;
@@ -802,8 +812,46 @@ ${prefixed('html[data-dshbg-on]', [dock])} {
   border-radius: 12px !important;
 ${glassPane(blur)}
 }
-${prefixed('html[data-dshbg-on]', pills)} {
+${prefixed('html[data-dshbg-on]', [`${headerSlot} button`])} {
+${glassChip(blur)}
+}
+${prefixed('html[data-dshbg-on]', [`${dock} .cm-btn`, `${headerSlot} .cm-btn`])} {
 ${glassChip(blur, '1px')}
+}
+`;
+    }
+
+    /**
+     * One breadcrumb, whichever element the host used for it.
+     *
+     * The current title is a `<span>`, its ancestors are `<button>`s - both carry the same
+     * `_crumb` local class. `_crumbSeg`, `_crumbSep` and `_crumbs` contain that substring
+     * too, so they are excluded by name rather than by position: the nav and its two
+     * helpers are the ones that must not be treated as text to scroll.
+     */
+    const CRUMB = ':is(span, button)[class*="_crumb"]:not([class*="_crumbSeg"]):not([class*="_crumbSep"])';
+    const CRUMB_HOST = '[class*="_crumb"]';
+
+    /**
+     * Let an over-long session title scroll instead of ending in an ellipsis.
+     *
+     * The title is a breadcrumb capped at `max-width: 220px` with `text-overflow: ellipsis`,
+     * so a long session name is unreadable past the cap. CSS alone cannot fix that: a
+     * marquee needs the overflow distance, and no length unit expresses "however much is
+     * hidden".
+     *
+     * `text-indent` is the lever rather than `transform`, because the animation has to move
+     * the text *inside* the element. A transform would drag the whole box - its hover fill
+     * and its hit area - over the chips next to it.
+     *
+     * The clip is the one rule that has to live in the stylesheet: while the text is shifted
+     * the ellipsis would otherwise stay pinned to the right edge, reading as "…" in the
+     * middle of a word. `installTitleMarquee` measures and drives the animation.
+     */
+    function titleCss() {
+      return `
+${prefixed('html[data-dshbg-on]', [CRUMB])} {
+  text-overflow: clip !important;
 }
 `;
     }
@@ -1008,6 +1056,7 @@ html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
         configPageCss(settings),
         fontCss(settings, tone),
         costMeterCss(settings),
+        titleCss(),
         // Last, so the frosted panes are not re-painted by anything above.
         transcriptGlassCss(settings),
         composerGlassCss(settings),
@@ -1018,6 +1067,129 @@ html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
 
     // ------------------------------------------------------------------- install
 
+    /**
+     * Drives the session-title marquee.
+     *
+     * Pure CSS cannot do this: the distance to scroll is `scrollWidth - clientWidth`, and
+     * no length unit expresses "however much is hidden". So the distance is measured here
+     * and handed to a Web Animation.
+     *
+     * Two things make the measurement trustworthy:
+     *
+     * - The running animation is cancelled *before* the read. `text-indent` shifts the text,
+     *   which moves the content edge that `scrollWidth` reports, so a live animation would
+     *   make every re-measure read its own output and the title would creep left.
+     * - Re-measuring is driven by the title's own signals - a ResizeObserver on the crumb
+     *   plus a MutationObserver filtered to the crumbs - not by a global observer. The
+     *   transcript mutates on every streamed token, and a global observer would restart the
+     *   marquee dozens of times a second.
+     *
+     * Everything is cancelled when the wallpaper is off, because the matching
+     * `text-overflow: clip` lives in the activation-scoped stylesheet. Left running without
+     * it, a scrolling title would still pin its ellipsis to the right edge.
+     */
+    function installTitleMarquee() {
+      // The marquee is an enhancement, not a load-bearing part of the plugin: if the host
+      // ever runs this outside a full renderer there is nothing to observe, and the title
+      // simply keeps its ellipsis.
+      if (typeof ResizeObserver === 'undefined' || typeof MutationObserver === 'undefined') {
+        return { sync() {}, dispose() {} };
+      }
+
+      /** @type {WeakMap<Element, Animation>} */
+      const running = new WeakMap();
+      /** @type {WeakSet<Element>} */
+      const observed = new WeakSet();
+      let timer = 0;
+      let disposed = false;
+
+      const stop = (crumb) => {
+        const animation = running.get(crumb);
+        if (animation === undefined) return;
+        animation.cancel();
+        running.delete(crumb);
+      };
+
+      const start = (crumb) => {
+        // `scrollWidth - clientWidth` is already the exact hidden width: the overflow area
+        // starts at the padding edge, so the difference excludes both paddings. Keeping a
+        // few pixels back stops the last glyph from sitting flush on the clip edge.
+        const distance = crumb.scrollWidth - crumb.clientWidth;
+        const shift = distance - 6;
+        if (shift < 8) return;
+        const duration = Math.min(26000, 7000 + shift * 60);
+        const animation = crumb.animate(
+          [
+            { textIndent: '0px', offset: 0 },
+            { textIndent: '0px', offset: 0.14 },
+            { textIndent: `-${shift}px`, offset: 0.52 },
+            { textIndent: `-${shift}px`, offset: 0.64 },
+            { textIndent: '0px', offset: 1 },
+          ],
+          { duration, iterations: Infinity, easing: 'ease-in-out' },
+        );
+        running.set(crumb, animation);
+      };
+
+      const sync = () => {
+        if (disposed) return;
+        const on = document.documentElement.hasAttribute('data-dshbg-on');
+        for (const crumb of document.querySelectorAll(CRUMB)) {
+          if (!observed.has(crumb)) {
+            observed.add(crumb);
+            resize.observe(crumb);
+          }
+          stop(crumb);
+          if (on) start(crumb);
+        }
+      };
+
+      const schedule = () => {
+        if (disposed || timer !== 0) return;
+        timer = setTimeout(() => {
+          timer = 0;
+          sync();
+        }, 160);
+      };
+
+      const resize = new ResizeObserver(schedule);
+
+      // Only mutations that touch a crumb matter. The transcript streams into the same
+      // document, so the filter is what keeps this from being a per-token callback.
+      const mutations = new MutationObserver((records) => {
+        for (const record of records) {
+          const target = record.target;
+          const element = target.nodeType === 1 ? target : target.parentElement;
+          if (element !== null && element !== undefined && element.closest(CRUMB_HOST) !== null) {
+            schedule();
+            return;
+          }
+          for (const node of record.addedNodes) {
+            if (node.nodeType === 1 && node.querySelector(CRUMB) !== null) {
+              schedule();
+              return;
+            }
+          }
+        }
+      });
+
+      // `documentElement`, not `body`: this runs before the host has necessarily committed
+      // anything, and the whole tree is inside it either way.
+      mutations.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+      sync();
+
+      return {
+        sync,
+        dispose() {
+          disposed = true;
+          if (timer !== 0) clearTimeout(timer);
+          resize.disconnect();
+          mutations.disconnect();
+          for (const crumb of document.querySelectorAll(CRUMB)) stop(crumb);
+        },
+      };
+    }
+
     function installStyles(ctx) {
       const stale = document.querySelector(`style[data-dshbg-css="${PACKAGE}"]`);
       if (stale !== null) stale.remove();
@@ -1025,6 +1197,8 @@ html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
       const tag = document.createElement('style');
       tag.setAttribute('data-dshbg-css', PACKAGE);
       document.head.appendChild(tag);
+
+      const marquee = installTitleMarquee();
 
       let disposed = false;
       let measureToken = 0;
@@ -1037,6 +1211,9 @@ html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
         if (on) root.setAttribute('data-dshbg-on', '');
         else root.removeAttribute('data-dshbg-on');
         tag.textContent = on ? buildCss(settings, activeImage, toneOf(luma)) : '';
+        // Turning the wallpaper off also drops the `text-overflow: clip` that the marquee
+        // depends on, so the animations have to follow the stylesheet, not the setting.
+        marquee.sync();
       };
 
       /**
@@ -1075,6 +1252,7 @@ html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
           () => () => {
             disposed = true;
             unsubscribe();
+            marquee.dispose();
             tag.remove();
             document.documentElement.removeAttribute('data-dshbg-on');
           },

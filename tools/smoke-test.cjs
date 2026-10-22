@@ -148,6 +148,10 @@ function harness(settingsOverride) {
     Image: StubImage,
     indexedDB: window.indexedDB,
     React,
+    // The title marquee wires observers up on mount. It never sees a crumb in this DOM
+    // (querySelectorAll returns nothing), but constructing them exercises the real path.
+    ResizeObserver: class { observe() {} disconnect() {} },
+    MutationObserver: class { observe() {} disconnect() {} },
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
@@ -300,6 +304,13 @@ async function main() {
   check('file cards stay glass in solid mode', /\[class\*="_fileCard"\][^{]*\{[^}]*backdrop-filter/.test(base.css));
   check('code blocks stay glass in solid mode', /\[class\*="_block_"\][^{]*\{[^}]*backdrop-filter/.test(base.css));
   check('inline code stays glass in solid mode', /\[class\*="_markdown_"\][^{]*\{[^}]*backdrop-filter/.test(base.css));
+  // 用户消息气泡画 --dsw-specific-bubble，同样不在重混列表里。它属于转写区内容，
+  // 所以跟着文件卡/代码块一起常开，而不是跟输入框的开关。
+  check('user bubble becomes a pane', base.css.includes('[data-chat-flow-kind="user"] [class*="_bubble"]'));
+  check(
+    'user bubble is frosted, not just tinted',
+    /\[data-chat-flow-kind="user"\] \[class\*="_bubble"\][^{]*\{[^}]*backdrop-filter/.test(base.css),
+  );
   // 一屏几十个芯片，模糊半径按最大值算会把 GPU 拖死；上限 10px，够用。
   const chipMax = await emit({ glassBlur: 40 });
   check('inline code chip blur is capped', chipMax.css.includes('blur(10px) saturate(150%)'));
@@ -333,6 +344,30 @@ async function main() {
     /\[data-composer-dock\] \.cm-btn[^{]*\{[^}]*border: 1px solid/.test(glass.css),
   );
   check('cost pills stay flat in solid mode', !base.css.includes('conversation.session.header.actions'));
+
+  // 头部那排胶囊（智能体团队 / 标准模式 / 4 个子智能体）全部由 header.actions 这一个槽
+  // 渲染，宿主只给它一个空壳 div，所以「槽里每个 button」正好等于「标题旁边那排胶囊」。
+  check(
+    'header chips are frosted as a row',
+    glass.css.includes('[data-slot="conversation.session.header.actions"] button'),
+  );
+  check(
+    'header chips keep the hairline border',
+    /\[data-slot="conversation\.session\.header\.actions"\] button \{[^}]*border: \.5px solid/.test(glass.css),
+  );
+
+  console.log('\ntitle marquee');
+  // 标题是面包屑，宿主封顶 220px + text-overflow: ellipsis。CSS 自己算不出「藏了多少」，
+  // 所以 clip 放在样式表里、距离由 JS 量出来交给 Web Animation。
+  // 当前那一节是 <span>，祖先才是 <button>，两个都要选中；_crumbSeg/_crumbSep 也含
+  // `_crumb` 子串，必须按名字排除掉，否则会把分隔符和容器一起当成可滚动的文本。
+  const CRUMB_SEL = ':is(span, button)[class*="_crumb"]:not([class*="_crumbSeg"]):not([class*="_crumbSep"])';
+  check('title stops drawing an ellipsis', /_crumb"\][^{]*\{[^}]*text-overflow: clip/.test(base.css));
+  check('breadcrumb selector covers the span title', base.css.includes(':is(span, button)[class*="_crumb"]'));
+  check('breadcrumb selector excludes the seg and sep', base.css.includes(':not([class*="_crumbSeg"]):not([class*="_crumbSep"])'));
+  // 关掉背景时整张表是空的，clip 也跟着没了 —— 所以 JS 那边必须按激活属性停掉动画，
+  // 否则标题会在没有 clip 的情况下继续滑动。
+  check('title clip is scoped to the activation attribute', base.css.includes(`html[data-dshbg-on] ${CRUMB_SEL}`));
 
   console.log('\nwindow caption buttons');
   // Electron paints min/max/close natively, so no rule on the frame can reach them. The
@@ -413,6 +448,9 @@ async function main() {
   console.log('\nlifecycle');
   const off = await emit({ mode: 'none' });
   check('mode none injects an empty stylesheet', off.css === '', `length ${off.css.length}`);
+  // The marquee's `text-overflow: clip` rides the same sheet, so switching the background
+  // off has to take it with it - otherwise a scrolling title keeps its ellipsis pinned.
+  check('title clip goes away with the stylesheet', !off.css.includes('_crumb'));
   check('mode none leaves <html> unmarked', !off.documentElement.hasAttribute('data-dshbg-on'));
   check('mode none still registers the slot', off.registered.length === 1);
 
@@ -479,9 +517,29 @@ async function main() {
   // unconditionally. Every selector the plugin emits must be activation-scoped.
   const selectors = [];
   const headerRe = /(?:^|\})\s*([^{}]+)\{/g;
+  // Commas inside `:is(...)` / `:has(...)` belong to one selector, not to a list - splitting
+  // on every comma would cut `:is(span, button)` in half and then complain that `button)...`
+  // is unscoped.
+  const splitSelectors = (text) => {
+    const parts = [];
+    let depth = 0;
+    let current = '';
+    for (const char of text) {
+      if (char === '(') depth += 1;
+      else if (char === ')') depth -= 1;
+      if (char === ',' && depth === 0) {
+        parts.push(current);
+        current = '';
+        continue;
+      }
+      current += char;
+    }
+    parts.push(current);
+    return parts;
+  };
   let match;
   while ((match = headerRe.exec(base.css)) !== null) {
-    for (const part of match[1].split(',')) {
+    for (const part of splitSelectors(match[1])) {
       const selector = part.trim();
       if (selector.length > 0) selectors.push(selector);
     }
