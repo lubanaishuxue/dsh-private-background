@@ -51,6 +51,24 @@
 
 输入框给得更高，因为它是全屏唯一一处**壁纸正压在你要打的字下面**的地方：亮色斑块透过来，读起来像渲染故障，而不像设计。`[data-composer-card]` 正好打在画底色的那个元素上，所以只覆盖一个 token 就够——自定义属性声明在元素上，对该元素自己的声明同样生效，不需要再补一条 `background`。
 
+### 液态玻璃
+
+「质感」选液态玻璃时，输入框、代码块、文件卡片一起变成磨砂半透明 + 边缘高光。
+
+三处表面用了三种钩子，都不是靠猜哈希类名：
+
+| 表面 | 钩子 | 为什么稳 |
+|---|---|---|
+| 输入框 | `[data-composer-card]` | 官方 data 属性 |
+| 代码块 | `[class*="_block_"]:has([data-code-block-banner])` | 类名是 `_block_<hash>_<line>`，`_block_` 这半截能跨版本存活 |
+| 文件卡片 | `[class*="_fileCard"]` | 类名是 `<hash>_fileCard`，`_fileCard` 是稳定那半截 |
+
+代码块的 banner 和 `pre` 各自会再画一遍块底色，两处都要清空，否则磨砂只做了一半——四周是玻璃、中间一块实心。
+
+壁纸本身在 `html::before` 上已经糊过了，所以面板自己的 `backdrop-filter` 主要是补饱和度、给边缘定形，不是靠它做模糊。这样长对话里几十个代码块也不会把 GPU 拖死。
+
+> 已知边界：`backdrop-filter` 会给 `position:fixed` 的后代改定位基准。输入框模块里没有 fixed 元素（查过），但宿主以后若在里面塞浮层，可能出现偏移。
+
 ## 四、设置页为什么是不透明的
 
 壁纸压在标题后面就没法读了。但「哪一栏是设置页」不能靠猜 DOM。
@@ -101,7 +119,7 @@ client.js
 ├─ 亮度        lumaOfCss / lumaOfImage / measureLuma / toneOf
 ├─ 状态        state + subscribe / commit / patchSettings
 ├─ 选择器      frameSelector / workAreaColumns / bottomRowSelector
-├─ 样式        wallpaper / token / chatSurface / composer / chrome / caption / bottomRow / font / configPage / costMeter
+├─ 样式        wallpaper / token / chatSurface / composer / glass / chrome / caption / bottomRow / font / configPage / costMeter
 ├─ 安装        installStyles（apply 内注入 <style>，ctx.effect 托管清理）
 ├─ 组件        Switch / Segmented / Slider
 └─ 页面        ConfigPage（注册到 plugins.bundle.config）
@@ -133,7 +151,7 @@ client.js
 node tools/smoke-test.cjs
 ```
 
-75 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏渐变、标题栏按钮探针、设置页及其作用域、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
+87 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏渐变、标题栏按钮探针、设置页及其作用域、液态玻璃、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
 
 `--dump` 可打印实际产出的 CSS：
 

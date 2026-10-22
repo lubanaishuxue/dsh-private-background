@@ -263,6 +263,25 @@ async function main() {
   check('composer opacity moves independently', composerLow.css.includes('var(--dshbg-raw-input) 30%'));
   check('panel input token still at its own value', composerLow.css.includes('var(--dshbg-raw-input) 28%'));
 
+  console.log('\nliquid glass');
+  const glass = await emit({ composerStyle: 'glass' });
+  check('message box becomes a pane', glass.css.includes('[data-composer-card]'));
+  check('file cards become panes', glass.css.includes('[class*="_fileCard"]'));
+  check('code block wrapper found by stable half of its class', glass.css.includes('[class*="_block_"]:has([data-code-block-banner])'));
+  check('blur comes from the glass slider', glass.css.includes('blur(14px) saturate(160%)'));
+  check('edge highlight is present', glass.css.includes('inset 0 1px 0 0 rgb(255 255 255 / 0.10)'));
+  // The banner and the `pre` paint the block's own colour on top; without clearing them
+  // the pane is only frosted around an opaque core.
+  check('code block banner is cleared', glass.css.includes('[class*="_bannerWrap"]'));
+  check('code block pre is cleared', /\[class\*="_block_"\]\:has\(\[data-code-block-banner\]\) pre/.test(glass.css));
+  // Two competing routes to the same surface would fight; glass paints directly.
+  // The frame-level remix still emits the token, so assert on the card rule specifically.
+  check('solid token route dropped in glass mode', !/\[data-composer-card\]\s*\{[^}]*--dsw-specific-input-major/.test(glass.css));
+  check('every glass selector is prefixed', !/(^|\})\s*(?:\[|div)/.test(glass.css));
+  const glassLow = await emit({ composerStyle: 'glass', glassBlur: 3 });
+  check('glass blur is adjustable', glassLow.css.includes('blur(3px) saturate(160%)'));
+  check('solid mode emits no glass at all', !base.css.includes('backdrop-filter'));
+
   console.log('\nwindow caption buttons');
   // Electron paints min/max/close natively, so no rule on the frame can reach them. The
   // preload publishes the overlay colour from a hidden probe it appends to <body>, and
@@ -341,7 +360,8 @@ async function main() {
   check('page renders without throwing', page !== null);
   const strings = [];
   // Switch and Slider are function components, so their labels sit in props rather than
-  // in children - walking children alone silently misses every control caption.
+  // in children - walking children alone silently misses every control caption. Segmented
+  // keeps its labels one level deeper still, inside a plain `options` array.
   const walk = (node) => {
     if (node === null || node === undefined || node === false || node === true) return;
     if (typeof node === 'string' || typeof node === 'number') {
@@ -353,10 +373,14 @@ async function main() {
       return;
     }
     if (typeof node !== 'object') return;
-    if (node.props !== null && typeof node.props === 'object') {
-      Object.values(node.props).forEach(walk);
+    if (node.type !== undefined) {
+      if (node.props !== null && typeof node.props === 'object') {
+        Object.values(node.props).forEach(walk);
+      }
+      if (Array.isArray(node.children)) node.children.forEach(walk);
+      return;
     }
-    if (Array.isArray(node.children)) node.children.forEach(walk);
+    Object.values(node).forEach(walk);
   };
   walk(page);
   const blob = strings.join('\n');
@@ -364,6 +388,7 @@ async function main() {
   check('scope switch is on the page', blob.includes('同时应用到左侧对话栏'));
   check('conversation opacity control is on the page', blob.includes('对话区不透明度'));
   check('composer opacity control is on the page', blob.includes('输入框不透明度'));
+  check('finish control is on the page', blob.includes('液态玻璃'));
   check('panel opacity control is still there', blob.includes('面板不透明度'));
 
   console.log('\nslot registration');
@@ -403,6 +428,8 @@ async function main() {
     console.log(`\n--- emitted css (fullWindow) ---\n${wide.css}`);
     const lit = await emit({ font: 'auto' });
     console.log(`\n--- emitted css (font: auto) ---\n${lit.css}`);
+    const glassy = await emit({ composerStyle: 'glass' });
+    console.log(`\n--- emitted css (liquid glass) ---\n${glassy.css}`);
   }
   process.exit(failures.length === 0 ? 0 : 1);
 }

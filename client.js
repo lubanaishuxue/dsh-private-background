@@ -55,6 +55,8 @@ window.__ModuleLoader__.load({
       surface: 55,
       chatSurface: 78,
       composerSurface: 85,
+      composerStyle: 'solid',
+      glassBlur: 14,
       fullWindow: false,
       font: 'theme',
       fontColor: '#f7f8fa',
@@ -121,6 +123,12 @@ window.__ModuleLoader__.load({
         chatSurfaceHint: '对话区单独一档。看字吃力就往上拉，想多露点壁纸就往下拉。',
         composerSurface: '输入框不透明度',
         composerSurfaceHint: '发消息那个框单独一档。框里的字发虚就往上拉。',
+        glass: '质感',
+        glassSolid: '实心',
+        glassLiquid: '液态玻璃',
+        glassHint: '液态玻璃让输入框、代码块、文件卡片一起变磨砂半透明，边缘带一道高光。字压在图上更容易读，因为背景被磨平了。',
+        glassHintSolid: '实心：各自按上面的不透明度铺底色，没有模糊和高光。',
+        glassBlur: '玻璃模糊',
         reset: '恢复默认',
         autoSaved: '改动即时生效并自动保存',
         diagnostics: '样式 / 激活 / 框架 / 三栏',
@@ -161,6 +169,12 @@ window.__ModuleLoader__.load({
         chatSurfaceHint: 'Its own setting for the conversation area. Raise it when reading is hard, lower it to show more wallpaper.',
         composerSurface: 'Composer opacity',
         composerSurfaceHint: 'Its own setting for the message box. Raise it if the text you are typing looks washed out.',
+        glass: 'Surface finish',
+        glassSolid: 'Solid',
+        glassLiquid: 'Liquid glass',
+        glassHint: 'Liquid glass turns the message box, code blocks and file cards into frosted panes with a lit edge. Text stays readable because the backdrop is flattened, not just dimmed.',
+        glassHintSolid: 'Solid: each surface just fills with its own opacity - no blur, no highlight.',
+        glassBlur: 'Glass blur',
         reset: 'Reset',
         autoSaved: 'Changes apply and save immediately',
         diagnostics: 'style / active / frame / columns',
@@ -219,6 +233,8 @@ window.__ModuleLoader__.load({
           0,
           100,
         ),
+        composerStyle: parsed.composerStyle === 'glass' ? 'glass' : 'solid',
+        glassBlur: clamp(parsed.glassBlur === undefined ? fallback.glassBlur : parsed.glassBlur, 0, 40),
         fullWindow: parsed.fullWindow === true,
         font: fonts.includes(parsed.font) ? parsed.font : fallback.font,
         fontColor:
@@ -602,10 +618,56 @@ html[data-dshbg-on] ${frameSelector()} > div:nth-of-type(2) {
      * rendering glitch rather than as a design choice.
      */
     function composerCss(settings) {
+      // Glass mode paints these surfaces directly, so a second token override would just
+      // fight it. Solid mode keeps the token route, which also carries the file cards that
+      // reuse `--dsw-specific-input-major`.
+      if (settings.composerStyle === 'glass') return '';
       const alpha = clamp(settings.composerSurface, 0, 100);
       return `
 html[data-dshbg-on] [data-composer-card] {
   --dsw-specific-input-major: color-mix(in srgb, var(--dshbg-raw-input) ${alpha}%, transparent) !important;
+}
+`;
+    }
+
+    /**
+     * Liquid glass: the message box, the code blocks and the file cards become frosted
+     * panes with a lit edge instead of flat translucent fills.
+     *
+     * Three surfaces, three different hooks, none of them a hashed class guess:
+     *
+     * - The message box already carries `[data-composer-card]`.
+     * - Code blocks expose `[data-code-block-banner]`. Their wrapper class is
+     *   `_block_<hash>_<line>` and the banner lives one level down, so the wrapper is
+     *   found with `[class*="_block_"]:has([data-code-block-banner])` - the `_block_`
+     *   prefix survives a rebuild, the hash does not. The banner and the `pre` paint the
+     *   block's own colour on top, so both are cleared or the pane is only half frosted.
+     * - File cards are `cJsG2q_fileCard` - hash first, then the local name, so
+     *   `[class*="_fileCard"]` is the stable half.
+     *
+     * The wallpaper is already blurred at the `html::before` layer, so the pane's own
+     * `backdrop-filter` mostly adds saturation and edge definition rather than doing the
+     * blurring work. That is deliberate: it keeps the GPU cost of a long transcript with
+     * many blocks low while still reading as glass.
+     */
+    function glassCss(settings) {
+      if (settings.composerStyle !== 'glass') return '';
+      const blur = clamp(settings.glassBlur, 0, 40);
+      const pane = `  background-color: color-mix(in srgb, var(--dshbg-raw-base) 22%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent) !important;
+  box-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.10),
+    inset 0 -1px 0 0 rgb(0 0 0 / 0.10),
+    0 10px 30px -14px rgb(0 0 0 / 0.55) !important;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(160%) !important;
+  backdrop-filter: blur(${blur}px) saturate(160%) !important;`;
+      const block = `[class*="_block_"]:has([data-code-block-banner])`;
+      return `
+${prefixed('html[data-dshbg-on]', ['[data-composer-card]', '[class*="_fileCard"]', block])} {
+${pane}
+}
+${prefixed('html[data-dshbg-on]', [`${block} [class*="_bannerWrap"]`, `${block} pre`])} {
+  background: transparent !important;
 }
 `;
     }
@@ -797,6 +859,8 @@ html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
         configPageCss(settings),
         fontCss(settings, tone),
         costMeterCss(settings),
+        // Last, so the frosted panes are not re-painted by anything above.
+        glassCss(settings),
       ].join('');
     }
 
@@ -1333,19 +1397,52 @@ html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
               onChange: (value) => patchSettings({ chatSurface: value }),
             }),
             h('p', { className: 'dshbg-hint' }, text.chatSurfaceHint),
-            h(Slider, {
-              label: text.composerSurface,
-              value: settings.composerSurface,
-              min: 0,
-              max: 100,
-              step: 1,
-              suffix: '%',
-              onChange: (value) => patchSettings({ composerSurface: value }),
-            }),
-            h('p', { className: 'dshbg-hint' }, text.composerSurfaceHint),
+            settings.composerStyle === 'glass'
+              ? h(Slider, {
+                  label: text.glassBlur,
+                  value: settings.glassBlur,
+                  min: 0,
+                  max: 40,
+                  step: 1,
+                  suffix: 'px',
+                  onChange: (value) => patchSettings({ glassBlur: value }),
+                })
+              : h(Slider, {
+                  label: text.composerSurface,
+                  value: settings.composerSurface,
+                  min: 0,
+                  max: 100,
+                  step: 1,
+                  suffix: '%',
+                  onChange: (value) => patchSettings({ composerSurface: value }),
+                }),
+            settings.composerStyle === 'glass'
+              ? null
+              : h('p', { className: 'dshbg-hint' }, text.composerSurfaceHint),
           ),
         );
       }
+
+      sections.push(
+        h(
+          'div',
+          { key: 'finish', className: 'dshbg-section' },
+          h('div', { className: 'dshbg-label' }, text.glass),
+          h(Segmented, {
+            value: settings.composerStyle,
+            options: [
+              { value: 'solid', label: text.glassSolid },
+              { value: 'glass', label: text.glassLiquid },
+            ],
+            onChange: (value) => patchSettings({ composerStyle: value }),
+          }),
+          h(
+            'p',
+            { className: 'dshbg-hint' },
+            settings.composerStyle === 'glass' ? text.glassHint : text.glassHintSolid,
+          ),
+        ),
+      );
 
       return h(
         'div',
