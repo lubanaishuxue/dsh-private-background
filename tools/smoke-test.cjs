@@ -313,10 +313,8 @@ async function main() {
     'user bubble is frosted, not just tinted',
     /\[data-chat-flow-kind="user"\] \[class\*="_bubble"\][^{]*\{[^}]*backdrop-filter/.test(base.css),
   );
-  // 气泡是整段正文，22% 的 pane 填充挡不住壁纸的高光，字会糊在图上。它要的是「能读」，
-  // 所以填充比 pane 重得多，而且取的是抬起来的那一层（l2），不是页面底色。
-  check('user bubble keeps a heavy fill', base.css.includes('var(--dshbg-raw-l2) 78%'));
-  check('user bubble is not left on the thin pane fill', !/\[class\*="_bubble"\][^{]*\{[^}]*22%/.test(base.css));
+  // 气泡是用户消息，走常规 pane 配方（用户明确要求别单独给它加重填充）。
+  check('user bubble is back on the pane recipe', /\[class\*="_bubble"\][^{]*\{[^}]*22%/.test(base.css));
   // 代码块有三处各自画底色：_block 和 pre 画 --dsl-code-block-background，
   // _banner 画 --dsl-code-block-banner-background-color。早先只清了 _bannerWrap，
   // 于是标题栏那条「代码块」一直是实心深色。
@@ -336,6 +334,23 @@ async function main() {
   check('sidebar panes frost in whole-window scope', wide.css.includes('[class$="_newSession"]'));
   check('new-session children are not matched', !wide.css.includes('[class*="_newSession"]'));
   check('cost meter card is frosted with the sidebar', wide.css.includes('.cm-footer-stack.summary:not(.rail)'));
+  // 侧栏历史记录行：32px 高、一屏二十来行，宿主平时根本不铺底色，压在壁纸上就整片看不清。
+  // 但它们不能套 pane 配方——1px 边框会把 content-box 的行撑高，二十个投影是噪音。
+  check('history rows are frosted', wide.css.includes('[class*="_sessionRow"]'));
+  check('folder rows are frosted too', wide.css.includes('[class*="_projectRow"]'));
+  check(
+    'history row uses the row recipe, not the pane',
+    /\[class\*="_sessionRow"\][\s\S]{0,120}?\{[^}]*backdrop-filter/.test(wide.css) &&
+      !/\[class\*="_sessionRow"\][\s\S]{0,120}?\{[^}]*0 10px 30px -14px/.test(wide.css),
+  );
+  check('history row keeps its height (no border)', !/\[class\*="_sessionRow"\][\s\S]{0,120}?\{[^}]*border: 1px/.test(wide.css));
+  // 搜索历史的结果卡带标题 + 两行摘要，是侧栏唯一会出现成段文字的地方。
+  check('search result card is frosted', wide.css.includes('[class*="_searchResultRow"]'));
+  check(
+    'search result card can afford the hairline',
+    /\[class\*="_searchResultRow"\][\s\S]{0,120}?\{[^}]*border: 1px/.test(wide.css),
+  );
+  check('selected history row stays visible', wide.css.includes('[class*="_sessionRow"][class*="_selected"]'));
 
   // 输入框下面那条状态栏（[data-composer-dock]）自己不铺任何底色，转写区的文字直接从
   // 底下穿过去，所以它读起来是「贴着窗口边的一行散字」而不是一条状态栏。它跟输入框
@@ -479,6 +494,16 @@ async function main() {
   // 头部可能在还没有宽度的时候就挂载了，第一次测量读到 0 会直接放弃。
   check('marquee re-syncs after boot', /const retries = \[[^\]]+\]\.map/.test(CODE));
   check('marquee clears its retries on dispose', CODE.includes('for (const handle of retries) clearTimeout(handle)'));
+  // 宿主的 max-width:220px 是给「截断 + 省略号」准备的。留着它，232px 的标题在几乎空着的
+  // 头部里也会永远滚——它从来没被允许用旁边的空间。现在先按头部真实余量放宽，再量 shift：
+  // 放得下就完全不滚，放不下才滚。这是用户明确要的规矩。
+  check('title is widened to the room the header has', CODE.includes('_titleCluster') && CODE.includes('roomFor'));
+  check('title cap is written only when it changes', CODE.includes("getPropertyValue('max-width') !== value"));
+  check('title cap is content-box aware', CODE.includes("before.boxSizing === 'border-box' ? room"));
+  // max-width 绝不能跟着「这条放得下」一起被摘掉：摘掉就回到 220，于是又放不下、又开始滚、
+  // 再套回 max-width —— 两帧一次的自激。只有壁纸关掉时才还原。
+  check('stopping the loop keeps the widened title', !/const stop = \(crumb\) => \{[^}]*max-width/.test(CODE));
+  check('turning the wallpaper off restores the host cap', /const reset = \(crumb\) => \{[^}]*max-width/.test(CODE));
   // 跑马灯是这个插件里唯一「坏了也看不出来」的部分：不滚的标题和刚好放得下的标题长得一样。
   // 所以它把最后一次测量留在 localStorage 里，打包后的 App 没有 devtools 也能从磁盘读回来。
   check('marquee leaves its numbers behind', CODE.includes('MARQUEE_PROBE'));
@@ -634,7 +659,11 @@ async function main() {
   // `@keyframes` 的 `from` / `to` 也是「选择器」形状，但它们不是选择器、也不需要激活前缀。
   // 先把整个 at-rule 块挖掉再扫，否则每次加动画都会误报。
   const keyframes = [];
-  const withoutKeyframes = base.css.replace(/@keyframes\s+([\w-]+)\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}/g, (_, name, body) => {
+  // 三份 CSS 一起扫：只改工作区、整窗、玻璃质感各是一套输出，只扫其中一份会漏掉
+  // 只在另一套里出现的规则——侧栏那段就是这样漏掉过一次，`[class*="_projectRow"]:hover`
+  // 少了前缀也没人发现。
+  const scanned = [base.css, wide.css, glass.css].join('\n');
+  const withoutKeyframes = scanned.replace(/@keyframes\s+([\w-]+)\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}/g, (_, name, body) => {
     keyframes.push({ name, body });
     return '';
   });

@@ -703,29 +703,6 @@ html[data-dshbg-on] [data-composer-card] {
     }
 
     /**
-     * The user's own message.
-     *
-     * `_bubble` paints `--dsw-specific-bubble`, an opaque grey that is deliberately not in
-     * the remix list, so left alone it stays solid. The pane recipe then dropped it to 22%
-     * and the message stopped being readable: a bubble is a long run of body text, and at
-     * 22% the wallpaper's own highlights move through the letters.
-     *
-     * So this is the one glass surface whose brief is legibility first. It keeps a heavy
-     * fill - 78% of the layer-2 surface - and the blur is there to flatten whatever still
-     * gets through, not to show the artwork off. `--dshbg-raw-l2` rather than `raw-base`
-     * because a bubble is a raised surface, and it has to stay distinguishable from the
-     * column it sits in.
-     */
-    function glassBubble(blur) {
-      const radius = Math.min(blur, 16);
-      return `  background-color: color-mix(in srgb, var(--dshbg-raw-l2) 78%, transparent) !important;
-  border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 14%, transparent) !important;
-  box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.08) !important;
-  -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
-  backdrop-filter: blur(${radius}px) saturate(150%) !important;`;
-    }
-
-    /**
      * Glass inside the transcript - file cards and code blocks. Always on.
      *
      * These are content, not chrome: they sit in the middle of the work area on top of the
@@ -779,11 +756,8 @@ html[data-dshbg-on] [data-composer-card] {
       // *item*, so a comma inside an item would leave its tail unprefixed.
       const deliverable = ['[data-presented-file]', `[class$="_file"]:has(> [class$="_fileBody"])`];
       return `
-${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, block])} {
+${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, block, bubble])} {
 ${glassPane(blur)}
-}
-${prefixed('html[data-dshbg-on]', [bubble])} {
-${glassBubble(blur)}
 }
 ${prefixed('html[data-dshbg-on]', [block])} {
   --dsl-code-block-background: transparent !important;
@@ -813,7 +787,30 @@ ${glassPane(clamp(settings.glassBlur, 0, 40))}
     }
 
     /**
-     * Glass inside the sidebar - the new-session button and the cost meter.
+     * A row in the sidebar's history list.
+     *
+     * These are 32px tall and there can be twenty of them on screen, so the pane recipe is
+     * wrong twice over: a 1px border on a `content-box` row grows it, and twenty drop
+     * shadows is noise. What a row needs is just enough fill to carry its own text - the
+     * host paints nothing until you hover, which over a wallpaper leaves the whole list
+     * floating on the artwork.
+     *
+     * The search-result card is the same story one size up: it is the only place the
+     * sidebar shows a title *and* a two-line snippet, and unfrosted the snippet is
+     * unreadable. It is `border-box` with a large radius, so it can take the hairline.
+     */
+    function glassRow(blur, border = false) {
+      const radius = Math.min(blur, 10);
+      return `  background-color: color-mix(in srgb, var(--dshbg-raw-l2) 52%, transparent) !important;${
+        border ? `\n  border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 14%, transparent) !important;` : ''
+      }
+  box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.07) !important;
+  -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
+  backdrop-filter: blur(${radius}px) saturate(150%) !important;`;
+    }
+
+    /**
+     * Glass inside the sidebar - the new-session button, the history rows and the cost meter.
      *
      * Gated on whole-window scope, because in work-area scope the sidebar is deliberately
      * left exactly as the theme paints it. Frosting a button that sits on an opaque panel
@@ -831,10 +828,23 @@ ${glassPane(clamp(settings.glassBlur, 0, 40))}
      */
     function sidebarGlassCss(settings) {
       if (!settings.fullWindow) return '';
-      const pane = glassPane(clamp(settings.glassBlur, 0, 40));
+      const blur = clamp(settings.glassBlur, 0, 40);
       return `
 ${prefixed('html[data-dshbg-on]', ['[class$="_newSession"]', '.cm-footer-stack.summary:not(.rail)'])} {
-${pane}
+${glassPane(blur)}
+}
+${prefixed('html[data-dshbg-on]', ['[class*="_sessionRow"]', '[class*="_projectRow"]'])} {
+${glassRow(blur)}
+}
+${prefixed('html[data-dshbg-on]', ['[class*="_searchResultRow"]'])} {
+${glassRow(blur, true)}
+}
+${prefixed('html[data-dshbg-on]', [
+  '[class*="_sessionRow"]:hover',
+  '[class*="_projectRow"]:hover',
+  '[class*="_sessionRow"][class*="_selected"]',
+])} {
+  background-color: color-mix(in srgb, var(--dshbg-raw-l2) 74%, transparent) !important;
 }
 `;
     }
@@ -1297,9 +1307,10 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
      */
     const MARQUEE_PROBE = 'dsh.custom-background.marquee.probe';
     const MARQUEE_TRACE = `${MARQUEE_PROBE}.trace`;
-    // Two full cycles at 100ms. One cycle is not enough: the title scrolls fine until the
-    // first wrap, which is exactly where the reported fault starts.
-    const MARQUEE_TRACE_LIMIT = 120;
+    // Two full cycles at 200ms. One cycle is not enough: the reported fault started at the
+    // first wrap. 200ms still resolves a wrap (the loop is ~5.9s) while halving how much
+    // this writes into LevelDB on every launch.
+    const MARQUEE_TRACE_LIMIT = 60;
 
     /**
      * TEMPORARY diagnostics, module scope on purpose.
@@ -1345,6 +1356,60 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         crumb.style.removeProperty('--dshbg-mq-loop');
         crumb.style.removeProperty('--dshbg-mq-dur');
         crumb.style.removeProperty('min-width');
+      };
+
+      /**
+       * Full teardown, for when the wallpaper goes away.
+       *
+       * `max-width` is deliberately *not* part of `stop()`. The title is widened to the room
+       * the header actually has, and that is what decides whether it scrolls at all - drop
+       * the cap on "this one fits" and the host's 220px ceiling comes back, the title no
+       * longer fits, the loop starts again, the cap is re-applied... a two-frame oscillation
+       * between scrolling and not. Only the wallpaper turning off may put it back.
+       */
+      const reset = (crumb) => {
+        stop(crumb);
+        crumb.style.removeProperty('max-width');
+      };
+
+      /**
+       * How much width the title is actually allowed to use.
+       *
+       * The host caps every crumb at `max-width: 220px` because it expects to ellipsize.
+       * That cap is what made a 232px title scroll forever inside a header that was mostly
+       * empty: the title was never allowed to grow into the room beside it, so `shift` was
+       * always positive and the marquee always ran - even though the whole title would have
+       * fitted with 12px to spare.
+       *
+       * The layout is `_titleCluster{flex:1}` holding `_headerLeading{flex:none}` (the
+       * crumbs) and `_headerActions{flex:none}` (the chips). The cluster's width is the
+       * track's, so subtracting the chips and the gaps from it gives the room the crumbs row
+       * may occupy; whatever else shares that row - separators, a second segment - is not
+       * the title's. Everything here is a read, and the numbers do not move when the cap
+       * changes (the cluster is `flex:1`), so this cannot feed back into itself.
+       */
+      const roomFor = (crumb) => {
+        const cluster = crumb.closest('[class*="_titleCluster"]');
+        if (cluster === null) return 0;
+        let taken = 0;
+        for (const child of cluster.children) {
+          if (!child.contains(crumb)) taken += child.getBoundingClientRect().width;
+        }
+        const clusterStyle = getComputedStyle(cluster);
+        const gap = parseFloat(clusterStyle.columnGap) || 0;
+        let room = cluster.clientWidth - taken - gap * Math.max(0, cluster.children.length - 1);
+        const crumbs = crumb.closest('[class*="_crumbs"]');
+        if (crumbs !== null) {
+          const rowGap = parseFloat(getComputedStyle(crumbs).columnGap) || 0;
+          let count = 0;
+          for (const child of crumbs.children) {
+            if (child.contains(crumb)) continue;
+            room -= child.getBoundingClientRect().width;
+            count += 1;
+          }
+          room -= rowGap * count;
+        }
+        return Math.max(0, Math.floor(room));
       };
 
       /** Text width, box width, and the distance the text has to travel. */
@@ -1462,10 +1527,23 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
             clearInterval(marqueeTraceTimer);
             marqueeTraceTimer = 0;
           }
-        }, 100);
+        }, 200);
       };
 
       const apply = (crumb) => {
+        // Widen the title to the room the header has *before* measuring it, so `shift`
+        // answers the question that matters: does the title still not fit once it is allowed
+        // to use the space around it?
+        const before = getComputedStyle(crumb);
+        const pad = (parseFloat(before.paddingLeft) || 0) + (parseFloat(before.paddingRight) || 0);
+        const room = roomFor(crumb);
+        if (room > 0) {
+          const cap = Math.floor(before.boxSizing === 'border-box' ? room : Math.max(0, room - pad));
+          const value = `${cap}px`;
+          if (crumb.style.getPropertyValue('max-width') !== value) {
+            crumb.style.setProperty('max-width', value, 'important');
+          }
+        }
         const metrics = measure(crumb);
         if (metrics.shift < 2) {
           stop(crumb);
@@ -1497,7 +1575,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         syncCalls += 1;
         const crumbs = document.querySelectorAll(CRUMB);
         if (!document.documentElement.hasAttribute('data-dshbg-on')) {
-          for (const crumb of crumbs) stop(crumb);
+          for (const crumb of crumbs) reset(crumb);
           return;
         }
         for (const crumb of crumbs) {
@@ -1571,7 +1649,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
           for (const handle of retries) clearTimeout(handle);
           resize.disconnect();
           mutations.disconnect();
-          for (const crumb of document.querySelectorAll(CRUMB)) stop(crumb);
+          for (const crumb of document.querySelectorAll(CRUMB)) reset(crumb);
         },
       };
     }
