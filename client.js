@@ -703,6 +703,29 @@ html[data-dshbg-on] [data-composer-card] {
     }
 
     /**
+     * Floating cards that must stay opaque, whatever the glass switch says.
+     *
+     * The turn navigator's hover preview (the little marks down the right edge of the
+     * transcript) paints `--dsw-alias-bg-layer-1`, and that token *is* in the remix list, so
+     * the wallpaper's transparency reaches it too - it ends up at 28% over whatever paragraph
+     * it is covering. A preview card is the one kind of surface where a translucent fill is
+     * not a style choice but a bug: the body text behind it reads straight through, and then
+     * neither the preview nor the paragraph is legible.
+     *
+     * Restoring the captured, un-remixed layer value is enough - the card keeps the host's
+     * own radius and `--dsw-elevation-panel`, so it still reads as floating. Matched on the
+     * response line rather than the bare `_preview` class, which several other modules also
+     * use for things that are not popovers.
+     */
+    function popoverCss() {
+      return `
+${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewResponse"])'])} {
+  background: var(--dshbg-raw-l1) !important;
+}
+`;
+    }
+
+    /**
      * Glass inside the transcript - file cards and code blocks. Always on.
      *
      * These are content, not chrome: they sit in the middle of the work area on top of the
@@ -787,30 +810,46 @@ ${glassPane(clamp(settings.glassBlur, 0, 40))}
     }
 
     /**
-     * A row in the sidebar's history list.
+     * The panel behind the sidebar's history list.
      *
-     * These are 32px tall and there can be twenty of them on screen, so the pane recipe is
-     * wrong twice over: a 1px border on a `content-box` row grows it, and twenty drop
-     * shadows is noise. What a row needs is just enough fill to carry its own text - the
-     * host paints nothing until you hover, which over a wallpaper leaves the whole list
-     * floating on the artwork.
+     * Rows are 2px apart (`_flatList > * + *`), so giving *each* row its own fill turns the
+     * list into a stack of pills with no hierarchy - every folder reads like every session,
+     * and the one you have open is barely distinguishable from the rest. One panel behind
+     * the whole list is what the host itself assumes, and what every app of this shape does
+     * (VS Code, ChatGPT, Claude): a flat list on a surface, with only hover and selection
+     * tinted. So the rows are left completely alone - the host's own `:hover` and
+     * `._selected` rules are the feedback, and overriding them was what made the selection
+     * disappear.
      *
-     * The search-result card is the same story one size up: it is the only place the
-     * sidebar shows a title *and* a two-line snippet, and unfrosted the snippet is
-     * unreadable. It is `border-box` with a large radius, so it can take the hairline.
+     * The ring is an inset shadow rather than a border: `_list` carries negative margins to
+     * park the scrollbar, and a 1px border on a `content-box` scroller shifts that gutter.
+     *
+     * The vertical padding is not decoration. `_list` clips its content to a rectangle, so a
+     * row painted near the bottom would show its own square corner poking through the
+     * panel's rounded one - and a hovered row is exactly when that is visible. 8px is past
+     * the point where a 10px corner has any curvature left (at y=8 the arc is 0.2px in), so
+     * no row can ever reach it.
+     *
+     * The host's `_fade` overlay (the 24px gradient at the bottom of the list) is left
+     * alone on purpose. It fades into `--dsw-specific-sidebar-fill`, and in whole-window
+     * scope that token is re-mixed too, so it is already a translucent wash rather than the
+     * solid band it would be if the token had stayed opaque. Painting over it would only
+     * trade a soft edge for a hard one.
      */
-    function glassRow(blur, border = false) {
-      const radius = Math.min(blur, 10);
-      return `  background-color: color-mix(in srgb, var(--dshbg-raw-l2) 52%, transparent) !important;${
-        border ? `\n  border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 14%, transparent) !important;` : ''
-      }
-  box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.07) !important;
+    function glassList(blur) {
+      const radius = Math.min(blur, 14);
+      return `  background-color: color-mix(in srgb, var(--dshbg-raw-l1) 48%, transparent) !important;
+  border-radius: 10px !important;
+  padding: 8px 0 !important;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--dshbg-raw-label-0) 12%, transparent),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.06) !important;
   -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
   backdrop-filter: blur(${radius}px) saturate(150%) !important;`;
     }
 
     /**
-     * Glass inside the sidebar - the new-session button, the history rows and the cost meter.
+     * Glass inside the sidebar - the new-session button, the history panel and the cost meter.
      *
      * Gated on whole-window scope, because in work-area scope the sidebar is deliberately
      * left exactly as the theme paints it. Frosting a button that sits on an opaque panel
@@ -833,18 +872,8 @@ ${glassPane(clamp(settings.glassBlur, 0, 40))}
 ${prefixed('html[data-dshbg-on]', ['[class$="_newSession"]', '.cm-footer-stack.summary:not(.rail)'])} {
 ${glassPane(blur)}
 }
-${prefixed('html[data-dshbg-on]', ['[class*="_sessionRow"]', '[class*="_projectRow"]'])} {
-${glassRow(blur)}
-}
-${prefixed('html[data-dshbg-on]', ['[class*="_searchResultRow"]'])} {
-${glassRow(blur, true)}
-}
-${prefixed('html[data-dshbg-on]', [
-  '[class*="_sessionRow"]:hover',
-  '[class*="_projectRow"]:hover',
-  '[class*="_sessionRow"][class*="_selected"]',
-])} {
-  background-color: color-mix(in srgb, var(--dshbg-raw-l2) 74%, transparent) !important;
+${prefixed('html[data-dshbg-on]', ['[class*="_treeBody"]'])} {
+${glassList(blur)}
 }
 `;
     }
@@ -1244,6 +1273,8 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         titleCss(),
         // Last, so the frosted panes are not re-painted by anything above.
         transcriptGlassCss(settings),
+        // After every glass rule: this one puts transparency *back* to opaque.
+        popoverCss(),
         composerGlassCss(settings),
         sidebarGlassCss(settings),
         statusGlassCss(settings),

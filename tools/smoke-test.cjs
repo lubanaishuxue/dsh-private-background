@@ -321,6 +321,13 @@ async function main() {
   check('code block drops the host fill through its own variable', base.css.includes('--dsl-code-block-background: transparent'));
   check('code block banner drops its fill too', base.css.includes('--dsl-code-block-banner-background-color: transparent'));
   check('code block banner is cleared directly as well', base.css.includes('[class*="_banner"]'));
+  // 转写区右侧那排标记的悬停预览卡画 --dsw-alias-bg-layer-1，那个 token 在重混列表里，
+  // 卡片于是掉到 28% 透明，背后的正文直接穿过来，两边都没法读。预览卡必须是不透明的。
+  check(
+    'hover preview card stays opaque',
+    base.css.includes(':has([class*="_previewResponse"])') &&
+      base.css.includes('var(--dshbg-raw-l1) !important'),
+  );
   // 一屏几十个芯片，模糊半径按最大值算会把 GPU 拖死；上限 10px，够用。
   const chipMax = await emit({ glassBlur: 40 });
   check('inline code chip blur is capped', chipMax.css.includes('blur(10px) saturate(150%)'));
@@ -334,23 +341,29 @@ async function main() {
   check('sidebar panes frost in whole-window scope', wide.css.includes('[class$="_newSession"]'));
   check('new-session children are not matched', !wide.css.includes('[class*="_newSession"]'));
   check('cost meter card is frosted with the sidebar', wide.css.includes('.cm-footer-stack.summary:not(.rail)'));
-  // 侧栏历史记录行：32px 高、一屏二十来行，宿主平时根本不铺底色，压在壁纸上就整片看不清。
-  // 但它们不能套 pane 配方——1px 边框会把 content-box 的行撑高，二十个投影是噪音。
-  check('history rows are frosted', wide.css.includes('[class*="_sessionRow"]'));
-  check('folder rows are frosted too', wide.css.includes('[class*="_projectRow"]'));
+  // 侧栏历史记录：行与行只隔 2px（宿主 `_flatList > * + *`），给每一行各自一块圆角玻璃
+  // 就必然变成「一串药丸」——文件夹和会话一样重，选中的那条还看不出来。正确做法是一块
+  // 面板托住整个列表，行保持平的，只靠宿主自己的 hover / _selected 上色。
+  check('history list gets one panel behind it', wide.css.includes('[class*="_treeBody"]'));
   check(
-    'history row uses the row recipe, not the pane',
-    /\[class\*="_sessionRow"\][\s\S]{0,120}?\{[^}]*backdrop-filter/.test(wide.css) &&
-      !/\[class\*="_sessionRow"\][\s\S]{0,120}?\{[^}]*0 10px 30px -14px/.test(wide.css),
+    'history panel is frosted',
+    /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*backdrop-filter/.test(wide.css),
   );
-  check('history row keeps its height (no border)', !/\[class\*="_sessionRow"\][\s\S]{0,120}?\{[^}]*border: 1px/.test(wide.css));
-  // 搜索历史的结果卡带标题 + 两行摘要，是侧栏唯一会出现成段文字的地方。
-  check('search result card is frosted', wide.css.includes('[class*="_searchResultRow"]'));
+  // 环用 inset 阴影，不用 border：_list 用负边距给滚动条让位，content-box 上 1px 边框会把
+  // 那条槽推歪。
   check(
-    'search result card can afford the hairline',
-    /\[class\*="_searchResultRow"\][\s\S]{0,120}?\{[^}]*border: 1px/.test(wide.css),
+    'history panel draws its ring without a border',
+    /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*inset 0 0 0 1px/.test(wide.css) &&
+      !/\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*border: 1px/.test(wide.css),
   );
-  check('selected history row stays visible', wide.css.includes('[class*="_sessionRow"][class*="_selected"]'));
+  // 行必须保持原样：任何一条行级背景都会把宿主的选中态盖掉，层级就没了。
+  check('history rows are left to the host', !wide.css.includes('_sessionRow') && !wide.css.includes('_projectRow'));
+  // 面板要有垂直内衬：_list 是按矩形裁内容的，贴着底边的那一行一旦 hover，自己的直角
+  // 就会从面板的圆角里戳出来。8px 已经越过 10px 圆角还有弧度的位置。
+  check(
+    'history panel keeps rows off its rounded corners',
+    /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*padding: 8px 0/.test(wide.css),
+  );
 
   // 输入框下面那条状态栏（[data-composer-dock]）自己不铺任何底色，转写区的文字直接从
   // 底下穿过去，所以它读起来是「贴着窗口边的一行散字」而不是一条状态栏。它跟输入框
