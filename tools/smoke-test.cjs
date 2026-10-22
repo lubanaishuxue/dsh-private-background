@@ -288,15 +288,23 @@ async function main() {
   // re-reads it whenever <head> changes - so overriding the probe is the whole lever.
   check('caption probe is targeted', base.css.includes('body > span[style*="--dsw-specific-sidebar-fill"]'));
   check(
-    'caption fill cleared so the wallpaper shows',
+    'caption fill cleared so the strip shows',
     /span\[style\*="--dsw-specific-sidebar-fill"\]\s*\{[^}]*background-color: transparent !important/.test(base.css),
   );
+  // Work-area scope keeps the strip solid, so the symbols have to follow the theme's own
+  // label colour - the tone palette is chosen against the wallpaper and can land
+  // dark-on-dark once the wallpaper is no longer behind them.
   check(
-    'caption symbols take the wallpaper tone',
-    /span\[style\*="--dsw-specific-sidebar-fill"\]\s*\{[^}]*color: #12161d !important/.test(base.css),
+    'work-area symbols use the theme label colour',
+    /span\[style\*="--dsw-specific-sidebar-fill"\]\s*\{[^}]*color: var\(--dshbg-raw-label-0\) !important/.test(base.css),
+  );
+  // Whole-window scope puts them straight on the artwork, so the measured tone applies.
+  check(
+    'whole-window symbols take the wallpaper tone',
+    /span\[style\*="--dsw-specific-sidebar-fill"\]\s*\{[^}]*color: #12161d !important/.test(wide.css),
     'bright gradient should yield dark symbols',
   );
-  const darkPaper = await emit({ gradient: 0 });
+  const darkPaper = await emit({ gradient: 0, fullWindow: true });
   check(
     'symbols flip on a dark wallpaper',
     /span\[style\*="--dsw-specific-sidebar-fill"\]\s*\{[^}]*color: #f7f8fa !important/.test(darkPaper.css),
@@ -305,10 +313,18 @@ async function main() {
 
   console.log('\nwindow chrome');
   check('titlebar strip selector is compound', base.css.includes('html[data-dshbg-on][data-windows-titlebar]'));
-  // In work-area scope the strip sits right above the sidebar, so clearing it outright
-  // would top the sidebar with a band of wallpaper. It has to continue the sidebar up to
-  // the live sidebar width and only then turn transparent.
-  check('strip continues the sidebar, then clears', base.css.includes('var(--dshbg-raw-sidebar) 0 var(--dsh-windows-sidebar-width, 0px), transparent var(--dsh-windows-sidebar-width, 0px)'));
+  // The strip is window chrome. Clearing it made the wallpaper show through above the work
+  // area, which only looked right while the sidebar was open: the gradient ended at
+  // --dsh-windows-sidebar-width, and that track width drops to 0px as soon as the sidebar
+  // closes, turning the whole strip back into a full-width band of wallpaper.
+  check(
+    'work-area strip stays the layout fill, full width',
+    base.css.includes('::before { background: var(--dshbg-raw-sidebar) !important; }'),
+  );
+  check(
+    'no strip geometry tied to the sidebar track width',
+    !base.css.includes('--dsh-windows-sidebar-width'),
+  );
   check('whole-window scope clears the strip outright', wide.css.includes('::before { background: transparent !important; }'));
   check('no orphaned titlebar selector', !base.css.includes('] [data-windows-titlebar]'));
   check('content radius zeroed', base.css.includes('--dsh-windows-content-radius: 0px'));

@@ -673,25 +673,33 @@ ${prefixed('html[data-dshbg-on]', [`${block} [class*="_bannerWrap"]`, `${block} 
     }
 
     /**
-     * Window chrome. The layout paints the drag strip as a `::before` over the frame's
-     * top padding filled with the sidebar colour, so at panel opacity it reads as a
-     * band. Clearing it makes the strip reveal whatever is underneath at that x
-     * position - the sidebar's own solid fill on the left, the wallpaper in the middle.
+     * Window chrome.
+     *
+     * The layout paints the drag strip as a `::before` over the frame's top padding, filled
+     * with the sidebar colour. That strip is window chrome, not work area, so in work-area
+     * scope it is left exactly as the layout paints it: one solid slice of the sidebar fill
+     * across the full width.
+     *
+     * It used to be cleared and replaced with a gradient that ended at
+     * `--dsh-windows-sidebar-width`, so the wallpaper continued above the work area while
+     * the sidebar kept its own fill. That only holds while the sidebar is open. The layout
+     * publishes the sidebar *track* width, and the track collapses to `0px` the moment the
+     * sidebar closes - so the gradient's stop landed at zero and the entire strip turned
+     * back into the full-width band of wallpaper it was introduced to remove. Closing the
+     * sidebar reproduced the original complaint exactly.
+     *
+     * The band was already wrong in a second, quieter way: over a page that forces itself
+     * opaque - the settings page does - a wallpaper strip sits directly on top of a dark
+     * sheet, so it reads as a bright bar even with the sidebar open.
+     *
+     * Whole-window scope is the one case where the strip has to clear: there the chrome is
+     * glass like everything else, and the wallpaper is meant to run behind the whole window.
      *
      * Both markers live on <html>, so they share one compound selector; a descendant
      * combinator between them never matches.
      */
     function chromeCss(settings) {
-      // In work-area scope the strip must not become a full-width slice of wallpaper: it
-      // sits directly above the sidebar, so clearing it outright leaves the sidebar topped
-      // by a bright band. The layout publishes the sidebar's live width on the frame, so
-      // the strip is painted as sidebar fill up to that x and transparent after it - the
-      // sidebar reads as one continuous surface while the work area shows the wallpaper.
-      // Collapsed means the width is `0px`, which makes the whole strip transparent, which
-      // is the right answer when there is no sidebar to continue.
-      const strip = settings.fullWindow
-        ? 'transparent'
-        : `linear-gradient(to right, var(--dshbg-raw-sidebar) 0 var(--dsh-windows-sidebar-width, 0px), transparent var(--dsh-windows-sidebar-width, 0px))`;
+      const strip = settings.fullWindow ? 'transparent' : 'var(--dshbg-raw-sidebar)';
       return `
 html[data-dshbg-on][data-windows-titlebar] ${frameSelector()}::before { background: ${strip} !important; }
 html[data-dshbg-on][data-windows-titlebar] ${frameSelector()} { --dsh-windows-content-radius: 0px; }
@@ -722,11 +730,16 @@ html[data-dshbg-on][data-windows-titlebar] ${frameSelector()} { --dsh-windows-co
      * token on `<body>`, which would drag the sidebar along and make the `--dshbg-raw-*`
      * capture on that same element self-referential.
      *
-     * Symbols are coloured from the wallpaper's measured tone rather than the user's font
-     * choice: this is about contrast against the artwork, not about reading preference.
+     * Symbols are coloured from whatever the overlay ends up sitting on, which follows the
+     * scope: whole-window scope puts them straight on the artwork, so they take the
+     * wallpaper's measured tone; work-area scope keeps the strip solid, so they take the
+     * theme's own label colour. Reusing the tone palette there would pick a colour chosen
+     * for the wallpaper and could land dark-on-dark.
      */
-    function captionCss(tone) {
-      const symbol = FONT_PALETTES[tone].primary;
+    function captionCss(settings, tone) {
+      const symbol = settings.fullWindow
+        ? FONT_PALETTES[tone].primary
+        : 'var(--dshbg-raw-label-0)';
       return `
 html[data-dshbg-on] body > span[style*="--dsw-specific-sidebar-fill"] {
   background-color: transparent !important;
@@ -854,7 +867,7 @@ html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
         chatSurfaceCss(settings),
         composerCss(settings),
         chromeCss(settings),
-        captionCss(tone),
+        captionCss(settings, tone),
         bottomRowCss(settings),
         configPageCss(settings),
         fontCss(settings, tone),
