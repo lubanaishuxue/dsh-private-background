@@ -57,6 +57,11 @@ window.__ModuleLoader__.load({
       composerSurface: 85,
       composerStyle: 'solid',
       glassBlur: 14,
+      // TEMPORARY. The menu glass fill is the one number that has to be judged by eye on
+      // a real wallpaper, so it is exposed as a slider until the user picks a value.
+      // Baking it in means: set this to the chosen number, then delete the slider block
+      // in ConfigPage and the two TEXT entries. Nothing else reads it by name.
+      menuFill: 76,
       fullWindow: false,
       font: 'theme',
       fontColor: '#f7f8fa',
@@ -129,6 +134,8 @@ window.__ModuleLoader__.load({
         glassHint: '液态玻璃让输入框、底部状态栏、头部胶囊、代码块、文件卡片、消息气泡一起变磨砂半透明，边缘带一道高光。字压在图上更容易读，因为背景被磨平了。',
         glassHintSolid: '实心：各自按上面的不透明度铺底色，没有模糊和高光。',
         glassBlur: '玻璃模糊',
+        menuFill: '菜单玻璃填充（临时）',
+        menuFillHint: '临时调试用：拖动它，然后敲 / 打开命令菜单、或者点开模型选择菜单看实际效果。数值越低越透、玻璃感越强，但背后的正文和壁纸大字也会越来越抢字。试到满意告诉我数字，我把它固化成默认值并把这个滑块删掉。',
         reset: '恢复默认',
         autoSaved: '改动即时生效并自动保存',
         diagnostics: '样式 / 激活 / 框架 / 三栏',
@@ -174,6 +181,8 @@ window.__ModuleLoader__.load({
         glassLiquid: 'Liquid glass',
         glassHint: 'Liquid glass turns the message box, the status row, the header chips, code blocks, file cards and message bubbles into frosted panes with a lit edge. Text stays readable because the backdrop is flattened, not just dimmed.',
         glassHintSolid: 'Solid: each surface just fills with its own opacity - no blur, no highlight.',
+        menuFill: 'Menu glass fill (temporary)',
+        menuFillHint: 'Scratch control: drag it, then open the / command menu or a model picker to see the real thing. Lower is more transparent and reads more like glass, but the transcript and any large wallpaper type start competing with the menu text. Tell me the number you land on and I will bake it in and delete this slider.',
         glassBlur: 'Glass blur',
         reset: 'Reset',
         autoSaved: 'Changes apply and save immediately',
@@ -235,6 +244,7 @@ window.__ModuleLoader__.load({
         ),
         composerStyle: parsed.composerStyle === 'glass' ? 'glass' : 'solid',
         glassBlur: clamp(parsed.glassBlur === undefined ? fallback.glassBlur : parsed.glassBlur, 0, 40),
+        menuFill: clamp(parsed.menuFill === undefined ? fallback.menuFill : parsed.menuFill, 30, 100),
         fullWindow: parsed.fullWindow === true,
         font: fonts.includes(parsed.font) ? parsed.font : fallback.font,
         fontColor:
@@ -746,12 +756,12 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewRes
      * cannot be made glass by lightening a host value; it has to be given both the fill and
      * the blur, or it is a 76%-transparent panel with the wallpaper unblurred behind it.
      *
-     * 76% is a measurement, not a preference. The menu is 992px wide with 12px
+     * 76% is where the measurement landed. The menu is 992px wide with 12px
      * `--dsw-alias-label-tertiary` description text, and the wallpaper behind it averages
      * `#588cad`. Compositing the fill over that backdrop gives, per alpha:
      *
      *   100% -> `#232324`, 8.5:1 against the description text (flat, no glass at all)
-     *    76% -> `#303c45`, 6.1:1  <- here
+     *    76% -> `#303c45`, 6.1:1  <- the default
      *    62% -> `#374b58`, 7.1:1  only if the description text is brightened first
      *    45% -> `#4f6c80`, 3.0:1  - below WCAG AA, and that is the host's own value
      *
@@ -764,17 +774,23 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewRes
      * the 45% failure in the first place.
      *
      * `:has()` keeps the two rules from stacking. If the composer menu ever renders on top
-     * of the primitive's material layer, both would paint 76% and composite to 94%; the
-     * third rule stands the material layer down so exactly one of them draws. Whichever
-     * layer wins, the result is one glass layer over one blur.
+     * of the primitive's material layer, both would paint the same fill and composite to
+     * `f + f(1-f)`; the third rule stands the material layer down so exactly one of them
+     * draws. Whichever layer wins, the result is one glass layer over one blur.
      *
      * The `[data-overflow-below]` fade is re-stated because the host paints it with the
      * *opaque* `--dsw-specific-menu`; over a translucent panel that gradient shows up as a
      * solid band across the bottom of the menu.
+     *
+     * The fill comes from `settings.menuFill` rather than a literal because the ratio is
+     * still on trial: it is exposed as a slider in the settings page so the value can be
+     * judged on a real wallpaper instead of a reconstructed test scene. Once it is settled,
+     * bake the number into `DEFAULTS.menuFill` and delete the slider block in `ConfigPage`.
      */
-    function menuSurfaceCss() {
+    function menuSurfaceCss(settings) {
       const menu = '[class*="_menu"]:has([class*="_itemDescription"])';
-      const glass = `  background: color-mix(in srgb, var(--dshbg-raw-l1) 76%, transparent) !important;
+      const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 30, 100);
+      const glass = `  background: color-mix(in srgb, var(--dshbg-raw-l1) ${fill}%, transparent) !important;
   -webkit-backdrop-filter: blur(40px) saturate(150%) !important;
   backdrop-filter: blur(40px) saturate(150%) !important;`;
       return `
@@ -795,7 +811,7 @@ ${prefixed('html[data-dshbg-on]', [`${menu}[data-overflow-below]::after`])} {
   background: linear-gradient(
     to bottom,
     transparent,
-    color-mix(in srgb, var(--dshbg-raw-l1) 76%, transparent)
+    color-mix(in srgb, var(--dshbg-raw-l1) ${fill}%, transparent)
   ) !important;
 }
 `;
@@ -1444,7 +1460,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         transcriptGlassCss(settings),
         // After every glass rule: this one puts transparency *back* to opaque.
         popoverCss(),
-        menuSurfaceCss(),
+        menuSurfaceCss(settings),
         tooltipGlassCss(settings),
         composerGlassCss(settings),
         sidebarGlassCss(settings),
@@ -2425,6 +2441,23 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
             settings.composerStyle === 'glass'
               ? null
               : h('p', { className: 'dshbg-hint' }, text.composerSurfaceHint),
+            // TEMPORARY scratch control. The menu fill is the one glass number that has to
+            // be judged against a real wallpaper, so it ships as a slider for a round of
+            // hands-on tuning. To bake it in: copy the chosen value into
+            // `DEFAULTS.menuFill`, then delete this block and the two `menuFill*` TEXT
+            // entries. `menuSurfaceCss` keeps reading `settings.menuFill`, so nothing else
+            // has to change - and `readSettings` keeps clamping, which is what makes an old
+            // saved value survive the slider's removal harmlessly.
+            h(Slider, {
+              label: text.menuFill,
+              value: settings.menuFill,
+              min: 30,
+              max: 100,
+              step: 1,
+              suffix: '%',
+              onChange: (value) => patchSettings({ menuFill: value }),
+            }),
+            h('p', { className: 'dshbg-hint' }, text.menuFillHint),
           ),
         );
       }

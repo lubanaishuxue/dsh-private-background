@@ -332,9 +332,11 @@ async function main() {
   // 45%（rgba(67,69,74,.45)），全靠 40px 的 backdrop-filter 糊。实测：45% 合成出来是
   // #4f6c80，说明文字只有 3.0:1 —— **不到 WCAG AA**，这就是当初正文穿过菜单的真因。
   // 76% 是量出来的下限（合成 #303c45、6.1:1），62% 会让背景上的大字透出鬼影。
+  // 这个比例目前由 settings.menuFill 驱动（设置页有个临时滑块），所以断言只校验
+  // 「有填充、带百分号」，不钉死具体数字 —— 数字由下面那条 menuFill 断言单独管。
   check(
     'menu material is dark glass, not opaque',
-    /\[data-menu-material\] > \[class\*="_material"\][\s\S]{0,40}?\{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) 76%, transparent\)/.test(
+    /\[data-menu-material\] > \[class\*="_material"\][\s\S]{0,40}?\{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) (\d{1,3})%, transparent\)/.test(
       base.css,
     ),
   );
@@ -349,7 +351,7 @@ async function main() {
   // 少给一样就是「76% 透明但背后没糊」。
   check(
     'composer command menu carries its own fill and blur',
-    /\[class\*="_menu"\]:has\(\[class\*="_itemDescription"\]\)[\s\S]{0,60}?\{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) 76%, transparent\)[\s\S]{0,300}?backdrop-filter: blur\(40px\)/.test(
+    /\[class\*="_menu"\]:has\(\[class\*="_itemDescription"\]\)[\s\S]{0,60}?\{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) (\d{1,3})%, transparent\)[\s\S]{0,300}?backdrop-filter: blur\(40px\)/.test(
       base.css,
     ),
   );
@@ -364,9 +366,24 @@ async function main() {
   // 宿主那条 overflow 渐隐画的是**不透明**的 --dsw-specific-menu，压在玻璃上就是一条实色带。
   check(
     'menu overflow fade follows the glass',
-    /\[class\*="_menu"\]:has\(\[class\*="_itemDescription"\]\)\[data-overflow-below\]::after[\s\S]{0,40}?\{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) 76%, transparent\)/.test(
+    /\[class\*="_menu"\]:has\(\[class\*="_itemDescription"\]\)\[data-overflow-below\]::after[\s\S]{0,40}?\{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) (\d{1,3})%, transparent\)/.test(
       base.css,
     ),
+  );
+  // 这个比例目前是设置页上的**临时滑块**（settings.menuFill），所以上面几条只校验
+  // 「有填充、带百分号」。这条单独校验滑块真的驱动了样式表 —— 它的意义在于：滑块拆掉、
+  // 数字固化之后，如果谁把 menuSurfaceCss 改回写死字面量，上面几条照样会过（因为
+  // DEFAULTS.menuFill 恰好等于那个数），只有这条会炸。
+  const menu88 = await emit({ menuFill: 88 });
+  check(
+    'menu fill follows the slider',
+    menu88.css.includes('var(--dshbg-raw-l1) 88%, transparent') &&
+      !menu88.css.includes('var(--dshbg-raw-l1) 76%, transparent'),
+  );
+  // 滑块拖到最左也不能把菜单拖成一张透明胶片：readSettings 有下限，落在 30%。
+  check(
+    'menu fill clamps to its floor',
+    (await emit({ menuFill: 5 })).css.includes('var(--dshbg-raw-l1) 30%, transparent'),
   );
   // 悬停卡和 tooltip 是「反色表面」：宿主的 --dsw-hovercard-bg 写死 #2C2C2E，字色写死
   // #fff / #cfd3d6，两套主题都是深的。所以不能转浅色玻璃（白字会糊掉），只能做
@@ -745,6 +762,8 @@ async function main() {
   check('composer opacity control is on the page', blob.includes('输入框不透明度'));
   check('finish control is on the page', blob.includes('液态玻璃'));
   check('panel opacity control is still there', blob.includes('面板不透明度'));
+  // 临时滑块。它是要被拆掉的东西，但拆之前必须真的出现在页面上 —— 否则用户找不到它。
+  check('temporary menu fill slider is on the page', blob.includes('菜单玻璃填充（临时）'));
 
   console.log('\nslot registration');
   check('one slot registration', base.registered.length === 1, `got ${base.registered.length}`);
