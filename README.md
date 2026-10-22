@@ -98,7 +98,13 @@
 
 **团队面板为什么不能用槽位收口。** 面板是 `createPortal` 渲染到 `document.body` 的，**不是** `conversation.session.header.actions` 的后代——`position: fixed` 只改变它画在哪里，但这里连 DOM 位置都换了。所以 `[data-slot="…header.actions"] button[class*="_member"]` 一个元素都匹配不到，规则静默失效，成员卡照旧是一块黑。宿主在面板根上写了 `data-team-panel`，这才是那个能用的钩子，而且它比哈希类名活得久。
 
-面板本身宿主已经磨砂过了（`--dsw-specific-menu` + `--dsw-menu-backdrop-filter` 画在 `::before` 上），但里面有两处画 `--dsw-alias-bg-layer-2`——成员卡和任务卡——在透光的面板里就是两个黑洞。两处用两种修法：面板内整体重混这个 token（任务卡保留自己的发丝边和圆角，只是不再不透明），成员卡额外套一层芯片配方（顶部内高光读作「可点」）。成员卡选择器是 `button[class*="_member"]`：卡的子节点叫 `_memberName` / `_memberText` / `_memberDot` / `_memberModel`，当前那张还带 `_memberCurrent`，`$=` 和裸 `*=` 都选不中；只有卡自己是 `<button>`，这条也顺手把 workflow 面板的 `_memberButton` 挡在外面。
+面板本身宿主已经磨砂过了（`--dsw-specific-menu` + `--dsw-menu-backdrop-filter` 画在 `::before` 上），但里面有两处画 `--dsw-alias-bg-layer-2`——成员卡和任务卡——在透光的面板里就是两个黑洞。
+
+**参照物是旁边的子智能体面板**：它的行完全透明，只有 hover 有底色，别的什么都没有。所以成员卡**干脆不要填充**（`background-color: transparent`），连宿主的 `--dsw-elevation-stroke` 一起去掉，只在 hover / 键盘聚焦时给一层 9% 的底色；当前会话那张卡保留宿主自己的 business-primary 内描边，否则「哪张是当前会话」就没有标记了。
+
+> 中间试过给成员卡套芯片配方（重填充 + 发丝边 + 顶部内高光），**结果是一块深藏青**。原因：芯片的填充是 `color-mix(--dshbg-raw-base 45%)`，而 `--dshbg-raw-base` 是由壁纸亮度推出来的——壁纸偏暗时「芯片」就成了深色块。没有填充就没有这种失败模式。
+
+任务卡保留一层淡色（面板内整体重混 `--dsw-alias-bg-layer-2` 到 62%），因为它是一整块正文而不是一行。成员卡选择器是 `button[class*="_member"]`：卡的子节点叫 `_memberName` / `_memberText` / `_memberDot` / `_memberModel`，当前那张还带 `_memberCurrent`，`$=` 和裸 `*=` 都选不中；只有卡自己是 `<button>`，这条也顺手把 workflow 面板的 `_memberButton` 挡在外面。
 
 **头部那排胶囊为什么用一个槽就能全选中。** `_headerActions` 这个容器里只渲染了 `renderSlot("conversation.session.header.actions")` 一个东西，所以「这个槽里的每个 button」正好等于「标题旁边那排」：智能体团队、标准模式、4 个子智能体。它们全都是宿主用 `background: 0 0; border: 0` 画的纯文字按钮，铺上玻璃才从一排散字变成一排面板。这些按钮本来没有边框，所以给的是芯片那套 `.5px` 发丝边。触发器（`_trigger` / `_switcherTrigger`）用 `:not()` 排除掉——给一个开下拉的按钮常驻一块底色，读起来像「按下去没弹起来」，玻璃应该只出现在弹出来的面板里。
 
@@ -128,6 +134,8 @@
 所以分成两半：**clip 在样式表里，距离由 JS 量出来交给 Web Animation**。
 
 - 动的是 `text-indent` 而不是 `transform`。要动的是元素**内部**的文字；`transform` 会把整个盒子——连悬停底色和点击区域——拖到旁边那几个胶囊上面去。
+- **动效是 CSS 动画，不是 Web Animation**。WAAPI 的动画是 JS 持有的对象，任何一次重新 `sync()` 都能取消或替换它——而宿主会重渲染头部，标题节点被摘挂一次，挂在它身上的动画就被静默取消。声明式 CSS 在元素回到文档时由样式引擎自动重新生效，重渲染杀不死它。JS 只写三样东西：`data-dshbg-mq` 属性（开关）、`--dshbg-mq-loop`（距离）、`--dshbg-mq-dur`（时长），而且**只在值真的变了才写**——重写自定义属性会让动画从零重新开始。
+- `paint()` 写样式表前会先比字符串。替换 `<style>` 的 textContent 等于把整张表重建，表里的 CSS 动画会全部从头开始——每次 store commit 都重写一遍相同的表，标题就会一直被打回起点。
 - **单向匀速、无缝循环**：文字一直往左走，走完「文字宽 + 32px 间距」就回到起点，而那一帧和出发那一帧像素级重合，所以看不出接缝。循环距离用未取整的文字宽度算——取整会在每次接缝留下不到一个像素的跳动。
 - 接缝靠 `::after` 复制一份文字：`content: attr(data-dshbg-mq)`，文字通过属性传进去。**不去碰 React 管的文本节点**——不复制的话，每个循环里有一半时间是空盒子；复制两份则永远填满。
 - 距离用 `Range` 量文字本身，不是 `scrollWidth`。`Range` 报的是文字宽度，和盒子怎么裁无关，动画跑着也照样准；`scrollWidth` 读的正是 `text-indent` 在挪的那个内容边缘，动画一跑，每次重量都在读自己被挪过的结果。
@@ -223,7 +231,7 @@ client.js
 node tools/smoke-test.cjs
 ```
 
-148 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、液态玻璃三档归属与两套配方（面板 / 芯片）、底部状态栏、头部胶囊、用户气泡、费用明细胶囊与头部那颗的隐藏、团队面板（portal 与内层 token 重混）、标题滚动的选择器 / 测量方式 / 无缝循环 / 自激防护、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
+159 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、液态玻璃三档归属与两套配方（面板 / 芯片）、底部状态栏、头部胶囊、用户气泡、费用明细胶囊与头部那颗的隐藏、团队面板（portal 与内层 token 重混）、标题滚动的选择器 / 测量方式 / 无缝循环 / 自激防护 / 声明式动效与关键帧、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
 
 `--dump` 可打印实际产出的 CSS：
 

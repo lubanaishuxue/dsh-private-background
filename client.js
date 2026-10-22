@@ -831,10 +831,17 @@ ${glassChip(blur, '1px')}
      * Glass inside the team popover.
      *
      * The panel itself is already frosted - the host paints it with `--dsw-specific-menu`
-     * plus `--dsw-menu-backdrop-filter` on a `::before` - but its contents are not. Two
-     * surfaces in there paint `--dsw-alias-bg-layer-2`, the theme's own opaque layer: the
-     * member cards (`.member`) and the task cards (`.task`). Inside a see-through panel they
-     * read as black holes punched in it.
+     * plus `--dsw-menu-backdrop-filter` on a `::before` - and it matches the subagent panel
+     * exactly. What did not match was the contents: the member cards paint
+     * `--dsw-alias-bg-layer-2`, the theme's own opaque layer, so inside a see-through panel
+     * they read as dark blocks.
+     *
+     * The subagent panel is the reference the user pointed at: its rows are completely
+     * transparent, with a hover tint and nothing else. So the member card keeps no fill at
+     * all. An earlier version gave it the chip recipe and it still looked wrong - the chip's
+     * fill is `color-mix(--dshbg-raw-base 45%)`, and `--dshbg-raw-base` is derived from the
+     * wallpaper's tone, so over a dark wallpaper the "chip" came out as a dark navy block.
+     * No fill has no such failure mode.
      *
      * `[data-team-panel]`, not the header slot: the panel is rendered through
      * `createPortal` into `document.body`, so it is **not** a descendant of
@@ -842,31 +849,33 @@ ${glassChip(blur, '1px')}
      * nothing. The host puts `data-team-panel` on the panel root precisely as a hook, and
      * unlike a hashed class it survives rebuilds.
      *
-     * Two layers of fix, because the two surfaces are not the same kind of thing:
-     *
-     * - The panel re-mixes `--dsw-alias-bg-layer-2` for everything inside it. That is what
-     *   the task cards need: they keep their own hairline border and radius, they just stop
-     *   being opaque.
-     * - The member cards are buttons, so they get the chip recipe on top: a lit top edge
-     *   reads as "this is clickable" where a flat tint would not.
+     * Task cards keep a light tint (the panel re-mixes `--dsw-alias-bg-layer-2` for
+     * everything inside it) because they are blocks of prose, not rows - but they lose the
+     * opacity that made them black holes.
      *
      * `button[class*="_member"]` and not `[class*="_member"]`: the card's children are
      * `_memberName`, `_memberNameText`, `_memberText`, `_memberDot` and `_memberModel`, and
      * the card for the current session also carries `_memberCurrent` - so neither `$=` nor a
      * bare `*=` picks out the card alone. Only the card itself is a button, which also keeps
-     * the workflow-run panel's `_memberButton` out of reach even if that panel ever grows the
-     * same data attribute.
+     * the workflow-run panel's `_memberButton` out of reach.
      */
     function menuGlassCss(settings) {
       if (settings.composerStyle !== 'glass') return '';
-      const blur = clamp(settings.glassBlur, 0, 40);
       const teamPanel = '[data-team-panel]';
+      const memberCard = `${teamPanel} button[class*="_member"]`;
       return `
 ${prefixed('html[data-dshbg-on]', [teamPanel])} {
   --dsw-alias-bg-layer-2: color-mix(in srgb, var(--dshbg-raw-l2) 62%, transparent) !important;
 }
-${prefixed('html[data-dshbg-on]', [`${teamPanel} button[class*="_member"]`])} {
-${glassChip(blur)}
+${prefixed('html[data-dshbg-on]', [memberCard])} {
+  background-color: transparent !important;
+  box-shadow: none !important;
+}
+${prefixed('html[data-dshbg-on]', [`${memberCard}:hover`, `${memberCard}:focus-visible`])} {
+  background-color: color-mix(in srgb, var(--dshbg-raw-label-0) 9%, transparent) !important;
+}
+${prefixed('html[data-dshbg-on]', [`${memberCard}[class*="_memberCurrent"]`])} {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dsw-alias-state-business-primary) 40%, transparent) !important;
 }
 `;
     }
@@ -922,6 +931,13 @@ ${prefixed('html[data-dshbg-on]', [CRUMB])} {
 ${prefixed('html[data-dshbg-on]', [`${CRUMB}[data-dshbg-mq]`])}::after {
   content: attr(data-dshbg-mq);
   margin-left: ${MARQUEE_GAP}px;
+}
+@keyframes dshbg-marquee {
+  from { text-indent: 0px; }
+  to { text-indent: var(--dshbg-mq-loop, 0px); }
+}
+${prefixed('html[data-dshbg-on]', [`${CRUMB}[data-dshbg-mq]`])} {
+  animation: dshbg-marquee var(--dshbg-mq-dur, 6000ms) linear infinite;
 }
 `;
     }
@@ -1188,7 +1204,17 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
      * marquee dozens of times a second. A few timed re-syncs after boot cover the case where
      * the header has not been laid out yet when the plugin starts.
      *
-     * Everything is cancelled when the wallpaper is off, because the matching
+     * The motion itself is a **CSS animation**, not a Web Animation. That is deliberate: a
+     * WAAPI animation is a JS-owned object, so anything that re-runs `sync()` can cancel or
+     * replace it - and the host re-renders the header, which detaches and re-attaches the
+     * title and silently kills whatever animation was attached to it. Declarative CSS is
+     * re-applied by the style engine whenever the element comes back, so the scroll survives
+     * every re-render. JS only writes three things: the `data-dshbg-mq` attribute that turns
+     * the animation on, and the `--dshbg-mq-loop` / `--dshbg-mq-dur` custom properties that
+     * set its distance and duration. Those are written only when they actually change,
+     * because re-writing a custom property restarts the animation from zero.
+     *
+     * Everything is dropped when the wallpaper is off, because the matching
      * `text-overflow: clip` lives in the activation-scoped stylesheet. Left running without
      * it, a scrolling title would still pin its ellipsis to the right edge.
      */
@@ -1202,23 +1228,26 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         return { sync() {}, dispose() {} };
       }
 
-      /** @type {WeakMap<Element, {loop: number, animation: Animation}>} */
-      const running = new WeakMap();
       /** @type {WeakSet<Element>} */
       const observed = new WeakSet();
       let timer = 0;
       let disposed = false;
       let probe = '';
 
+      /**
+       * Take the marquee back off an element.
+       *
+       * With the motion living in CSS, "stopping" is just dropping the attribute and the two
+       * custom properties it feeds - there is no animation object to cancel, which is the
+       * whole point: nothing in JS can restart or interrupt the scroll.
+       */
       const stop = (crumb) => {
         // The repeat only exists to feed the loop. Leaving it behind would draw the title
         // twice in a box that is no longer scrolling.
         crumb.removeAttribute('data-dshbg-mq');
-        const entry = running.get(crumb);
-        if (entry === undefined) return;
-        entry.animation.cancel();
+        crumb.style.removeProperty('--dshbg-mq-loop');
+        crumb.style.removeProperty('--dshbg-mq-dur');
         crumb.style.removeProperty('min-width');
-        running.delete(crumb);
       };
 
       /** Text width, box width, and the distance the text has to travel. */
@@ -1236,9 +1265,9 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
           text = 0;
         }
         // `scrollWidth` as a fallback only: it is wrong exactly when it matters most (while
-        // an animation is running), but it is better than nothing if Range is unavailable.
-        // With the repeat attached the line is two copies plus the gap, so the fallback has
-        // to undo that first - otherwise each pass measures its own repeat and the loop
+        // the text is shifted), but it is better than nothing if Range is unavailable. With
+        // the repeat attached the line is two copies plus the gap, so the fallback has to
+        // undo that first - otherwise each pass measures its own repeat and the loop
         // distance grows on every sync.
         if (!(text > 0)) {
           const line = Math.max(0, crumb.scrollWidth - padding);
@@ -1257,11 +1286,11 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
        * failure is invisible in a screenshot - a title that does not scroll looks exactly
        * like a title that fits - so it leaves its numbers behind where they can be read back
        * off disk when the plugin is running inside a packaged app with no devtools.
-       * Deduplicated, so a steady state writes nothing.
+       * Deduplicated on everything except the timestamp, so a steady state writes nothing.
        */
       const record = (crumb, metrics, note) => {
         try {
-          const payload = JSON.stringify({
+          const payload = {
             on: document.documentElement.hasAttribute('data-dshbg-on'),
             n: document.querySelectorAll(CRUMB).length,
             cls: String(crumb.className ?? '').slice(0, 48),
@@ -1272,19 +1301,53 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
             sw: crumb.scrollWidth,
             mq: crumb.hasAttribute('data-dshbg-mq') ? 1 : 0,
             note,
-            at: Date.now(),
-          });
-          if (payload === probe) return;
-          probe = payload;
-          window.localStorage.setItem(MARQUEE_PROBE, payload);
+          };
+          const signature = JSON.stringify(payload);
+          if (signature === probe) return;
+          probe = signature;
+          window.localStorage.setItem(MARQUEE_PROBE, JSON.stringify({ ...payload, at: Date.now() }));
         } catch {
           // Diagnostics must never be able to break the marquee.
         }
       };
 
+      /**
+       * TEMPORARY: sample the title's computed `text-indent` a few times after it starts
+       * moving. A screenshot cannot tell a scrolling title from a stuck one, and this is the
+       * only way to see what the animation is actually doing inside a packaged app.
+       */
+      let traced = false;
+      const trace = (crumb) => {
+        if (traced) return;
+        traced = true;
+        const samples = [];
+        let ticks = 0;
+        const handle = setInterval(() => {
+          if (disposed) {
+            clearInterval(handle);
+            return;
+          }
+          const style = getComputedStyle(crumb);
+          samples.push([
+            Date.now(),
+            style.textIndent,
+            style.animationName,
+            style.animationPlayState,
+            crumb.clientWidth,
+            crumb.scrollWidth,
+          ]);
+          if (++ticks < 15) return;
+          clearInterval(handle);
+          try {
+            window.localStorage.setItem(`${MARQUEE_PROBE}.trace`, JSON.stringify(samples));
+          } catch {
+            // Same rule as above.
+          }
+        }, 800);
+      };
+
       const apply = (crumb) => {
         const metrics = measure(crumb);
-        const previous = running.get(crumb);
         if (metrics.shift < 2) {
           stop(crumb);
           record(crumb, metrics, 'fits');
@@ -1292,31 +1355,22 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         }
         // The repeat is what makes the loop seamless, and its text has to track the title:
         // a renamed session keeps the same crumb node, so the attribute is refreshed on
-        // every pass rather than only when the animation is (re)built.
+        // every pass rather than only when the distance changes.
         const text = crumb.textContent ?? '';
+        if (crumb.getAttribute('data-dshbg-mq') !== text) crumb.setAttribute('data-dshbg-mq', text);
         // Unrounded: the seam is exact only if the distance equals the measured text width
         // plus the gap. Rounding to whole pixels leaves a sub-pixel jump on every loop.
         const loop = metrics.text + MARQUEE_GAP;
-        if (previous !== undefined && previous.loop === loop && previous.animation.playState !== 'idle') {
-          // Same geometry as last time: leave the animation alone, but re-pin - `sync()`
-          // clears the pin before measuring - and keep the repeat in sync with the title.
-          if (crumb.getAttribute('data-dshbg-mq') !== text) crumb.setAttribute('data-dshbg-mq', text);
-          if (metrics.pin > 0) crumb.style.setProperty('min-width', `${metrics.pin}px`, 'important');
-          return;
+        const distance = `-${loop.toFixed(2)}px`;
+        // Writing these unconditionally would restart the CSS animation on every sync, which
+        // is the one thing a marquee cannot survive. Only touch them when they move.
+        if (crumb.style.getPropertyValue('--dshbg-mq-loop') !== distance) {
+          crumb.style.setProperty('--dshbg-mq-loop', distance);
+          crumb.style.setProperty('--dshbg-mq-dur', `${Math.max(3000, Math.round((loop / MARQUEE_SPEED) * 1000))}ms`);
         }
-        stop(crumb);
-        if (crumb.getAttribute('data-dshbg-mq') !== text) crumb.setAttribute('data-dshbg-mq', text);
         if (metrics.pin > 0) crumb.style.setProperty('min-width', `${metrics.pin}px`, 'important');
-        const total = Math.max(3000, Math.round((loop / MARQUEE_SPEED) * 1000));
-        const animation = crumb.animate(
-          [
-            { textIndent: '0px', offset: 0 },
-            { textIndent: `-${loop.toFixed(2)}px`, offset: 1 },
-          ],
-          { duration: total, iterations: Infinity, easing: 'linear' },
-        );
-        running.set(crumb, { loop, animation });
         record(crumb, metrics, 'scroll');
+        trace(crumb);
       };
 
       const sync = () => {
@@ -1408,6 +1462,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
 
       let disposed = false;
       let measureToken = 0;
+      let lastCss = null;
 
       const paint = () => {
         if (disposed) return;
@@ -1416,7 +1471,15 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         const root = document.documentElement;
         if (on) root.setAttribute('data-dshbg-on', '');
         else root.removeAttribute('data-dshbg-on');
-        tag.textContent = on ? buildCss(settings, activeImage, toneOf(luma)) : '';
+        // Replacing a `<style>` element's text replaces every rule in it, which restarts
+        // every CSS animation the sheet defines - including the title marquee. `paint()` is
+        // called on each store commit, so writing an identical sheet would reset the scroll
+        // to the beginning for no reason.
+        const next = on ? buildCss(settings, activeImage, toneOf(luma)) : '';
+        if (next !== lastCss) {
+          lastCss = next;
+          tag.textContent = next;
+        }
         // Turning the wallpaper off also drops the `text-overflow: clip` that the marquee
         // depends on, so the animations have to follow the stylesheet, not the setting.
         marquee.sync();

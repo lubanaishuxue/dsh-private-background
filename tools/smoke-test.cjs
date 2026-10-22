@@ -388,10 +388,16 @@ async function main() {
     'team panel remixes its inner layer token',
     /\[data-team-panel\]\s*\{[^}]*--dsw-alias-bg-layer-2: color-mix/.test(glass.css),
   );
-  check('team roster member card is frosted', glass.css.includes(MEMBER_SEL));
+  check('team roster member card is addressed', glass.css.includes(MEMBER_SEL));
   const memberRule = glass.css.slice(glass.css.indexOf(`${MEMBER_SEL} {`), glass.css.indexOf(`${MEMBER_SEL} {`) + 400);
-  check('member card is a chip, not a second pane', memberRule.includes('inset 0 1px 0 0') && !memberRule.includes('0 10px 30px'));
-  check('member card keeps the hairline border', memberRule.includes('border: .5px solid'));
+  // 参照物是子智能体面板：它的行完全透明，只有 hover 有底色。芯片配方试过，不行 ——
+  // 它的填充是 color-mix(--dshbg-raw-base 45%)，而 raw-base 由壁纸亮度推出来，
+  // 深色壁纸下那张卡就是一块深藏青。没有填充就没有这种失败模式。
+  check('member card loses its opaque fill', /member"\]\s*\{[^}]*background-color: transparent !important/.test(glass.css));
+  check('member card loses the elevation stroke too', memberRule.includes('box-shadow: none'));
+  check('member card tints on hover instead', /member"\]:(?:hover|focus-visible)/.test(glass.css));
+  // 当前会话那张卡靠宿主自己的 business-primary 内描边区分，透明之后这条必须补回来。
+  check('current member card keeps its ring', glass.css.includes('_memberCurrent"]'));
   // 槽位收口是错的：面板被 portal 走了，这条选择器一个元素都匹配不到。留着它只会让
   // 以后的人以为「已经收口过了」，而实际生效的是另一条。
   check('member card is no longer scoped to the header slot', !glass.css.includes('header.actions"] button[class*="_member"]'));
@@ -433,9 +439,17 @@ async function main() {
   check('marquee loop distance is not rounded', CODE.includes('loop.toFixed(2)'));
   check('marquee drops the repeat when it stops', CODE.includes("removeAttribute('data-dshbg-mq')"));
   check('marquee keeps the repeat in sync with the title', CODE.includes("getAttribute('data-dshbg-mq') !== text"));
-  // 单向、匀速、无限循环：关键帧只有两个，中间没有停顿也没有回程。
+  // 单向、匀速、无限循环：关键帧只有 from/to，中间没有停顿也没有回程。
   check('marquee animates one direction only', !CODE.includes("easing: 'ease-in-out'"));
   check('marquee travels at a constant speed', CODE.includes('loop / MARQUEE_SPEED'));
+  // 动效搬到 CSS 里了。WAAPI 的动画是 JS 持有的对象，宿主每次重渲染把标题摘挂一次，
+  // 挂在它身上的动画就被静默取消 —— 而声明式 CSS 在元素回到文档时会自己重新生效。
+  check('marquee motion is declarative, not WAAPI', !CODE.includes('crumb.animate(') && !CODE.includes('animation.cancel'));
+  check('marquee animation is gated on the repeat attribute', /\[data-dshbg-mq\]\s*\{\s*animation: dshbg-marquee/.test(base.css.replace(/\n/g, '')));
+  check('marquee distance travels through a custom property', CODE.includes('--dshbg-mq-loop'));
+  // 重写自定义属性会让动画从零重新开始 —— 所以只在值真的变了才写。
+  check('marquee rewrites the distance only when it changes', CODE.includes("getPropertyValue('--dshbg-mq-loop') !== distance"));
+  check('marquee leaves a trace of the computed indent', CODE.includes('MARQUEE_PROBE}.trace'));
   check('marquee dropped the fixed-duration formula', !CODE.includes('7000 + shift * 60'));
   // 头部可能在还没有宽度的时候就挂载了，第一次测量读到 0 会直接放弃。
   check('marquee re-syncs after boot', /const retries = \[[^\]]+\]\.map/.test(CODE));
@@ -592,6 +606,13 @@ async function main() {
   // selector in a comma list, leaving the rest as bare selectors that match
   // unconditionally. Every selector the plugin emits must be activation-scoped.
   const selectors = [];
+  // `@keyframes` 的 `from` / `to` 也是「选择器」形状，但它们不是选择器、也不需要激活前缀。
+  // 先把整个 at-rule 块挖掉再扫，否则每次加动画都会误报。
+  const keyframes = [];
+  const withoutKeyframes = base.css.replace(/@keyframes\s+([\w-]+)\s*\{((?:[^{}]*\{[^{}]*\})*)\s*\}/g, (_, name, body) => {
+    keyframes.push({ name, body });
+    return '';
+  });
   const headerRe = /(?:^|\})\s*([^{}]+)\{/g;
   // Commas inside `:is(...)` / `:has(...)` belong to one selector, not to a list - splitting
   // on every comma would cut `:is(span, button)` in half and then complain that `button)...`
@@ -614,7 +635,7 @@ async function main() {
     return parts;
   };
   let match;
-  while ((match = headerRe.exec(base.css)) !== null) {
+  while ((match = headerRe.exec(withoutKeyframes)) !== null) {
     for (const part of splitSelectors(match[1])) {
       const selector = part.trim();
       if (selector.length > 0) selectors.push(selector);
@@ -623,6 +644,15 @@ async function main() {
   const unscoped = selectors.filter((selector) => !selector.startsWith('html[data-dshbg-on]'));
   check('every selector carries the activation prefix', unscoped.length === 0, unscoped.slice(0, 3).join(' | '));
   check('selector scan saw the whole sheet', selectors.length >= 18, `parsed ${selectors.length}`);
+  // 动画本体在 @keyframes 里，它只许动 text-indent。用 transform 会把整个盒子（连悬停
+  // 底色和点击区域）一起拖走；动别的属性则可能把标题盒子的宽度牵进布局反馈。
+  const marqueeFrames = keyframes.find((frame) => frame.name === 'dshbg-marquee');
+  check('marquee keyframes exist', marqueeFrames !== undefined);
+  if (marqueeFrames !== undefined) {
+    check('marquee keyframes only move text-indent', marqueeFrames.body.includes('text-indent') && !marqueeFrames.body.includes('transform'));
+    check('marquee keyframes take their distance from a variable', marqueeFrames.body.includes('var(--dshbg-mq-loop'));
+    check('marquee keyframes go one way only', marqueeFrames.body.includes('from') && marqueeFrames.body.includes('to') && !marqueeFrames.body.includes('%'));
+  }
 
   console.log(`\n${failures.length === 0 ? 'PASS' : `FAIL (${failures.length})`}`);
   if (DUMP) {
