@@ -407,10 +407,10 @@ async function main() {
     menu88.css.includes('var(--dshbg-raw-l1) 88%, transparent') &&
       !menu88.css.includes('var(--dshbg-raw-l1) 76%, transparent'),
   );
-  // 滑块拖到最左也不能把菜单拖成一张透明胶片：readSettings 有下限，落在 30%。
+  // 滑块拖到最左也不能把菜单拖成一张透明胶片：readSettings 有下限，落在 20%。
   check(
     'menu fill clamps to its floor',
-    (await emit({ menuFill: 5 })).css.includes('var(--dshbg-raw-l1) 30%, transparent'),
+    (await emit({ menuFill: 5 })).css.includes('var(--dshbg-raw-l1) 20%, transparent'),
   );
   // 模糊半径是同一个故事的第二条滑块：填充和模糊是一对，只调一边等于把问题挪个位置。
   const menu12 = await emit({ menuBlur: 12 });

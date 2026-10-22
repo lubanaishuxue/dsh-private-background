@@ -254,7 +254,7 @@ window.__ModuleLoader__.load({
         ),
         composerStyle: parsed.composerStyle === 'glass' ? 'glass' : 'solid',
         glassBlur: clamp(parsed.glassBlur === undefined ? fallback.glassBlur : parsed.glassBlur, 0, 40),
-        menuFill: clamp(parsed.menuFill === undefined ? fallback.menuFill : parsed.menuFill, 30, 100),
+        menuFill: clamp(parsed.menuFill === undefined ? fallback.menuFill : parsed.menuFill, 20, 100),
         menuBlur: clamp(parsed.menuBlur === undefined ? fallback.menuBlur : parsed.menuBlur, 0, 64),
         fullWindow: parsed.fullWindow === true,
         font: fonts.includes(parsed.font) ? parsed.font : fallback.font,
@@ -803,7 +803,7 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewRes
      */
     function menuSurfaceCss(settings) {
       const menu = '[class*="_menu"]:has([class*="_itemDescription"])';
-      const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 30, 100);
+      const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
       const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
       // The glass goes on the *surface*, not on the `_material` child, and this is the whole
       // fix for "the menu blur does nothing".
@@ -999,7 +999,7 @@ ${glassChip(blur)}
     function composerGlassCss(settings) {
       if (settings.composerStyle !== 'glass') return '';
       const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
-      const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 30, 100);
+      const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
       return `
 ${prefixed('html[data-dshbg-on]', ['[data-composer-card]'])} {
   position: relative !important;
@@ -1043,7 +1043,7 @@ ${prefixed('html[data-dshbg-on]', ['[data-composer-card]::before'])} {
      */
     function rightPanelGlassCss(settings) {
       const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
-      const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 30, 100);
+      const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
       const panel = '[data-sidebar-right-panel]';
       return `
 ${prefixed('html[data-dshbg-on]', [panel])} {
@@ -2578,7 +2578,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
             h(Slider, {
               label: text.menuFill,
               value: settings.menuFill,
-              min: 30,
+              min: 20,
               max: 100,
               step: 1,
               suffix: '%',

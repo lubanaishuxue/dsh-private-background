@@ -187,7 +187,7 @@ html[data-windows-titlebar] .cm-footer-stack.summary:not(.rail) {
 > **⚠️ 这两个数字目前是临时可调的。** 上面那张表是拿复刻场景量出来的，但真实壁纸千差万别，而且**填充和模糊是一对，不能单独调**：半径越大背景磨得越平，压住文字所需的填充就越少，而填充越少才越像玻璃。40px 恰好是「壁纸已经糊成一片平色、认不出形状」的那一档，这既是当初被迫把填充推到 76% 的原因，也是「玻璃感不强」的另一半。所以设置页上并排放了两条滑块：
 >
 > - **菜单背景模糊（临时）** — `settings.menuBlur`，0–64px，默认 40（宿主真值）
-> - **菜单玻璃填充（临时）** — `settings.menuFill`，30–100%，默认 76
+> - **菜单玻璃填充（临时）** — `settings.menuFill`，20–100%，默认 76
 >
 > 拖到满意之后，固化步骤是：把两个数字写进 `DEFAULTS.menuBlur` / `DEFAULTS.menuFill`，然后删掉 `ConfigPage` 里那一节滑块和 `TEXT` 里的 `menuBlur` / `menuBlurHint` / `menuFill` / `menuFillHint` 四条。`menuSurfaceCss` 继续读这两个 setting 不用动，`readSettings` 的 clamp 也保留 —— 这样老用户 localStorage 里存的值会被静默夹到合法区间，不会因为滑块消失而出错。
 >
