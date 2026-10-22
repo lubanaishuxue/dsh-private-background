@@ -351,21 +351,45 @@ async function main() {
   check('new-session children are not matched', !wide.css.includes('[class*="_newSession"]'));
   check('cost meter card is frosted with the sidebar', wide.css.includes('.cm-footer-stack.summary:not(.rail)'));
   // 侧栏历史记录：行与行只隔 2px（宿主 `_flatList > * + *`），给每一行各自一块圆角玻璃
-  // 就必然变成「一串药丸」——文件夹和会话一样重，选中的那条还看不出来。而一块内缩的卡片
-  // 在这个布局里也没有参照物（宿主用负边距把列表铺到侧栏边），短列表下还会留一大块空板。
-  // 正解是把侧栏**这一列**自己的填充调厚，列表一个字都不碰。
-  // 相对量断言，不写死数字：侧栏那一档必须比普通面板高 24 个点，否则就等于没加厚。
-  const baseAlpha = /--dsw-alias-bg-base: color-mix\(in srgb, var\(--dshbg-raw-base\) (\d+)%/.exec(wide.css);
-  const sidebarAlpha = /--dsw-specific-sidebar-fill: color-mix\(in srgb, var\(--dshbg-raw-sidebar\) (\d+)%/.exec(wide.css);
+  // 就必然变成「一串药丸」——文件夹和会话一样重，选中的那条还看不出来。所以是一整块背景
+  // 托住列表，但**按内容收缩**（随对话增加而变高），不是撑满整列留一块空板子。
+  check('history list gets a block behind it', wide.css.includes('[class*="_treeBody"]'));
   check(
-    'sidebar column gets its own opacity tier',
-    baseAlpha !== null && sidebarAlpha !== null && Number(sidebarAlpha[1]) - Number(baseAlpha[1]) === 24,
+    'history block shrink-wraps its rows',
+    /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*flex: 0 1 auto/.test(wide.css) &&
+      /\[class\*="_treeBody"\] \[class\*="_list"\][\s\S]{0,40}?\{[^}]*flex: 0 1 auto/.test(wide.css),
   );
-  check('work-area scope leaves the sidebar fill alone', !base.css.includes('--dsw-specific-sidebar-fill:'));
+  // 宿主 `_list` 是 `flex: 1`（basis 0%），在 auto 高度的父容器里会塌成 0，所以上面那条
+  // 内层规则不是冗余，是必需品。
+  check('history block is frosted', /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*backdrop-filter/.test(wide.css));
+  // 环用 inset 阴影，不用 border：_list 用负边距给滚动条让位，content-box 上 1px 边框会把
+  // 那条槽推歪。
+  check(
+    'history block draws its ring without a border',
+    /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*inset 0 0 0 1px/.test(wide.css) &&
+      !/\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*border: 1px/.test(wide.css),
+  );
+  check(
+    'history block keeps rows off its rounded corners',
+    /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*padding: 6px 0/.test(wide.css),
+  );
   // 行必须保持原样：任何一条行级背景都会把宿主的选中态盖掉，层级就没了。
   check('history rows are left to the host', !wide.css.includes('_sessionRow') && !wide.css.includes('_projectRow'));
-  // 也不能在列表里画卡片：试过两版（每行一块 / 整块面板），都因为贴边布局没有对齐参照而难看。
-  check('no card is drawn inside the sidebar list', !wide.css.includes('_treeBody'));
+  // 宿主的 _fade 钉在 _treeBody 底部；块一收缩，它就压在最后一行上白掉一层。
+  check('history block drops the host fade', /\[class\*="_treeBody"\] \[class\*="_fade"\][\s\S]{0,40}?\{[^}]*display: none/.test(wide.css));
+  // 三样东西共用一对边：新会话按钮（宿主自带 margin: 0 2px）、历史块、计费器。
+  // 块的右边要多补一个 edge-inset——`_listArea` 的负边距把容器自身撑宽了 12px，
+  // 只写 2px 会让块比按钮正好宽 12px（复刻页量过）。
+  check(
+    'history block lines up with the new-session button',
+    /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*margin-left: 2px/.test(wide.css) &&
+      /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*margin-right: calc\(var\(--dsh-session-list-edge-inset\) \+ 2px\)/.test(wide.css),
+  );
+  // 计费器是 width:100%，再叠 margin 会溢出 4px，所以必须同时把宽度交回 auto。
+  check(
+    'cost meter lines up with the new-session button',
+    /\.cm-footer-stack\.summary:not\(\.rail\)[\s\S]{0,600}?width: auto[\s\S]{0,60}?margin-inline: 2px/.test(wide.css),
+  );
 
   // 输入框下面那条状态栏（[data-composer-dock]）自己不铺任何底色，转写区的文字直接从
   // 底下穿过去，所以它读起来是「贴着窗口边的一行散字」而不是一条状态栏。它跟输入框

@@ -499,17 +499,14 @@ window.__ModuleLoader__.load({
      * deliberately *not* re-mixed unless the user asks for a whole-window background,
      * which is what keeps the sidebar untouched by default.
      *
-     * Its `lift` is much larger than the others, and that is not elevation - it is the
-     * sidebar's own opacity tier. The column holds 13px labels over a full-bleed photo,
-     * so it needs a steadier backdrop than a panel does; at the plain surface value the
-     * history list reads as text floating on the artwork. The extra weight goes on the
-     * *column*, not on the rows, because the host lays the list out flush to the sidebar
-     * edge (it cancels `_root`'s padding with a negative margin), so any card drawn inside
-     * it has nothing to line up with - see `sidebarGlassCss`.
+     * It also keeps `lift: 0`, unlike every other surface. Thickening the whole column
+     * (tried in 2.16, `lift: 24`) makes the sidebar read as one flat slab and loses the
+     * wallpaper entirely behind it; the history list carries its own block instead - see
+     * `historyBlockCss`.
      */
     const SURFACE_TOKENS = [
       { token: '--dsw-alias-bg-base', raw: 'base', lift: 0 },
-      { token: '--dsw-specific-sidebar-fill', raw: 'sidebar', lift: 24, sidebarOnly: true },
+      { token: '--dsw-specific-sidebar-fill', raw: 'sidebar', lift: 0, sidebarOnly: true },
       { token: '--dsw-alias-bg-layer-1', raw: 'l1', lift: 8 },
       { token: '--dsw-specific-input-major', raw: 'input', lift: 8 },
       { token: '--dsw-specific-selector', raw: 'selector', lift: 8 },
@@ -850,24 +847,66 @@ ${glassPane(clamp(settings.glassBlur, 0, 40))}
     }
 
     /**
+     * The block behind the sidebar's history list.
+     *
+     * It is sized by its content, not by the column: `flex: 0 1 auto` on the wrapper and
+     * `flex: 0 1 auto` on the scroller inside it, so the block grows one row per session
+     * and stops at the bottom of the column when the list gets long. The host's own
+     * `flex: 1` on both would stretch the block to the full remaining height, which leaves
+     * a large empty pane under a short list.
+     *
+     * The inner scroller has to have its flex-basis put back to `auto` as well. `flex: 1`
+     * is `1 1 0%`, and a `0%` basis inside an auto-height parent resolves to zero height -
+     * the block would collapse to its padding.
+     *
+     * Width: the block lines up with the new-session button above it and the cost meter
+     * below it. Those three were all different widths. The button sits at `margin: 0 2px`
+     * inside the sidebar's 12px padding; the list area's box is *wider* than the sidebar's
+     * content box, because the host cancels `_root`'s 12px right padding with a negative
+     * margin so the scrollbar can hug the window edge; and the meter takes the full content
+     * box. So the left inset is the button's 2px, and the right inset is that same 2px plus
+     * the edge inset the list area just cancelled - measured, not guessed: 2px alone leaves
+     * the block exactly 12px wider than the button on the right.
+     *
+     * The vertical padding is not decoration: `_list` clips its content to a rectangle, so
+     * a row painted at the block's edge would show its own square corner through the
+     * rounded one, and a hovered row is exactly when that is visible. 6px is past the point
+     * where an 8px corner still has curvature left (at y=6 the arc is 0.25px in).
+     *
+     * The host's `_fade` is switched off here. It is a 24px gradient pinned to the bottom of
+     * `_treeBody`, which in the host's layout is the bottom of the whole column - far away
+     * from the last row. Once the block shrink-wraps, that gradient lands on top of the last
+     * session and dims it for no reason. The block's own edge is the boundary instead.
+     */
+    function historyBlockCss(settings) {
+      const blur = clamp(settings.glassBlur, 0, 40);
+      const radius = Math.min(blur, 14);
+      const block = '[class*="_treeBody"]';
+      return `
+${prefixed('html[data-dshbg-on]', [block])} {
+  flex: 0 1 auto !important;
+  margin-left: 2px !important;
+  margin-right: calc(var(--dsh-session-list-edge-inset) + 2px) !important;
+  padding: 6px 0 !important;
+  background-color: color-mix(in srgb, var(--dshbg-raw-l1) 52%, transparent) !important;
+  border-radius: 8px !important;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--dshbg-raw-label-0) 12%, transparent),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.06) !important;
+  -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
+  backdrop-filter: blur(${radius}px) saturate(150%) !important;
+}
+${prefixed('html[data-dshbg-on]', [`${block} [class*="_list"]`])} {
+  flex: 0 1 auto !important;
+}
+${prefixed('html[data-dshbg-on]', [`${block} [class*="_fade"]`])} {
+  display: none !important;
+}
+`;
+    }
+
+    /**
      * Glass inside the sidebar - the new-session button and the cost meter.
-     *
-     * **The history list gets nothing, and that is the fix.** Three attempts at decorating
-     * it are worth recording, because two of them look reasonable on paper:
-     *
-     * 1. A fill per row. Rows sit 2px apart (`_flatList > * + *`), so this becomes a stack
-     *    of pills: every folder reads like every session, and overriding the host's own
-     *    `:hover` / `._selected` tint made the open session disappear into the crowd.
-     * 2. One panel behind the whole list, on `_treeBody`. Better hierarchy, but the host
-     *    lays the list out flush to the sidebar edge - `_root` pads by the edge inset and
-     *    `_listArea` cancels it again with a negative margin - so a card drawn there is
-     *    inset from nothing and aligned to nothing. It also has to be `flex: 1` (or fight
-     *    `_list`'s `flex: 1 1 0%` to shrink-wrap), which leaves a large empty slab under
-     *    the last session whenever the list is short.
-     * 3. What actually works: raise the column's own fill (`--dsw-specific-sidebar-fill`,
-     *    via `SURFACE_TOKENS`) and leave the list completely alone. One surface, flat rows,
-     *    host hover and selection intact - the same shape VS Code, ChatGPT and Claude use.
-     *    Nothing new is drawn, so there is nothing to misalign.
      *
      * Gated on whole-window scope, because in work-area scope the sidebar is deliberately
      * left exactly as the theme paints it. Frosting a button that sits on an opaque panel
@@ -878,6 +917,11 @@ ${glassPane(clamp(settings.glassBlur, 0, 40))}
      * `--dsw-alias-bg-layer-1`, neither of which is glass by itself, so both get the full
      * recipe rather than a token nudge.
      *
+     * The meter also carries the same 2px inline inset as `historyBlockCss`, so the three
+     * stacked things in the sidebar - button, list block, meter - share one pair of edges.
+     * Without it the meter takes the sidebar's whole content box and hangs 2px past the
+     * button on each side.
+     *
      * The button is matched with `[class$=...]`, not `[class*=...]`: its children are
      * `_newSessionContent`, `_newSessionLabel`, `_newSessionLabelMask` and
      * `_newSessionShortcut`, every one of which contains `_newSession` as a substring and
@@ -887,10 +931,15 @@ ${glassPane(clamp(settings.glassBlur, 0, 40))}
       if (!settings.fullWindow) return '';
       const blur = clamp(settings.glassBlur, 0, 40);
       return `
-${prefixed('html[data-dshbg-on]', ['[class$="_newSession"]', '.cm-footer-stack.summary:not(.rail)'])} {
+${prefixed('html[data-dshbg-on]', ['[class$="_newSession"]'])} {
 ${glassPane(blur)}
 }
-`;
+${prefixed('html[data-dshbg-on]', ['.cm-footer-stack.summary:not(.rail)'])} {
+${glassPane(blur)}
+  width: auto !important;
+  margin-inline: 2px !important;
+}
+${historyBlockCss(settings)}`;
     }
 
     /**
