@@ -649,6 +649,35 @@ html[data-dshbg-on] [data-composer-card] {
     }
 
     /**
+     * The small-pane variant, for inline code.
+     *
+     * Same idea, three differences, all of them about being 20px tall and appearing dozens
+     * of times in one screen:
+     *
+     * - More fill (45% against the pane's 22%). Inline code has to stay distinguishable
+     *   from the prose around it; at 22% it dissolves into the wallpaper and the monospace
+     *   run stops reading as a token. 45% is where 12px monospace in the light label colour
+     *   still clears 5:1 against a mid-bright wallpaper - below that the chips are pretty
+     *   but unreadable, which is the one thing a code token cannot be.
+     * - No drop shadow, only the top inner highlight. Fifteen floating shadows in a
+     *   paragraph is noise, and the hairline border already lifts the chip off the page.
+     * - The border stays at the host's `.5px`, only its colour changes. Going to 1px would
+     *   add 1px to every chip's box, and these are inline elements - a hundred of them in
+     *   one paragraph is a hundred little reflows of the line they sit on.
+     * - Blur capped at 10px. The backdrop is already blurred at the `html::before` layer,
+     *   so a bigger radius buys nothing visually while multiplying the cost by the number
+     *   of chips on screen.
+     */
+    function glassChip(blur) {
+      const radius = Math.min(blur, 10);
+      return `  background-color: color-mix(in srgb, var(--dshbg-raw-base) 45%, transparent) !important;
+  border: .5px solid color-mix(in srgb, var(--dshbg-raw-label-0) 14%, transparent) !important;
+  box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.08) !important;
+  -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
+  backdrop-filter: blur(${radius}px) saturate(150%) !important;`;
+    }
+
+    /**
      * Glass inside the transcript - file cards and code blocks. Always on.
      *
      * These are content, not chrome: they sit in the middle of the work area on top of the
@@ -671,10 +700,16 @@ html[data-dshbg-on] [data-composer-card] {
      *   primary hook; `_file` alone would also catch the 24px composer chip and the
      *   changed-files row, so the class fallback requires the card's own `_fileBody` child.
      *   Both halves of that fallback are local names, so a rebuild does not move them.
+     * - Inline code is `._markdown_<hash>_<line> :not(pre)>code`, painting
+     *   `--dsw-alias-markdown-inline-code`. `_markdown_` is the stable half - note the
+     *   trailing underscore, which keeps it away from `_markdownPreview`. The `:not(pre)`
+     *   half is the host's own guard: it is what separates inline code from block code,
+     *   and reproducing it means a block-level `pre` is never turned into a chip.
      */
     function transcriptGlassCss(settings) {
       const blur = clamp(settings.glassBlur, 0, 40);
       const block = `[class*="_block_"]:has([data-code-block-banner])`;
+      const inlineCode = `[class*="_markdown_"] :not(pre) > code`;
       // Separate array entries, never one comma-joined string: `prefixed()` prefixes each
       // *item*, so a comma inside an item would leave its tail unprefixed.
       const deliverable = ['[data-presented-file]', `[class$="_file"]:has(> [class$="_fileBody"])`];
@@ -684,6 +719,9 @@ ${glassPane(blur)}
 }
 ${prefixed('html[data-dshbg-on]', [`${block} [class*="_bannerWrap"]`, `${block} pre`])} {
   background: transparent !important;
+}
+${prefixed('html[data-dshbg-on]', [inlineCode])} {
+${glassChip(blur)}
 }
 `;
     }

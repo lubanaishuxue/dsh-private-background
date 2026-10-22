@@ -275,6 +275,12 @@ async function main() {
     glass.css.includes('[class$="_file"]:has(> [class$="_fileBody"])'),
   );
   check('code block wrapper found by stable half of its class', glass.css.includes('[class*="_block_"]:has([data-code-block-banner])'));
+  // 内联 code 画的是 --dsw-alias-markdown-inline-code，不在重混列表里，一直是实色芯片。
+  // `_markdown_` 后面那个下划线很关键：它把 _markdownPreview 挡在外面。
+  check('inline code becomes a chip', glass.css.includes('[class*="_markdown_"] :not(pre) > code'));
+  // 芯片只有 20px 高，22% 的填充会糊进壁纸，等宽字体那一串就不再像一个 token。
+  check('inline code chip is filled heavier than a pane', glass.css.includes('var(--dshbg-raw-base) 45%'));
+  check('inline code chip drops the drop shadow', !/\[class\*="_markdown_"\] :not\(pre\) > code \{[^}]*0 10px 30px/.test(glass.css));
   check('blur comes from the glass slider', glass.css.includes('blur(14px) saturate(160%)'));
   check('edge highlight is present', glass.css.includes('inset 0 1px 0 0 rgb(255 255 255 / 0.10)'));
   // The banner and the `pre` paint the block's own colour on top; without clearing them
@@ -293,6 +299,10 @@ async function main() {
   check('solid mode leaves the message box flat', !/\[data-composer-card\][^{]*\{[^}]*backdrop-filter/.test(base.css));
   check('file cards stay glass in solid mode', /\[class\*="_fileCard"\][^{]*\{[^}]*backdrop-filter/.test(base.css));
   check('code blocks stay glass in solid mode', /\[class\*="_block_"\][^{]*\{[^}]*backdrop-filter/.test(base.css));
+  check('inline code stays glass in solid mode', /\[class\*="_markdown_"\][^{]*\{[^}]*backdrop-filter/.test(base.css));
+  // 一屏几十个芯片，模糊半径按最大值算会把 GPU 拖死；上限 10px，够用。
+  const chipMax = await emit({ glassBlur: 40 });
+  check('inline code chip blur is capped', chipMax.css.includes('blur(10px) saturate(150%)'));
 
   // 侧栏里的表面（新会话按钮、计费器）跟着侧栏走：只改工作区时侧栏要保持主题原样，
   // 给不透明的面板磨砂没有意义，还会成为这一列里唯一被碰过的元素。
