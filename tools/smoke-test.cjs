@@ -384,11 +384,17 @@ async function main() {
   );
   // 右侧侧边栏：玻璃铺在 panel 根上（它自己本来一点底色都没有，可见的面在更下层），
   // 下面几层 dockkit 必须停止画底色，否则盖住玻璃。
+  // 必须**只在打开时**画。panel 根是常驻的：收起时它照样占着那一列的宽度，只是把内容
+  // translateX + visibility:hidden 藏起来。无条件铺底色 = 侧栏没开也糊一大块盖住对话。
   check(
-    'right sidebar gets the same glass',
-    /\[data-sidebar-right-panel\] \{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) (\d{1,3})%, transparent\)[\s\S]{0,300}?backdrop-filter: blur\((\d{1,2})px\) saturate\(150%\)/.test(
+    'right sidebar gets the same glass while open',
+    /\[data-sidebar-right-panel\]\[data-sidebar-right-open\] \{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) (\d{1,3})%, transparent\)[\s\S]{0,300}?backdrop-filter: blur\((\d{1,2})px\) saturate\(150%\)/.test(
       base.css,
     ),
+  );
+  check(
+    'right sidebar glass is gated on open',
+    !/\[data-sidebar-right-panel\] \{/.test(base.css),
   );
   check(
     'right sidebar inner layers stop painting',
@@ -431,11 +437,19 @@ async function main() {
   check(
     'hover card becomes dark glass',
     base.css.includes('body > [class*="_card_"]') &&
-      /body > \[class\*="_card_"\][\s\S]{0,40}?\{[^}]*color-mix\(in srgb, var\(--dsw-hovercard-bg\) 74%, transparent\)/.test(
+      /body > \[class\*="_card_"\][\s\S]{0,40}?\{[^}]*color-mix\(in srgb, var\(--dsw-hovercard-bg\) (\d{1,3})%, transparent\)/.test(
         base.css,
       ),
   );
   // 卡片是 box-sizing:border-box 的固定 244px，1px border 会啃掉正文宽度，所以描边用 inset 阴影。
+  // 悬停卡是**反色表面**（宿主写死白字），所以填充有个硬下限：滑块拉到 20% 时它仍然停在
+  // 50%，否则白字会整片糊进亮壁纸里。这条盯的就是那个下限，别让人「统一」成同一个数。
+  check(
+    'hover card keeps a legibility floor',
+    /body > \[class\*="_card_"\][\s\S]{0,80}?var\(--dsw-hovercard-bg\) 50%, transparent/.test(
+      (await emit({ menuFill: 20 })).css,
+    ),
+  );
   check(
     'hover card rings without a border',
     /body > \[class\*="_card_"\][\s\S]{0,40}?\{[^}]*inset 0 0 0 1px/.test(base.css) &&
@@ -445,7 +459,7 @@ async function main() {
   // 原语一定会写上的定位属性，消息气泡没有，用它挡掉误伤。
   check(
     'tooltip bubble becomes dark glass',
-    /\[class\*="_bubble_"\]\[data-side\][\s\S]{0,40}?\{[^}]*color-mix\(in srgb, var\(--dsw-alias-tooltip-bg\) 82%, transparent\)/.test(
+    /\[class\*="_bubble_"\]\[data-side\][\s\S]{0,40}?\{[^}]*color-mix\(in srgb, var\(--dsw-alias-tooltip-bg\) (\d{1,3})%, transparent\)/.test(
       base.css,
     ),
   );

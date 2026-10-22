@@ -865,10 +865,13 @@ ${prefixed('html[data-dshbg-on]', [`${menu}[data-overflow-below]::after`])} {
      * `color-mix(<host var> N%, transparent)` rather than as a literal, so the surface
      * keeps tracking the host's palette in both themes instead of pinning a hex here.
      *
-     * 74% is a legibility floor, not a taste call. The card is 244px wide and carries
-     * 12px `#cfd3d6` path text; below about 70% the wallpaper's own highlights start
-     * competing with the glyphs, which is the same trap the transcript bubbles hit at 22%.
-     * The bubble gets 82% because it is one line of 13px text.
+     * The fill follows the shared `menuFill` slider so the hover card moves with the rest
+     * of the glass - but with a hard floor, because this surface is *inverted*: the host
+     * paints white text on it and the wallpaper behind can be bright. At the slider's low
+     * end (20%) white glyphs would disappear into the backdrop entirely, so the card never
+     * goes below 50% and the bubble never below 58% (it is a single line of 13px text).
+     * In practice the slider moves these two only in its upper half; that is deliberate.
+     * The blur, on the other hand, is shared outright: more radius buys back fill here too.
      *
      * The hover card is matched as `body > [class*="_card_"]` because the `HoverCard`
      * primitive portals it straight onto `<body>`; `_card_` on its own would also catch
@@ -880,20 +883,23 @@ ${prefixed('html[data-dshbg-on]', [`${menu}[data-overflow-below]::after`])} {
      * fixed 244px, so a 1px border would eat into its own text box.
      */
     function tooltipGlassCss(settings) {
-      const blur = clamp(settings.glassBlur, 0, 40);
-      const radius = Math.min(blur, 12);
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
+      const shared = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
+      // Inverted surfaces: hard floors, see the note above.
+      const cardFill = Math.max(shared, 50);
+      const bubbleFill = Math.max(shared, 58);
       return `
 ${prefixed('html[data-dshbg-on]', ['body > [class*="_card_"]'])} {
-  background: color-mix(in srgb, var(--dsw-hovercard-bg) 74%, transparent) !important;
+  background: color-mix(in srgb, var(--dsw-hovercard-bg) ${cardFill}%, transparent) !important;
   box-shadow: var(--dsw-shadow-lv3), inset 0 0 0 1px rgb(255 255 255 / 0.10) !important;
-  -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
-  backdrop-filter: blur(${radius}px) saturate(150%) !important;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
 }
 ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
-  background: color-mix(in srgb, var(--dsw-alias-tooltip-bg) 82%, transparent) !important;
+  background: color-mix(in srgb, var(--dsw-alias-tooltip-bg) ${bubbleFill}%, transparent) !important;
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.10) !important;
-  -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
-  backdrop-filter: blur(${radius}px) saturate(150%) !important;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
 }
 `;
     }
@@ -1032,9 +1038,16 @@ ${prefixed('html[data-dshbg-on]', ['[data-composer-card]::before'])} {
      *
      * The panel root `[data-sidebar-right-panel]` is a bare `position: absolute` box with
      * no background of its own - the visible surface is painted further down, on the
-     * dockkit host/pane. So the glass goes on the root, which spans the whole right column,
-     * and the layers underneath are told to stop painting: otherwise the host's own fill
-     * would sit on top of the glass and nothing would show through.
+     * dockkit host/pane. So the glass goes on the root, and the layers underneath are told
+     * to stop painting: otherwise the host's own fill would sit on top of the glass and
+     * nothing would show through.
+     *
+     * **`[data-sidebar-right-open]` is not optional.** The root is permanent - it keeps its
+     * box while the sidebar is closed and hides its contents with
+     * `transform: translateX(var(--dsh-sidebar-width)); visibility: hidden`. Painting a
+     * background on it unconditionally puts a full-width pane of glass over the transcript
+     * even when there is nothing in the sidebar, which is exactly what happened. The
+     * attribute is a boolean the host sets while the panel is open, so gate on it.
      *
      * Same fill and radius as the menu and the composer. No `backdrop-filter` problem here
      * in reverse: this root *is* a backdrop root for anything inside it, but the only
@@ -1046,7 +1059,7 @@ ${prefixed('html[data-dshbg-on]', ['[data-composer-card]::before'])} {
       const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
       const panel = '[data-sidebar-right-panel]';
       return `
-${prefixed('html[data-dshbg-on]', [panel])} {
+${prefixed('html[data-dshbg-on]', [`${panel}[data-sidebar-right-open]`])} {
   background: color-mix(in srgb, var(--dshbg-raw-l1) ${fill}%, transparent) !important;
   -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
   backdrop-filter: blur(${blur}px) saturate(150%) !important;
