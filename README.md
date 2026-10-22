@@ -123,7 +123,7 @@ client.js
 ## 九、改了代码之后
 
 ```bash
-node tools/smoke-test.js "D:/dsh-plugins/custom-background/client.js"
+node tools/smoke-test.cjs
 ```
 
 69 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区独立不透明度、标题栏渐变、标题栏按钮探针、设置页及其作用域、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
@@ -131,7 +131,7 @@ node tools/smoke-test.js "D:/dsh-plugins/custom-background/client.js"
 `--dump` 可打印实际产出的 CSS：
 
 ```bash
-node tools/smoke-test.js "D:/dsh-plugins/custom-background/client.js" --dump
+node tools/smoke-test.cjs --dump
 ```
 
 跑通后完全退出 DSH 再重开。插件页底部的 `样式 / 激活 / 框架 / 三栏` 四项能区分四类故障：样式表没注入、`<html>` 没标记、框架没定位到、栏数不对。
