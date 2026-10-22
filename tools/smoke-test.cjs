@@ -340,18 +340,20 @@ async function main() {
       base.css,
     ),
   );
+  // 模糊半径同理：宿主钉 40px，但 40px 把壁纸糊成一片平色，正是「玻璃感不强」的另一半。
+  // 所以它也跟着 settings.menuBlur 走（设置页第二条临时滑块），断言只校验「有半径」。
   check(
-    'menu material keeps the host 40px blur',
-    /\[data-menu-material\] > \[class\*="_material"\][\s\S]{0,300}?backdrop-filter: blur\(40px\) saturate\(150%\)/.test(
+    'menu material carries its own backdrop blur',
+    /\[data-menu-material\] > \[class\*="_material"\][\s\S]{0,300}?backdrop-filter: blur\((\d{1,2})px\) saturate\(150%\)/.test(
       base.css,
     ),
   );
   // `/` 命令菜单（.Z9Jnlq_menu）自己既没有底色、也没有 backdrop-filter —— 规则里只有
   // max-height / box-shadow / padding / position / overflow:hidden。所以底色和模糊都得插件给，
-  // 少给一样就是「76% 透明但背后没糊」。
+  // 少给一样就是「半透明但背后没糊」。
   check(
     'composer command menu carries its own fill and blur',
-    /\[class\*="_menu"\]:has\(\[class\*="_itemDescription"\]\)[\s\S]{0,60}?\{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) (\d{1,3})%, transparent\)[\s\S]{0,300}?backdrop-filter: blur\(40px\)/.test(
+    /\[class\*="_menu"\]:has\(\[class\*="_itemDescription"\]\)[\s\S]{0,60}?\{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) (\d{1,3})%, transparent\)[\s\S]{0,300}?backdrop-filter: blur\((\d{1,2})px\)/.test(
       base.css,
     ),
   );
@@ -384,6 +386,18 @@ async function main() {
   check(
     'menu fill clamps to its floor',
     (await emit({ menuFill: 5 })).css.includes('var(--dshbg-raw-l1) 30%, transparent'),
+  );
+  // 模糊半径是同一个故事的第二条滑块：填充和模糊是一对，只调一边等于把问题挪个位置。
+  const menu12 = await emit({ menuBlur: 12 });
+  check(
+    'menu blur follows the slider',
+    menu12.css.includes('backdrop-filter: blur(12px) saturate(150%)') &&
+      !menu12.css.includes('blur(40px)'),
+  );
+  // 上限 64px：再往上 CSS 也不会更糊，只是白白多算一遍。
+  check(
+    'menu blur clamps to its ceiling',
+    (await emit({ menuBlur: 200 })).css.includes('backdrop-filter: blur(64px) saturate(150%)'),
   );
   // 悬停卡和 tooltip 是「反色表面」：宿主的 --dsw-hovercard-bg 写死 #2C2C2E，字色写死
   // #fff / #cfd3d6，两套主题都是深的。所以不能转浅色玻璃（白字会糊掉），只能做
@@ -762,7 +776,8 @@ async function main() {
   check('composer opacity control is on the page', blob.includes('输入框不透明度'));
   check('finish control is on the page', blob.includes('液态玻璃'));
   check('panel opacity control is still there', blob.includes('面板不透明度'));
-  // 临时滑块。它是要被拆掉的东西，但拆之前必须真的出现在页面上 —— 否则用户找不到它。
+  // 临时滑块。它们是要被拆掉的东西，但拆之前必须真的出现在页面上 —— 否则用户找不到。
+  check('temporary menu blur slider is on the page', blob.includes('菜单背景模糊（临时）'));
   check('temporary menu fill slider is on the page', blob.includes('菜单玻璃填充（临时）'));
 
   console.log('\nslot registration');

@@ -62,6 +62,12 @@ window.__ModuleLoader__.load({
       // Baking it in means: set this to the chosen number, then delete the slider block
       // in ConfigPage and the two TEXT entries. Nothing else reads it by name.
       menuFill: 76,
+      // TEMPORARY, paired with menuFill. The host pins the menu backdrop to 40px, and at
+      // that radius the wallpaper collapses to a flat wash - which is why the fill had to
+      // go all the way up to 76% to stay legible, and why the result reads as "tinted
+      // panel" rather than glass. Blur and fill are a trade: more blur buys back fill.
+      // Exposed so the pair can be tuned against a real wallpaper.
+      menuBlur: 40,
       fullWindow: false,
       font: 'theme',
       fontColor: '#f7f8fa',
@@ -135,7 +141,9 @@ window.__ModuleLoader__.load({
         glassHintSolid: '实心：各自按上面的不透明度铺底色，没有模糊和高光。',
         glassBlur: '玻璃模糊',
         menuFill: '菜单玻璃填充（临时）',
-        menuFillHint: '临时调试用：拖动它，然后敲 / 打开命令菜单、或者点开模型选择菜单看实际效果。数值越低越透、玻璃感越强，但背后的正文和壁纸大字也会越来越抢字。试到满意告诉我数字，我把它固化成默认值并把这个滑块删掉。',
+        menuFillHint: '临时调试用：填充越低越透、玻璃感越强，但背后的正文和壁纸大字也会越来越抢字。和上面那条「背景模糊」是一对——模糊越大，填充就可以压得越低还看得清。拖动之后敲 / 打开命令菜单看实际效果。试到满意告诉我这两个数字，我固化成默认值并把两条滑块都删掉。',
+        menuBlur: '菜单背景模糊（临时）',
+        menuBlurHint: '临时调试用：宿主原本钉死在 40px。模糊越大，菜单背后那层被磨得越平，字越好读、填充就可以越低；模糊越小，背景的形状越清楚、越像玻璃，但字也越容易被带花。0 就是完全不糊。',
         reset: '恢复默认',
         autoSaved: '改动即时生效并自动保存',
         diagnostics: '样式 / 激活 / 框架 / 三栏',
@@ -182,7 +190,9 @@ window.__ModuleLoader__.load({
         glassHint: 'Liquid glass turns the message box, the status row, the header chips, code blocks, file cards and message bubbles into frosted panes with a lit edge. Text stays readable because the backdrop is flattened, not just dimmed.',
         glassHintSolid: 'Solid: each surface just fills with its own opacity - no blur, no highlight.',
         menuFill: 'Menu glass fill (temporary)',
-        menuFillHint: 'Scratch control: drag it, then open the / command menu or a model picker to see the real thing. Lower is more transparent and reads more like glass, but the transcript and any large wallpaper type start competing with the menu text. Tell me the number you land on and I will bake it in and delete this slider.',
+        menuFillHint: 'Scratch control. Lower is more transparent and reads more like glass, but the transcript and any large wallpaper type start competing with the menu text. It pairs with the blur control below: more blur buys back fill. Open the / command menu to judge it. Tell me both numbers when you are happy and I will bake them in and delete both sliders.',
+        menuBlur: 'Menu backdrop blur (temporary)',
+        menuBlurHint: 'Scratch control. The host pins this at 40px. More blur flattens the backdrop harder, so the text stays readable at a lower fill; less blur keeps the wallpaper recognisable and looks more like glass, but the glyphs get dirtier. 0 is no blur at all.',
         glassBlur: 'Glass blur',
         reset: 'Reset',
         autoSaved: 'Changes apply and save immediately',
@@ -245,6 +255,7 @@ window.__ModuleLoader__.load({
         composerStyle: parsed.composerStyle === 'glass' ? 'glass' : 'solid',
         glassBlur: clamp(parsed.glassBlur === undefined ? fallback.glassBlur : parsed.glassBlur, 0, 40),
         menuFill: clamp(parsed.menuFill === undefined ? fallback.menuFill : parsed.menuFill, 30, 100),
+        menuBlur: clamp(parsed.menuBlur === undefined ? fallback.menuBlur : parsed.menuBlur, 0, 64),
         fullWindow: parsed.fullWindow === true,
         font: fonts.includes(parsed.font) ? parsed.font : fallback.font,
         fontColor:
@@ -768,10 +779,15 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewRes
      * 45% is why the transcript used to read through the menu: it is not a matter of taste.
      * 62% looked better in isolation but let the wallpaper's *large* type (a 60px clock in
      * the test scene) ghost through the panel - a 40px blur erases 13px body text
-     * completely but cannot erase something 60px tall. 76% is the lowest value that keeps
-     * both cases clean, which is also why the blur is pinned to the host's 40px here: the
-     * ratio and the radius were calibrated together, and splitting them is what produced
-     * the 45% failure in the first place.
+     * completely but cannot erase something 60px tall. At the host's 40px, 76% is the
+     * lowest fill that keeps both cases clean.
+     *
+     * That is a *pair* though, not a constant: fill and blur trade against each other.
+     * More radius flattens the backdrop harder, so less fill is needed to hold the text
+     * up - and less fill is exactly what makes it look like glass rather than a tinted
+     * panel. 40px is also where the wallpaper stops being readable as a picture at all,
+     * which is the other half of the complaint. So both numbers are on trial together;
+     * see the note on `settings.menuFill` / `menuBlur`.
      *
      * `:has()` keeps the two rules from stacking. If the composer menu ever renders on top
      * of the primitive's material layer, both would paint the same fill and composite to
@@ -782,17 +798,19 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewRes
      * *opaque* `--dsw-specific-menu`; over a translucent panel that gradient shows up as a
      * solid band across the bottom of the menu.
      *
-     * The fill comes from `settings.menuFill` rather than a literal because the ratio is
-     * still on trial: it is exposed as a slider in the settings page so the value can be
-     * judged on a real wallpaper instead of a reconstructed test scene. Once it is settled,
-     * bake the number into `DEFAULTS.menuFill` and delete the slider block in `ConfigPage`.
+     * The fill and the radius come from `settings.menuFill` / `settings.menuBlur` rather
+     * than literals because the pair is still on trial: both are sliders in the settings
+     * page so they can be judged on a real wallpaper instead of a reconstructed test scene.
+     * Once settled, bake the numbers into `DEFAULTS` and delete the slider block in
+     * `ConfigPage`.
      */
     function menuSurfaceCss(settings) {
       const menu = '[class*="_menu"]:has([class*="_itemDescription"])';
       const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 30, 100);
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
       const glass = `  background: color-mix(in srgb, var(--dshbg-raw-l1) ${fill}%, transparent) !important;
-  -webkit-backdrop-filter: blur(40px) saturate(150%) !important;
-  backdrop-filter: blur(40px) saturate(150%) !important;`;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;`;
       return `
 ${prefixed('html[data-dshbg-on]', ['[data-menu-material] > [class*="_material"]'])} {
 ${glass}
@@ -2441,13 +2459,27 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
             settings.composerStyle === 'glass'
               ? null
               : h('p', { className: 'dshbg-hint' }, text.composerSurfaceHint),
-            // TEMPORARY scratch control. The menu fill is the one glass number that has to
-            // be judged against a real wallpaper, so it ships as a slider for a round of
-            // hands-on tuning. To bake it in: copy the chosen value into
-            // `DEFAULTS.menuFill`, then delete this block and the two `menuFill*` TEXT
-            // entries. `menuSurfaceCss` keeps reading `settings.menuFill`, so nothing else
-            // has to change - and `readSettings` keeps clamping, which is what makes an old
-            // saved value survive the slider's removal harmlessly.
+            // TEMPORARY scratch controls, a pair. The menu's blur and its fill trade against
+            // each other, so tuning one without the other only moves the problem around:
+            // the host's 40px flattens the wallpaper into a wash, which forced the fill up
+            // to 76% to keep the text readable, and 76% is what stopped it looking like
+            // glass. Exposed together so the pair can be judged on a real wallpaper.
+            //
+            // To bake them in: copy the chosen values into `DEFAULTS.menuBlur` /
+            // `DEFAULTS.menuFill`, then delete this block and the four `menuFill*` /
+            // `menuBlur*` TEXT entries. `menuSurfaceCss` keeps reading the two settings, so
+            // nothing else has to change - and `readSettings` keeps clamping, which is what
+            // makes an old saved value survive the sliders' removal harmlessly.
+            h(Slider, {
+              label: text.menuBlur,
+              value: settings.menuBlur,
+              min: 0,
+              max: 64,
+              step: 1,
+              suffix: 'px',
+              onChange: (value) => patchSettings({ menuBlur: value }),
+            }),
+            h('p', { className: 'dshbg-hint' }, text.menuBlurHint),
             h(Slider, {
               label: text.menuFill,
               value: settings.menuFill,
