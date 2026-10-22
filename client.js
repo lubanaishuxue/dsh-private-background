@@ -1587,8 +1587,41 @@ ${restores}
      * Retargeting the classes is the only thing that survives that. If the plugin is not
      * installed the selectors simply match nothing.
      *
-     * Dialogs get a near-opaque fill on top: a statistics modal at panel opacity puts
-     * the wallpaper straight through the numbers.
+     * **The statistics dialog used to be near-opaque, and that is the bug this fixes.**
+     * It is a modal `<dialog>` in the top layer whose own `::backdrop` is `#0005`, so the
+     * wallpaper behind it is already dimmed once; putting 90–97% on top of that made it a
+     * flat black sheet with no relationship to the artwork - the one page in the app that
+     * ignored the background entirely. It now takes the same treatment as everything else:
+     * the panel opacity for fill, the glass blur for frost, and the host's own radius,
+     * border and l2-shell / l1-card hierarchy left exactly as they were.
+     *
+     * Three numbers, and why they are not the pane's:
+     *
+     * - **Fill comes from `surface`, not from the temporary menu sliders.** Those two are
+     *   on trial and will be deleted; a modal this size has to hang off a setting that
+     *   stays. So the 面板不透明度 slider moves it, like it moves every other panel.
+     * - **The floor is 45%, not the pane's 22%.** This is up to 1000x800px of 12px table
+     *   text - the densest surface in the app. A pane can be nearly clear because the only
+     *   thing behind it is wallpaper; here there is a whole transcript under the scrim, and
+     *   the floor is what keeps the numbers readable at the slider's low end.
+     * - **The scrim drops from 58% to 40%.** This is the half that actually decides whether
+     *   the glass reads as glass. Wallpaper contributes `(1 - fill) x (1 - scrim)` to the
+     *   final pixel, so at 58% even a 55% dialog only lets ~19% of the artwork through -
+     *   visually indistinguishable from the solid sheet we just removed. At 40% it is ~27%,
+     *   which is enough to see the image while the fill still holds the text up.
+     *
+     * **The two toasts are not in that group.** `.cm-qguide` and `.cm-peak-alert` float
+     * straight over the transcript with no `::backdrop` at all, so the modal's number would
+     * leave them sitting on a sharp wallpaper with 12px text on top of it. They get the
+     * same recipe 22 points heavier. One fill for both was the bug this split removes.
+     *
+     * The cards inside get `--dsw-alias-bg-layer-1/2` re-mixed 16 points lighter than the
+     * shell so the host's recessed-card hierarchy survives as glass instead of flattening
+     * into one sheet.
+     *
+     * `.cm-section` is the dialog's own body wrapper, and the host gives it the same
+     * opaque base. Left alone it would paint a *second* 55% sheet inside the first and the
+     * body would read darker than the head, so inside the dialog it is stood down.
      *
      * The header entry is hidden outright. The plugin registers the same `费用明细` button
      * twice - once in `conversation.session.header.actions`, once in
@@ -1599,23 +1632,39 @@ ${restores}
      * the statistics dialog are untouched.
      */
     const CM_PANELS = ['.cm-section', '.cm-footer-stack.simple', '.cm-simple-summary'];
-    const CM_DIALOGS = ['.cm-stat-dialog', '.cm-qguide', '.cm-peak-alert'];
+    // Modal: `::backdrop` already dims the wallpaper behind it, so it can be the most
+    // transparent of the three.
+    const CM_MODAL = ['.cm-stat-dialog'];
+    // Toasts: no scrim, they float over the transcript. They need the extra fill.
+    const CM_TOASTS = ['.cm-qguide', '.cm-peak-alert'];
     const CM_HEADER_ENTRY = '[data-slot="conversation.session.header.actions"] .cm-btn';
 
     function costMeterCss(settings) {
       const alpha = clamp(settings.surface, 0, 100);
-      const dialogFill = Math.max(90, Math.min(97, alpha + 38));
-      const cardFill = Math.max(88, Math.min(96, alpha + 30));
+      const blur = clamp(settings.glassBlur, 0, 40);
+      const modalFill = clamp(alpha, 45, 72);
+      const toastFill = clamp(alpha + 22, 64, 88);
+      const cardFill = clamp(modalFill - 16, 26, 60);
+      const shell = (fill, shadow) => `  background: color-mix(in srgb, var(--dshbg-raw-l2) ${fill}%, transparent) !important;
+  box-shadow: ${shadow} !important;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  --dsw-alias-bg-layer-1: color-mix(in srgb, var(--dshbg-raw-l1) ${cardFill}%, transparent) !important;
+  --dsw-alias-bg-layer-2: color-mix(in srgb, var(--dshbg-raw-l2) ${cardFill}%, transparent) !important;`;
       return `
 ${prefixed('html[data-dshbg-on] body', CM_PANELS)} {
   background: color-mix(in srgb, var(--dshbg-raw-l2) ${alpha}%, transparent) !important;
 }
-${prefixed('html[data-dshbg-on] body', CM_DIALOGS)} {
-  background: color-mix(in srgb, var(--dshbg-raw-l2) ${dialogFill}%, transparent) !important;
-  --dsw-alias-bg-layer-1: color-mix(in srgb, var(--dshbg-raw-l1) ${cardFill}%, transparent) !important;
-  --dsw-alias-bg-layer-2: color-mix(in srgb, var(--dshbg-raw-l2) ${cardFill}%, transparent) !important;
+${prefixed('html[data-dshbg-on] body', CM_MODAL)} {
+${shell(modalFill, '0 24px 64px -24px rgb(0 0 0 / 0.55)')}
 }
-html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
+${prefixed('html[data-dshbg-on] body', CM_TOASTS)} {
+${shell(toastFill, '0 16px 40px -18px rgb(0 0 0 / 0.55)')}
+}
+${prefixed('html[data-dshbg-on] body', ['.cm-stat-dialog .cm-section'])} {
+  background: transparent !important;
+}
+html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 40%); }
 ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
   display: none !important;
 }

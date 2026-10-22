@@ -802,8 +802,64 @@ async function main() {
   console.log('\ncost-meter shim');
   check('panels retargeted', base.css.includes('html[data-dshbg-on] body .cm-section'));
   check('dialogs retargeted', base.css.includes('html[data-dshbg-on] body .cm-stat-dialog'));
-  check('dialog group is one rule', /\.cm-stat-dialog,\nhtml\[data-dshbg-on\] body \.cm-qguide/.test(base.css));
+  // 模态弹窗和两个浮层必须**分开**写。`.cm-qguide` / `.cm-peak-alert` 是直接飘在转写区
+  // 上的，没有 ::backdrop 遮罩；跟弹窗共用一个填充，它们就是「12px 字压在清晰壁纸上」。
+  check(
+    'modal and toasts are handled separately',
+    /html\[data-dshbg-on\] body \.cm-stat-dialog \{/.test(base.css) &&
+      /html\[data-dshbg-on\] body \.cm-qguide,\nhtml\[data-dshbg-on\] body \.cm-peak-alert \{/.test(
+        base.css,
+      ),
+  );
   check('modal backdrop dimmed', base.css.includes('.cm-stat-dialog::backdrop'));
+  // 费用明细弹窗曾经是 90~97% 的近实心板 —— 它自己有 ::backdrop 已经压了一层，
+  // 再叠一层近实心就等于整窗唯一一页完全无视壁纸的。现在走玻璃：面板不透明度管填充、
+  // 玻璃模糊管磨砂。断言钉三件事：是 color-mix 不是 rgb(from / 1)、带 backdrop-filter、
+  // 填充上不到 80%（超了就退回实心板）。
+  check(
+    'cost dialog is glass, not a black sheet',
+    /html\[data-dshbg-on\] body \.cm-stat-dialog \{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l2\) (\d{1,3})%, transparent\)[\s\S]{0,400}?backdrop-filter: blur\((\d{1,2})px\)/.test(
+      base.css,
+    ),
+  );
+  // 注意 `[^}]*?` 必须懒惰：`[^}]*` 会一路吃到规则体末尾再回溯，于是抓到的是
+  // `--dsw-alias-bg-layer-2` 那行的 cardFill，而不是 background 那行的 shellFill ——
+  // 两条断言都会「以错误的理由通过」。
+  check(
+    'cost dialog fill stays under opaque',
+    (() => {
+      const hit = /body \.cm-stat-dialog \{[^}]*?var\(--dshbg-raw-l2\) (\d{1,3})%/.exec(base.css);
+      return hit !== null && Number(hit[1]) <= 72;
+    })(),
+    `fill=${/body \.cm-stat-dialog \{[^}]*?var\(--dshbg-raw-l2\) (\d{1,3})%/.exec(base.css)?.[1]}`,
+  );
+  // 浮层没有遮罩，所以填充必须比弹窗重 —— 这条比的是两个数字的相对大小，不是字面量。
+  check(
+    'cost toasts carry more fill than the modal',
+    (() => {
+      const modal = /body \.cm-stat-dialog \{[^}]*?var\(--dshbg-raw-l2\) (\d{1,3})%/.exec(base.css);
+      const toast = /body \.cm-qguide,[^{]*?\{[^}]*?var\(--dshbg-raw-l2\) (\d{1,3})%/.exec(base.css);
+      return modal !== null && toast !== null && Number(toast[1]) > Number(modal[1]);
+    })(),
+    `modal=${/body \.cm-stat-dialog \{[^}]*?var\(--dshbg-raw-l2\) (\d{1,3})%/.exec(base.css)?.[1]} toast=${/body \.cm-qguide,[^{]*?\{[^}]*?var\(--dshbg-raw-l2\) (\d{1,3})%/.exec(base.css)?.[1]}`,
+  );
+  // 下限：面板不透明度拉到 0，弹窗仍然是 45% —— 1000x800 的 12px 表格不能没有底。
+  {
+    const thin = await emit({ surface: 0 });
+    check(
+      'cost dialog keeps a readability floor',
+      /html\[data-dshbg-on\] body \.cm-stat-dialog \{[^}]*var\(--dshbg-raw-l2\) 45%/.test(thin.css),
+    );
+  }
+  // 遮罩从 58% 降到 40%：壁纸最终占比是 (1-填充)x(1-遮罩)，58% 时即使填充压到 55%
+  // 壁纸也只透出 ~19%，跟刚拆掉的实心板肉眼分不出。40% 才有 ~27%。
+  check('modal backdrop lets the wallpaper through', base.css.includes('rgb(0 0 0 / 40%)'));
+  // .cm-section 是弹窗自己的内容壳，宿主也给它铺了不透明底。不管它就会在第一层玻璃里
+  // 再画第二层 55%，正文比标题栏更黑。
+  check(
+    'cost dialog body does not paint a second sheet',
+    /html\[data-dshbg-on\] body \.cm-stat-dialog \.cm-section \{[^}]*background: transparent/.test(base.css),
+  );
 
   console.log('\nlifecycle');
   const off = await emit({ mode: 'none' });
