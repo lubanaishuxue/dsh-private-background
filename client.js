@@ -1219,8 +1219,26 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
      * it, a scrolling title would still pin its ellipsis to the right edge.
      */
     const MARQUEE_PROBE = 'dsh.custom-background.marquee.probe';
+    const MARQUEE_TRACE = `${MARQUEE_PROBE}.trace`;
+    const MARQUEE_TRACE_LIMIT = 70;
+
+    /**
+     * TEMPORARY diagnostics, module scope on purpose.
+     *
+     * The plugin is re-applied often enough that a per-install buffer is thrown away before
+     * it fills, which is exactly why the first version of this trace never wrote anything.
+     * Sharing the state here means a re-install adds a row rather than starting over - and
+     * the generation number in each row is how a re-install shows up in the data.
+     */
+    let marqueeGen = 0;
+    let marqueeTrace = null;
+    let marqueeTraceTimer = 0;
+    let marqueeTraceTicks = 0;
+    let sheetWrites = 0;
+    let syncCalls = 0;
 
     function installTitleMarquee() {
+      const gen = ++marqueeGen;
       // The marquee is an enhancement, not a load-bearing part of the plugin: if the host
       // ever runs this outside a full renderer there is nothing to observe, and the title
       // simply keeps its ellipsis.
@@ -1312,38 +1330,53 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       };
 
       /**
-       * TEMPORARY: sample the title's computed `text-indent` a few times after it starts
-       * moving. A screenshot cannot tell a scrolling title from a stuck one, and this is the
-       * only way to see what the animation is actually doing inside a packaged app.
+       * TEMPORARY: what the animation is actually doing, read from the animation object
+       * rather than inferred from the box. `text-indent` alone cannot tell a scrolling title
+       * from one that restarts every few frames, and `scrollWidth` turned out to be useless
+       * here - it does not move with `text-indent` at all. `currentTime` on the running
+       * animation is the only number that answers the question: a sawtooth means restarts,
+       * a ramp means it is scrolling, and `-1` means no animation is attached at all.
        */
-      let traced = false;
-      const trace = (crumb) => {
-        if (traced) return;
-        traced = true;
-        const samples = [];
-        let ticks = 0;
-        const handle = setInterval(() => {
-          if (disposed) {
-            clearInterval(handle);
-            return;
+      const trace = () => {
+        if (marqueeTraceTimer !== 0 || marqueeTraceTicks >= MARQUEE_TRACE_LIMIT) return;
+        if (marqueeTrace === null) marqueeTrace = [];
+        marqueeTraceTimer = setInterval(() => {
+          const crumb = document.querySelector(CRUMB);
+          let row;
+          if (crumb === null) {
+            row = [Math.round(performance.now()), gen, 'gone', sheetWrites, syncCalls];
+          } else {
+            const style = getComputedStyle(crumb);
+            const running = typeof crumb.getAnimations === 'function' ? crumb.getAnimations() : [];
+            const anim = running[0];
+            row = [
+              Math.round(performance.now()),
+              gen,
+              style.textIndent,
+              style.animationName,
+              style.animationPlayState,
+              anim ? Math.round(Number(anim.currentTime) || 0) : -1,
+              anim ? anim.playState : 'none',
+              crumb.clientWidth,
+              crumb.hasAttribute('data-dshbg-mq') ? 1 : 0,
+              crumb.style.getPropertyValue('--dshbg-mq-loop'),
+              crumb.style.getPropertyValue('--dshbg-mq-dur'),
+              sheetWrites,
+              syncCalls,
+            ];
           }
-          const style = getComputedStyle(crumb);
-          samples.push([
-            Date.now(),
-            style.textIndent,
-            style.animationName,
-            style.animationPlayState,
-            crumb.clientWidth,
-            crumb.scrollWidth,
-          ]);
-          if (++ticks < 15) return;
-          clearInterval(handle);
+          marqueeTrace.push(row);
+          if (marqueeTrace.length > MARQUEE_TRACE_LIMIT) marqueeTrace.shift();
           try {
-            window.localStorage.setItem(`${MARQUEE_PROBE}.trace`, JSON.stringify(samples));
+            window.localStorage.setItem(MARQUEE_TRACE, JSON.stringify(marqueeTrace));
           } catch {
-            // Same rule as above.
+            // Same rule as `record`: diagnostics may never break the marquee.
           }
-        }, 800);
+          if (++marqueeTraceTicks >= MARQUEE_TRACE_LIMIT) {
+            clearInterval(marqueeTraceTimer);
+            marqueeTraceTimer = 0;
+          }
+        }, 100);
       };
 
       const apply = (crumb) => {
@@ -1370,11 +1403,12 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         }
         if (metrics.pin > 0) crumb.style.setProperty('min-width', `${metrics.pin}px`, 'important');
         record(crumb, metrics, 'scroll');
-        trace(crumb);
+        trace();
       };
 
       const sync = () => {
         if (disposed) return;
+        syncCalls += 1;
         const crumbs = document.querySelectorAll(CRUMB);
         if (!document.documentElement.hasAttribute('data-dshbg-on')) {
           for (const crumb of crumbs) stop(crumb);
@@ -1442,6 +1476,12 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         dispose() {
           disposed = true;
           if (timer !== 0) clearTimeout(timer);
+          // The trace keeps its buffer across installs, so the timer is the only part that
+          // belongs to this instance.
+          if (marqueeTraceTimer !== 0) {
+            clearInterval(marqueeTraceTimer);
+            marqueeTraceTimer = 0;
+          }
           for (const handle of retries) clearTimeout(handle);
           resize.disconnect();
           mutations.disconnect();
@@ -1478,6 +1518,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         const next = on ? buildCss(settings, activeImage, toneOf(luma)) : '';
         if (next !== lastCss) {
           lastCss = next;
+          sheetWrites += 1;
           tag.textContent = next;
         }
         // Turning the wallpaper off also drops the `text-overflow: clip` that the marquee

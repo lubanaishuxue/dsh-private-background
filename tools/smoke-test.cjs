@@ -450,6 +450,13 @@ async function main() {
   // 重写自定义属性会让动画从零重新开始 —— 所以只在值真的变了才写。
   check('marquee rewrites the distance only when it changes', CODE.includes("getPropertyValue('--dshbg-mq-loop') !== distance"));
   check('marquee leaves a trace of the computed indent', CODE.includes('MARQUEE_PROBE}.trace'));
+  // scrollWidth 不随 text-indent 变化，量它等于没量 —— 只有动画对象自己的 currentTime 能
+  // 区分「在滚」「每几帧重启一次」「根本没挂上」。
+  check(
+    'marquee trace reads the running animation',
+    CODE.includes('getAnimations') && CODE.includes('currentTime'),
+  );
+  check('marquee trace survives a re-install', CODE.includes('let marqueeTrace = null'));
   check('marquee dropped the fixed-duration formula', !CODE.includes('7000 + shift * 60'));
   // 头部可能在还没有宽度的时候就挂载了，第一次测量读到 0 会直接放弃。
   check('marquee re-syncs after boot', /const retries = \[[^\]]+\]\.map/.test(CODE));
