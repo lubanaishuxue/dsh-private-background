@@ -65,6 +65,7 @@
 | 输入框 | `[data-composer-card]`、底部状态栏、头部那排胶囊、底部那颗**「费用明细」胶囊**、**「回到最下面」圆钮** | 跟随「质感」开关 |
 | 侧栏 | 新会话按钮、**历史记录背后那一块（随对话增长）**、左下角计费器 | 只在**整窗**作用域下开 |
 | 菜单 | 所有走宿主菜单原语的弹出菜单（`/` 命令菜单、模型选择等） | 常开（钉回不透明） |
+| 浮层 | 工作区悬停卡、短提示 tooltip | 常开（**深色**玻璃，字色写死成白，见下） |
 
 **侧栏历史记录：一块随对话增长的背景，行保持平的。** 宿主平时不给这些行铺任何底色，只有 hover / 选中时上一点 `--dsw-alias-interactive-bg-hover`。压在壁纸上，整列标题就是「浮在画上的散字」。四种做法里只有最后一种同时满足「有底」和「不难看」：
 
@@ -86,11 +87,37 @@
 
 | 元素 | 宿主几何 | 处理 |
 |---|---|---|
-| 新会话按钮 | 侧栏 12px 内边距里再 `margin: 0 2px` | 基准，不动 |
+| 新会话按钮 | 侧栏 12px 内边距里再 `margin: 0 2px`（Windows 上宿主把它改成 `margin-left: 0`） | 基准，不动 |
 | 历史块 | `_listArea` 用 `-12px` 负边距把容器**自身**撑宽 | `margin-left: 2px` + `margin-right: calc(var(--dsh-session-list-edge-inset) + 2px)` |
-| 计费器 | `width: 100%` 吃掉整个内容盒 | `width: auto` + `margin-inline: 2px` |
+| 计费器 | 自己是**行向** flex 的 item，插件写了 `width: 100%` 才有整宽 | `width: calc(100% - 2px)` + `margin-left: 0`（非 Windows 用 `calc(100% - 4px)` + `margin-inline: 2px`） |
 
-块的右边要多补一个 `edge-inset`：只写 2px 会让它正好比按钮宽 12px（复刻页量过）。计费器则必须把 `width: 100%` 交回 `auto`，否则 100% 再叠 margin 会溢出 4px。
+块的右边要多补一个 `edge-inset`：只写 2px 会让它正好比按钮宽 12px（复刻页量过）。
+
+**计费器的宽度必须明写，不能交回 `auto`。** 这条踩了三版：v2.16 是 `width: 100%` 再叠 `margin-inline: 2px`，溢出 4px；v2.17 为了不溢出改成 `width: auto`，结果**右边短了 28px**。
+
+原因在它的父容器：计费器注册进 `sidebar.footer.action` 槽，宿主给那层写的是 `_footerActions { display: flex; width: 100% }`——**行向** flex。行向 flex 的 item 主轴是横向，`width: auto` 就是「收缩到内容宽度」，于是卡片只包住最长那行「⚡ 平价 剩余 12时56分 周五 09:00 转峰时」。插件自己那条 `width: 100%` 正是为此而写：百分比对着 `_footerActions` 的内容盒解析，也就是侧栏的整个内容盒。
+
+所以正确写法是**保留宽度、把按钮的 margin 减掉**：
+
+```css
+.cm-footer-stack.summary:not(.rail) { width: calc(100% - 4px); margin-inline: 2px; }
+html[data-windows-titlebar] .cm-footer-stack.summary:not(.rail) {
+  width: calc(100% - 2px); margin-left: 0;   /* 宿主在 Windows 上把按钮 margin-left 归零了 */
+}
+```
+
+用百分比而不是像素，是因为它跟按钮**对着同一个包含块**解析，插件不需要知道侧栏有多宽。
+
+窗口截图的实测（150% 缩放，除以 1.5 得 CSS px）可以逐条对上：
+
+| 元素 | 左 | 右 |
+|---|---|---|
+| 新会话按钮 | 12.7 | 265.3 |
+| 历史块 | 14.0 | 266.0 |
+| 计费器（v2.17 `auto`） | 14.0 | **237.3** ← 差 28 |
+| 计费器（`calc(100% - 2px)`） | 12.0 | 264.0 ✓ |
+
+侧栏内容盒宽 254，按钮 `0 2px` 后是 12..264.7；`calc(100% - 2px)` = 252，从 12 起画到 264。复刻页探针输出 `左差 0px / 右差 0px`。
 
 另外两个细节：
 
@@ -104,6 +131,37 @@
 **转写区常开**：它们是内容不是外壳，压在工作区的壁纸上面。一块实色卡片铺在壁纸中间，读起来就是画面上打了个洞。所以「质感」切回实心只说明输入框要实心，不该连带把整篇对话里的代码块和文件卡都拉回实色。
 
 **有一类表面必须钉回不透明：悬停预览卡。** 转写区右侧那排小标记，悬停时会弹出「这一问 + 三行回答」的预览卡（`xpvNua_preview`），它画的是 `--dsw-alias-bg-layer-1`，而这个 token **在**重混列表里，于是卡片掉到面板那一档的透明度，背后的正文原样穿过来——预览看不清，被它盖住的那段正文也看不清。预览卡是唯一「透明度不是风格而是 bug」的表面，所以用捕获下来的原始 layer 值钉回去；卡片自己的圆角和 `--dsw-elevation-panel` 都留着，仍然读得出浮在页面上。
+
+**悬停卡和 tooltip 反过来——它们是「反色表面」，只能做深色玻璃。**
+
+工作区那一行悬停 0.8 秒会弹出「工作区名 + 路径 + 创建时间」的卡（`WorkspaceHoverCard`），短提示（快捷键那种）是另一个 `_bubble`。两者在壁纸上都是**纯黑实心**，因为：
+
+- 悬停卡把颜色**写死在元素自己身上**：`._card_38jqx_9 { --dsw-hovercard-bg: #2C2C2E; background: var(--dsw-hovercard-bg) }`
+- 卡里的字也写死：`_hoverTitle` 是 `#fff`，`_hoverPath` / `_hoverTime` 是 `#cfd3d6`
+- 短提示画 `--dsw-alias-tooltip-bg`，暗色下是 `--dsw-static-neutral-bluish-850`，同样是静态值
+
+两个 token 都不在 `SURFACE_TOKENS` 里，重混够不到——跟「费用明细」胶囊、内联 code 芯片是同一个盲区。
+
+**但这次不能钉回不透明，也不能转浅色玻璃**：字色写死成白色，底色一浅就糊了。能做的是**深色玻璃**——保留宿主自己的颜色，只把 alpha 拿掉，再用 `backdrop-filter` 把背后磨平：
+
+```css
+body > [class*="_card_"] {
+  background: color-mix(in srgb, var(--dsw-hovercard-bg) 74%, transparent);
+  box-shadow: var(--dsw-shadow-lv3), inset 0 0 0 1px rgb(255 255 255 / 0.10);
+  backdrop-filter: blur(12px) saturate(150%);
+}
+[class*="_bubble_"][data-side] {
+  background: color-mix(in srgb, var(--dsw-alias-tooltip-bg) 82%, transparent);
+}
+```
+
+三个要点：
+
+- 写成 `color-mix(<宿主自己的变量> N%, transparent)`，不是写死十六进制。这样它**跟着宿主调色板走**，两套主题都不用改，宿主改色也跟着改。注意这里改的是 `background` 而不是变量本身——变量还是宿主的原值，所以不存在自引用。
+- **74% 是可用性下限，不是口味。** 卡宽 244px，里面是 12px 的 `#cfd3d6` 路径文字；低于 ~70% 壁纸自己的高光就会跟字抢对比度，跟转写区气泡在 22% 上踩的是同一个坑。短提示只有一行 13px 字，给 82%。
+- 描边用 **inset 阴影**，不用 `border`。卡片是 `box-sizing: border-box` 的固定 244px，1px 边框会啃掉正文宽度。
+
+选择器收口：`body > [class*="_card_"]` 是因为 `HoverCard` 原语把它 `createPortal` 到 `document.body` 上，正好是 body 的直接子节点——裸 `_card_` 会误伤不是 tooltip 的卡片。短提示用 `[data-side]` 限定，那是 tooltip 原语一定会写的定位属性，消息气泡没有。
 
 **气泡走常规 pane 配方。** 它跟文件卡、代码块同属转写区内容，22% 填充 + 磨砂。**不要**单独给它加重填充——气泡是用户消息，压在正文上面只是滚动时的瞬时重叠，加重了反而跟整篇对话的玻璃不一致。
 
@@ -127,6 +185,8 @@
 | 菜单 | `[data-menu-material] > [class*="_material"]`（兜底：`[class*="_menu"]:has([class*="_itemDescription"])`） | 原语写在菜单根上的 data 属性；兜底那条用「里面有没有那一列右对齐说明」收口 |
 | 侧栏历史块 | `[class*="_treeBody"]`（内层 `[class*="_list"]`、`[class*="_fade"]` 一起收口） | 类名是 `<hash>_treeBody`，本地名稳定；**行本身一条规则都不加**，见上 |
 | 悬停预览卡 | `[class*="_preview"]:has([class*="_previewResponse"])` | 好几个模块都用 `_preview` 命名，用「里面有没有 response 那行」收口 |
+| 工作区悬停卡 | `body > [class*="_card_"]` | `HoverCard` 原语 `createPortal` 到 `document.body`，是 body 的直接子节点；`body >` 挡掉不是 tooltip 的卡片 |
+| 短提示 tooltip | `[class*="_bubble_"][data-side]` | `data-side` 是 tooltip 原语的定位属性，消息气泡没有 |
 | 代码块 | `[class*="_block_"]:has([data-code-block-banner])` | 类名是 `_block_<hash>_<line>`，`_block_` 这半截能跨版本存活 |
 | 附件卡 | `[class*="_fileCard"]` | 类名是 `<hash>_fileCard`，`_fileCard` 是稳定那半截 |
 | 交付卡 | `[data-presented-file]`（备用：`[class$="_file"]:has(> [class$="_fileBody"])`） | 见下 |
@@ -282,13 +342,19 @@ client.js
 **7. 链接目录装的插件改完必须完全重启 DSH。**
 `client.js` 已缓存进内存，HMR 不保证换代。
 
+**8. 行向 flex 的 item 上，`width: auto` 等于「收缩到内容宽度」。**
+计费器就在 `_footerActions { display: flex }` 里，`auto` 让它只包住最长那行文字，右边短 28px。想让它占满就得**明写宽度**，而且要用百分比对着包含块算（`calc(100% - 2px)`），不要写死像素。同理，`flex: 1` 在**列向**容器里是往竖着长，不能拿来当「横向拉满」的替代品。
+
+**9. 静态色值一条规则改不完，得先看它写在哪一层。**
+同样是「黑」，三种成因三种解法：写在内层 `[class*="_material"]` 上的（菜单，`--dsw-menu-surface-fill` 45%）→ 重定向该层的 `background`；写在 `SURFACE_TOKENS` 里的（预览卡，`--dsw-alias-bg-layer-1`）→ 钉回捕获的原始值；**写在元素自己身上并且带写死字色的**（悬停卡 `--dsw-hovercard-bg: #2C2C2E` + `#fff`）→ 只能做深色玻璃，`color-mix` 保留原色去 alpha。改之前先确认字色是不是写死的，否则「变浅」会把字糊掉。
+
 ## 九、改了代码之后
 
 ```bash
 node tools/smoke-test.cjs
 ```
 
-185 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、液态玻璃四档归属与三套配方（面板 / 芯片 / 悬浮控件）、底部状态栏、头部胶囊、用户气泡、费用明细胶囊与头部那颗的隐藏、回到最下面圆钮、侧栏历史块（随内容收缩、行一条规则都没有、三处边缘对齐、关掉宿主 `_fade`）、悬停预览卡与菜单不透明、团队面板（portal 与内层 token 重混）、代码块三处底色与标题栏、标题的「放得下就不滚」与 `max-width` 还原时机、选择器 / 测量方式 / 无缝循环 / 自激防护 / 声明式动效与关键帧、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
+189 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、液态玻璃五档归属与四套配方（面板 / 芯片 / 悬浮控件 / 深色玻璃）、底部状态栏、头部胶囊、用户气泡、费用明细胶囊与头部那颗的隐藏、回到最下面圆钮、侧栏历史块（随内容收缩、行一条规则都没有、三处边缘对齐、关掉宿主 `_fade`）、计费器宽度与 Windows 下的按钮内缩、悬停预览卡与菜单不透明、悬停卡与 tooltip 的深色玻璃（描边不用 border）、团队面板（portal 与内层 token 重混）、代码块三处底色与标题栏、标题的「放得下就不滚」与 `max-width` 还原时机、选择器 / 测量方式 / 无缝循环 / 自激防护 / 声明式动效与关键帧、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
 
 `--dump` 可打印实际产出的 CSS：
 

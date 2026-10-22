@@ -763,6 +763,54 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_menu"]:has([class*="_itemDescripti
     }
 
     /**
+     * Tooltips and the workspace hover card.
+     *
+     * Both are dark on purpose: the host hardcodes `--dsw-hovercard-bg: #2C2C2E` on the
+     * card element itself and paints that card's text `#fff` / `#cfd3d6`, and the simple
+     * tooltip bubble draws `--dsw-alias-tooltip-bg`, which resolves to a *static* neutral.
+     * Neither token is in `SURFACE_TOKENS`, so neither ever followed the wallpaper - they
+     * stayed flat black rectangles floating over a frosted window.
+     *
+     * They cannot be turned light, because their label colours are hardcoded white. What
+     * they can be is dark *glass*: keep the host's own colour, drop its alpha, and blur
+     * whatever is behind it. That is the whole recipe, and it is written as
+     * `color-mix(<host var> N%, transparent)` rather than as a literal, so the surface
+     * keeps tracking the host's palette in both themes instead of pinning a hex here.
+     *
+     * 74% is a legibility floor, not a taste call. The card is 244px wide and carries
+     * 12px `#cfd3d6` path text; below about 70% the wallpaper's own highlights start
+     * competing with the glyphs, which is the same trap the transcript bubbles hit at 22%.
+     * The bubble gets 82% because it is one line of 13px text.
+     *
+     * The hover card is matched as `body > [class*="_card_"]` because the `HoverCard`
+     * primitive portals it straight onto `<body>`; `_card_` on its own would also catch
+     * cards that are not tooltips. The bubble is matched on `[data-side]`, which the
+     * tooltip primitive always sets for its placement rules and which the message bubble
+     * does not carry.
+     *
+     * The ring is an inset shadow, not a border: the card is `box-sizing: border-box` at a
+     * fixed 244px, so a 1px border would eat into its own text box.
+     */
+    function tooltipGlassCss(settings) {
+      const blur = clamp(settings.glassBlur, 0, 40);
+      const radius = Math.min(blur, 12);
+      return `
+${prefixed('html[data-dshbg-on]', ['body > [class*="_card_"]'])} {
+  background: color-mix(in srgb, var(--dsw-hovercard-bg) 74%, transparent) !important;
+  box-shadow: var(--dsw-shadow-lv3), inset 0 0 0 1px rgb(255 255 255 / 0.10) !important;
+  -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
+  backdrop-filter: blur(${radius}px) saturate(150%) !important;
+}
+${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
+  background: color-mix(in srgb, var(--dsw-alias-tooltip-bg) 82%, transparent) !important;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.10) !important;
+  -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
+  backdrop-filter: blur(${radius}px) saturate(150%) !important;
+}
+`;
+    }
+
+    /**
      * Glass inside the transcript - file cards and code blocks. Always on.
      *
      * These are content, not chrome: they sit in the middle of the work area on top of the
@@ -917,10 +965,23 @@ ${prefixed('html[data-dshbg-on]', [`${block} [class*="_fade"]`])} {
      * `--dsw-alias-bg-layer-1`, neither of which is glass by itself, so both get the full
      * recipe rather than a token nudge.
      *
-     * The meter also carries the same 2px inline inset as `historyBlockCss`, so the three
-     * stacked things in the sidebar - button, list block, meter - share one pair of edges.
-     * Without it the meter takes the sidebar's whole content box and hangs 2px past the
-     * button on each side.
+     * The meter is given a width instead of a margin, and the width is a percentage, so
+     * it lands on the button's edges without this file ever knowing their pixel values.
+     *
+     * Two facts make that work. The meter is a *row* flex item - the cost meter plugin
+     * registers into `sidebar.footer.action`, whose wrapper the host styles as
+     * `_footerActions { display: flex; width: 100% }` - so its width is content-driven
+     * unless something states one. The plugin states `width: 100%` itself, which is why
+     * the card is full width out of the box. Saying `width: auto` here (2.17.0 did) hands
+     * it back to the flex algorithm and the card shrinks to its longest line, which is
+     * what left it 28px short on the right. So: keep a width, and take the button's
+     * margins off it with `calc`.
+     *
+     * The percentage resolves against the same containing block the button uses - the
+     * sidebar's content box - so `100% - 2px` plus a 2px right margin is the button's box
+     * exactly. The button's own margin is `0 2px`, except on Windows, where the host
+     * overrides it to `margin-left: 0` to sit flush under the title bar; the second rule
+     * mirrors that so both edges agree on both platforms.
      *
      * The button is matched with `[class$=...]`, not `[class*=...]`: its children are
      * `_newSessionContent`, `_newSessionLabel`, `_newSessionLabelMask` and
@@ -930,14 +991,19 @@ ${prefixed('html[data-dshbg-on]', [`${block} [class*="_fade"]`])} {
     function sidebarGlassCss(settings) {
       if (!settings.fullWindow) return '';
       const blur = clamp(settings.glassBlur, 0, 40);
+      const meter = '.cm-footer-stack.summary:not(.rail)';
       return `
 ${prefixed('html[data-dshbg-on]', ['[class$="_newSession"]'])} {
 ${glassPane(blur)}
 }
-${prefixed('html[data-dshbg-on]', ['.cm-footer-stack.summary:not(.rail)'])} {
+${prefixed('html[data-dshbg-on]', [meter])} {
 ${glassPane(blur)}
-  width: auto !important;
+  width: calc(100% - 4px) !important;
   margin-inline: 2px !important;
+}
+${prefixed('html[data-dshbg-on][data-windows-titlebar]', [meter])} {
+  width: calc(100% - 2px) !important;
+  margin-left: 0 !important;
 }
 ${historyBlockCss(settings)}`;
     }
@@ -1340,6 +1406,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         // After every glass rule: this one puts transparency *back* to opaque.
         popoverCss(),
         menuSurfaceCss(),
+        tooltipGlassCss(settings),
         composerGlassCss(settings),
         sidebarGlassCss(settings),
         statusGlassCss(settings),

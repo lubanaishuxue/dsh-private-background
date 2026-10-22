@@ -337,6 +337,31 @@ async function main() {
       /\[data-menu-material\] > \[class\*="_material"\][\s\S]{0,40}?\{[^}]*var\(--dshbg-raw-l1\)/.test(base.css),
   );
   check('composer command menu is opaque even outside the primitive', base.css.includes('_itemDescription'));
+  // 悬停卡和 tooltip 是「反色表面」：宿主的 --dsw-hovercard-bg 写死 #2C2C2E，字色写死
+  // #fff / #cfd3d6，两套主题都是深的。所以不能转浅色玻璃（白字会糊掉），只能做
+  // 「深色玻璃」——保留宿主自己的颜色、只把 alpha 拿掉，再用 backdrop-filter 磨平背后。
+  // 用 color-mix(var(--宿主变量), transparent) 而不是写死色值，这样还跟着宿主的调色板走。
+  check(
+    'hover card becomes dark glass',
+    base.css.includes('body > [class*="_card_"]') &&
+      /body > \[class\*="_card_"\][\s\S]{0,40}?\{[^}]*color-mix\(in srgb, var\(--dsw-hovercard-bg\) 74%, transparent\)/.test(
+        base.css,
+      ),
+  );
+  // 卡片是 box-sizing:border-box 的固定 244px，1px border 会啃掉正文宽度，所以描边用 inset 阴影。
+  check(
+    'hover card rings without a border',
+    /body > \[class\*="_card_"\][\s\S]{0,40}?\{[^}]*inset 0 0 0 1px/.test(base.css) &&
+      !/body > \[class\*="_card_"\][\s\S]{0,40}?\{[^}]*border: 1px/.test(base.css),
+  );
+  // 短提示（快捷键那种）用 --dsw-alias-tooltip-bg，也是静态中性色。[data-side] 是 tooltip
+  // 原语一定会写上的定位属性，消息气泡没有，用它挡掉误伤。
+  check(
+    'tooltip bubble becomes dark glass',
+    /\[class\*="_bubble_"\]\[data-side\][\s\S]{0,40}?\{[^}]*color-mix\(in srgb, var\(--dsw-alias-tooltip-bg\) 82%, transparent\)/.test(
+      base.css,
+    ),
+  );
   // 一屏几十个芯片，模糊半径按最大值算会把 GPU 拖死；上限 10px，够用。
   const chipMax = await emit({ glassBlur: 40 });
   check('inline code chip blur is capped', chipMax.css.includes('blur(10px) saturate(150%)'));
@@ -385,10 +410,24 @@ async function main() {
     /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*margin-left: 2px/.test(wide.css) &&
       /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*margin-right: calc\(var\(--dsh-session-list-edge-inset\) \+ 2px\)/.test(wide.css),
   );
-  // 计费器是 width:100%，再叠 margin 会溢出 4px，所以必须同时把宽度交回 auto。
+  // 计费器是 `_footerActions`（行向 flex）里的 flex item，宽度必须**明写**：
+  // 交回 `auto` 就落回 flex 算法，卡片收缩到最长那行文字，右边短 28px（实测）。
+  // 宽度用百分比，再减掉按钮自己的 margin——这样它落在按钮的边上，插件不需要知道
+  // 任何像素值。
   check(
     'cost meter lines up with the new-session button',
-    /\.cm-footer-stack\.summary:not\(\.rail\)[\s\S]{0,600}?width: auto[\s\S]{0,60}?margin-inline: 2px/.test(wide.css),
+    /\.cm-footer-stack\.summary:not\(\.rail\)[\s\S]{0,600}?width: calc\(100% - 4px\)[\s\S]{0,80}?margin-inline: 2px/.test(
+      wide.css,
+    ) &&
+      !/\.cm-footer-stack\.summary:not\(\.rail\)[\s\S]{0,600}?\{[^}]*width: auto/.test(wide.css),
+  );
+  // Windows 上宿主把按钮的 margin-left 改成了 0（贴标题栏），计费器要跟着改，
+  // 否则左边会多出 2px。
+  check(
+    'cost meter follows the Windows button inset',
+    /html\[data-dshbg-on\]\[data-windows-titlebar\] \.cm-footer-stack\.summary:not\(\.rail\)[\s\S]{0,40}?\{[^}]*width: calc\(100% - 2px\)[\s\S]{0,60}?margin-left: 0/.test(
+      wide.css,
+    ),
   );
 
   // 输入框下面那条状态栏（[data-composer-dock]）自己不铺任何底色，转写区的文字直接从
