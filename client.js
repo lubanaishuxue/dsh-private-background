@@ -656,6 +656,27 @@ html[data-dshbg-on] [data-composer-card] {
     }
 
     /**
+     * The one fill every sidebar pane shares.
+     *
+     * The new-session button, the cost meter and the history block are three panes stacked
+     * in the same column over the same wallpaper, so "how black is it" has to be one
+     * number, not three. It used to be three: the meter and the button went through
+     * `glassPane` (22% of `--dshbg-raw-base`), while the history block painted 52% of
+     * `--dshbg-raw-l1` - a *different* token at more than twice the ratio, which is why the
+     * block read as a dark slab next to a light meter. Now both read this expression, so
+     * they cannot drift apart again; the smoke test asserts they contain the same string.
+     *
+     * 22% is the pane ratio, not a taste call: a pane sits in a column whose backdrop is
+     * only wallpaper, so it can afford to be nearly clear. Controls that float *over*
+     * content use `glassChip` (45%) or `glassFloat` (58%) instead.
+     */
+    const PANE_FILL = 22;
+
+    function paneFill() {
+      return `color-mix(in srgb, var(--dshbg-raw-base) ${PANE_FILL}%, transparent)`;
+    }
+
+    /**
      * The frosted-pane recipe, shared by every surface that gets the liquid-glass look.
      *
      * The wallpaper is already blurred at the `html::before` layer, so the pane's own
@@ -671,7 +692,7 @@ html[data-dshbg-on] [data-composer-card] {
      * not.
      */
     function glassPane(blur) {
-      return `  background-color: color-mix(in srgb, var(--dshbg-raw-base) 22%, transparent) !important;
+      return `  background-color: ${paneFill()} !important;
   border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent) !important;
   box-shadow:
     inset 0 1px 0 0 rgb(255 255 255 / 0.10),
@@ -736,24 +757,47 @@ html[data-dshbg-on] [data-composer-card] {
     }
 
     /**
-     * Floating cards that must stay opaque, whatever the glass switch says.
+     * The turn navigator's hover preview - the card that pops out to the left of the little
+     * marks down the right edge of the transcript.
      *
-     * The turn navigator's hover preview (the little marks down the right edge of the
-     * transcript) paints `--dsw-alias-bg-layer-1`, and that token *is* in the remix list, so
-     * the wallpaper's transparency reaches it too - it ends up at 28% over whatever paragraph
-     * it is covering. A preview card is the one kind of surface where a translucent fill is
-     * not a style choice but a bug: the body text behind it reads straight through, and then
-     * neither the preview nor the paragraph is legible.
+     * It is `xpvNua_preview`: `width: min(300px, 100cqw - 120px)`, one 13px bold prompt line
+     * plus up to three 12px caption lines, `--dsw-radius-lg`, `--dsw-elevation-panel`, and
+     * `background: var(--dsw-alias-bg-layer-1)`.
      *
-     * Restoring the captured, un-remixed layer value is enough - the card keeps the host's
-     * own radius and `--dsw-elevation-panel`, so it still reads as floating. Matched on the
-     * response line rather than the bare `_preview` class, which several other modules also
-     * use for things that are not popovers.
+     * That token *is* in the remix list, so before this rule existed the card simply
+     * followed the wallpaper and fell to ~28% - and at that fill the paragraph it is
+     * covering read straight through it, so neither the preview nor the paragraph was
+     * legible. Version 2.16 pinned it back to the captured, un-remixed layer value, i.e.
+     * fully opaque. That fixed the reading and left the one flat black rectangle in an
+     * otherwise frosted window - which is what the user spotted.
+     *
+     * So it becomes glass like everything else: the shared fill and blur from the two
+     * trial sliders, over the captured layer colour. Two things make it work here:
+     *
+     * - **No ancestor of it carries a `backdrop-filter`.** The card is a sibling of
+     *   `_scroller`, not a child (`<nav> > [scroller][marks] + [preview]`), and neither
+     *   `_slot` nor `_frame` paints one - `contain: layout` and `container-type` only
+     *   create a containing block, not a backdrop root. If the blur ever stops working
+     *   again, check that chain first (see the note on `menuSurfaceCss`).
+     * - **A hard fill floor.** This is a card lying on top of body text, not a pane beside
+     *   it: at the slider's low end the 12px caption would be fighting blurred glyphs for
+     *   the same pixels. It never goes below 50%, the same floor the workspace hover card
+     *   uses, because both are the same kind of surface. The slider moves it only in its
+     *   upper half; that is deliberate, and the blur is still shared outright.
+     *
+     * Matched on the response line rather than the bare `_preview` class, which several
+     * other modules also use for things that are not popovers (`QueueDock`'s inline
+     * preview, the file-diff hover card, the plan viewer).
      */
-    function popoverCss() {
+    function previewCardCss(settings) {
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
+      const shared = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
+      const fill = Math.max(shared, 50);
       return `
 ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewResponse"])'])} {
-  background: var(--dshbg-raw-l1) !important;
+  background: color-mix(in srgb, var(--dshbg-raw-l1) ${fill}%, transparent) !important;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
 }
 `;
     }
@@ -1105,6 +1149,18 @@ ${prefixed('html[data-dshbg-on]', [
      * `_treeBody`, which in the host's layout is the bottom of the whole column - far away
      * from the last row. Once the block shrink-wraps, that gradient lands on top of the last
      * session and dims it for no reason. The block's own edge is the boundary instead.
+     *
+     * **The fill is `paneFill()`, the same expression the cost meter and the new-session
+     * button use.** It used to be 52% of `--dshbg-raw-l1`, which is a different token at
+     * more than twice the ratio - so the block read as a dark slab with a light meter
+     * directly underneath it, which is what the user flagged. Sharing the expression is the
+     * only version of "same blackness" that cannot drift on the next edit.
+     *
+     * The ring stays an *inset shadow* rather than a `border`. That is not taste: the host
+     * does not put `box-sizing: border-box` on these sidebar boxes (its rows are
+     * content-box), so a real 1px border would grow the block by 2px in each axis and the
+     * right edge would stop lining up with the new-session button. An inset ring draws
+     * inside the box and costs no layout.
      */
     function historyBlockCss(settings) {
       const blur = clamp(settings.glassBlur, 0, 40);
@@ -1116,10 +1172,10 @@ ${prefixed('html[data-dshbg-on]', [block])} {
   margin-left: 2px !important;
   margin-right: calc(var(--dsh-session-list-edge-inset) + 2px) !important;
   padding: 6px 0 !important;
-  background-color: color-mix(in srgb, var(--dshbg-raw-l1) 52%, transparent) !important;
+  background-color: ${paneFill()} !important;
   border-radius: 8px !important;
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--dshbg-raw-label-0) 12%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent),
     inset 0 1px 0 0 rgb(255 255 255 / 0.06) !important;
   -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
   backdrop-filter: blur(${radius}px) saturate(150%) !important;
@@ -1583,8 +1639,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         titleCss(),
         // Last, so the frosted panes are not re-painted by anything above.
         transcriptGlassCss(settings),
-        // After every glass rule: this one puts transparency *back* to opaque.
-        popoverCss(),
+        previewCardCss(settings),
         menuSurfaceCss(settings),
         tooltipGlassCss(settings),
         composerGlassCss(settings),

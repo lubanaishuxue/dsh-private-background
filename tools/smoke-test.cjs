@@ -322,12 +322,32 @@ async function main() {
   check('code block banner drops its fill too', base.css.includes('--dsl-code-block-banner-background-color: transparent'));
   check('code block banner is cleared directly as well', base.css.includes('[class*="_banner"]'));
   // 转写区右侧那排标记的悬停预览卡画 --dsw-alias-bg-layer-1，那个 token 在重混列表里，
-  // 卡片于是掉到 28% 透明，背后的正文直接穿过来，两边都没法读。预览卡必须是不透明的。
+  // 卡片于是掉到 28% 透明，背后的正文直接穿过来，两边都没法读。v2.16 的修法是把卡片钉回
+  // 不透明 —— 读是能读了，但整窗只剩这一块实心黑方块，用户一眼就挑出来了。现在是玻璃：
+  // 共享两条临时滑块的填充和模糊，但填充有 50% 硬下限（它压在正文上，不是贴在壁纸上）。
   check(
-    'hover preview card stays opaque',
-    base.css.includes(':has([class*="_previewResponse"])') &&
-      base.css.includes('var(--dshbg-raw-l1) !important'),
+    'preview card becomes glass',
+    /\[class\*="_preview"\]:has\(\[class\*="_previewResponse"\]\) \{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) (\d{1,3})%, transparent\)[\s\S]{0,200}?backdrop-filter: blur\((\d{1,2})px\)/.test(
+      base.css,
+    ),
   );
+  // 别再钉回不透明：这条会拦住「把整条规则删回 var(--dshbg-raw-l1)」那种回滚。
+  check(
+    'preview card no longer pins an opaque fill',
+    !/\[class\*="_preview"\]:has\(\[class\*="_previewResponse"\]\) \{[^}]*background: var\(--dshbg-raw-l1\) !important/.test(
+      base.css,
+    ),
+  );
+  // 填充下限：滑块拉到 20% 时，预览卡仍然是 50%（12px 小字压在正文上，不能更透）。
+  {
+    const dim = await emit({ menuFill: 20 });
+    check(
+      'preview card keeps a legibility floor',
+      /\[class\*="_preview"\]:has\(\[class\*="_previewResponse"\]\) \{[^}]*var\(--dshbg-raw-l1\) 50%,/.test(
+        dim.css,
+      ),
+    );
+  }
   // 菜单的玻璃画在**表面**（[data-menu-material]）上，不画在 _material 子元素上。
   // 理由是两个朴素的：材料层是 z-index:-1，宿主只要给表面加一点背景就把它盖住；
   // 而且一层同时出 fill 和 blur 就少一个合成层。
@@ -499,6 +519,27 @@ async function main() {
     'history block keeps rows off its rounded corners',
     /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*padding: 6px 0/.test(wide.css),
   );
+  // 黑度必须和计费器一模一样。之前块是 `--dshbg-raw-l1` 52%，计费器走 glassPane 的
+  // `--dshbg-raw-base` 22% —— 两个 token、两个比例，于是块像一块黑板、底下计费器像块亮玻璃，
+  // 用户直接指出来了。现在两边都读 `paneFill()`，这条断言就是「不许再分叉」的闸：
+  // 拿计费器规则里的 background-color 去和块规则里的比，字符串必须完全相等。
+  {
+    const blockFill = /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*background-color: ([^!]+?) !important/.exec(
+      wide.css,
+    );
+    const meterFill = /\.cm-footer-stack\.summary:not\(\.rail\)[^{]*\{[^}]*background-color: ([^!]+?) !important/.exec(
+      wide.css,
+    );
+    check(
+      'history block shares the cost meter fill',
+      blockFill !== null && meterFill !== null && blockFill[1].trim() === meterFill[1].trim(),
+    );
+    // 顺便钉住那个值本身：分叉时两边一起改也是「相等」的，但那就不是 pane 配方了。
+    check(
+      'sidebar panes stay on the pane fill',
+      blockFill !== null && /var\(--dshbg-raw-base\) 22%/.test(blockFill[1]),
+    );
+  }
   // 行必须保持原样：任何一条行级背景都会把宿主的选中态盖掉，层级就没了。
   check('history rows are left to the host', !wide.css.includes('_sessionRow') && !wide.css.includes('_projectRow'));
   // 宿主的 _fade 钉在 _treeBody 底部；块一收缩，它就压在最后一行上白掉一层。
