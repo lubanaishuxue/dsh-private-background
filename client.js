@@ -126,7 +126,7 @@ window.__ModuleLoader__.load({
         glass: '质感',
         glassSolid: '实心',
         glassLiquid: '液态玻璃',
-        glassHint: '液态玻璃让输入框、代码块、文件卡片一起变磨砂半透明，边缘带一道高光。字压在图上更容易读，因为背景被磨平了。',
+        glassHint: '液态玻璃让输入框、底部状态栏、代码块、文件卡片一起变磨砂半透明，边缘带一道高光。字压在图上更容易读，因为背景被磨平了。',
         glassHintSolid: '实心：各自按上面的不透明度铺底色，没有模糊和高光。',
         glassBlur: '玻璃模糊',
         reset: '恢复默认',
@@ -172,7 +172,7 @@ window.__ModuleLoader__.load({
         glass: 'Surface finish',
         glassSolid: 'Solid',
         glassLiquid: 'Liquid glass',
-        glassHint: 'Liquid glass turns the message box, code blocks and file cards into frosted panes with a lit edge. Text stays readable because the backdrop is flattened, not just dimmed.',
+        glassHint: 'Liquid glass turns the message box, the status row, code blocks and file cards into frosted panes with a lit edge. Text stays readable because the backdrop is flattened, not just dimmed.',
         glassHintSolid: 'Solid: each surface just fills with its own opacity - no blur, no highlight.',
         glassBlur: 'Glass blur',
         reset: 'Reset',
@@ -667,11 +667,15 @@ html[data-dshbg-on] [data-composer-card] {
      * - Blur capped at 10px. The backdrop is already blurred at the `html::before` layer,
      *   so a bigger radius buys nothing visually while multiplying the cost by the number
      *   of chips on screen.
+     *
+     * `border` is a parameter rather than a constant because the same recipe is reused on
+     * block-level buttons (the cost-detail pills), where the host already draws a 1px
+     * border and shrinking it to .5px would visibly thin an edge that is not inline.
      */
-    function glassChip(blur) {
+    function glassChip(blur, border = '.5px') {
       const radius = Math.min(blur, 10);
       return `  background-color: color-mix(in srgb, var(--dshbg-raw-base) 45%, transparent) !important;
-  border: .5px solid color-mix(in srgb, var(--dshbg-raw-label-0) 14%, transparent) !important;
+  border: ${border} solid color-mix(in srgb, var(--dshbg-raw-label-0) 14%, transparent) !important;
   box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.08) !important;
   -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
   backdrop-filter: blur(${radius}px) saturate(150%) !important;`;
@@ -759,6 +763,47 @@ ${glassPane(clamp(settings.glassBlur, 0, 40))}
       return `
 ${prefixed('html[data-dshbg-on]', ['[class$="_newSession"]', '.cm-footer-stack.summary:not(.rail)'])} {
 ${pane}
+}
+`;
+    }
+
+    /**
+     * Glass on the composer's status row and on the two cost-detail entries.
+     *
+     * The row is `[data-composer-dock]`, the host's `InputBar` dock. It carries the
+     * `conversation.composer.dock` slot plus the context meter, and it paints no background
+     * of its own - which is why the transcript scrolls straight through it and the row reads
+     * as loose text sitting on the window edge rather than as a status bar.
+     *
+     * Both `费用明细` entries are the cost meter's own `.cm-btn`s: one in the session header
+     * (`conversation.session.header.actions`), one in this dock. They paint
+     * `--dsw-alias-button-elevated-fill`, which is not in `SURFACE_TOKENS`, and in the dark
+     * theme that token resolves to the static `#43454a`. A static neutral is invisible to a
+     * remix that only rewrites tokens, so these stayed black pills while everything around
+     * them went frosted.
+     *
+     * Gated on the finish switch with the composer, not always on: this row is composer
+     * chrome sitting directly under the message box, so "solid" has to mean solid here too,
+     * or the status bar would be the only frosted thing in a solid window.
+     *
+     * The pills keep their host border width (`1px`) - only the colour moves. Shrinking a
+     * block-level button's border to `.5px` thins an edge that is not inline and does not
+     * need the reflow trick.
+     */
+    function statusGlassCss(settings) {
+      if (settings.composerStyle !== 'glass') return '';
+      const blur = clamp(settings.glassBlur, 0, 40);
+      const dock = '[data-composer-dock]';
+      const pills = [`${dock} .cm-btn`, '[data-slot="conversation.session.header.actions"] .cm-btn'];
+      return `
+${prefixed('html[data-dshbg-on]', [dock])} {
+  box-sizing: border-box !important;
+  padding: 3px 8px !important;
+  border-radius: 12px !important;
+${glassPane(blur)}
+}
+${prefixed('html[data-dshbg-on]', pills)} {
+${glassChip(blur, '1px')}
 }
 `;
     }
@@ -967,6 +1012,7 @@ html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
         transcriptGlassCss(settings),
         composerGlassCss(settings),
         sidebarGlassCss(settings),
+        statusGlassCss(settings),
       ].join('');
     }
 

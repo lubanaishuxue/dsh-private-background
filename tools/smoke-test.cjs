@@ -314,6 +314,26 @@ async function main() {
   check('new-session children are not matched', !wide.css.includes('[class*="_newSession"]'));
   check('cost meter card is frosted with the sidebar', wide.css.includes('.cm-footer-stack.summary:not(.rail)'));
 
+  // 输入框下面那条状态栏（[data-composer-dock]）自己不铺任何底色，转写区的文字直接从
+  // 底下穿过去，所以它读起来是「贴着窗口边的一行散字」而不是一条状态栏。它跟输入框
+  // 是一个整体，所以归属也跟输入框一致：实心模式就不磨砂。
+  check('status row becomes a pane', glass.css.includes('[data-composer-dock]'));
+  check('status row gets its own radius', /\[data-composer-dock\][^{]*\{[^}]*border-radius: 12px/.test(glass.css));
+  check('status row stays flat in solid mode', !/\[data-composer-dock\][^{]*\{[^}]*backdrop-filter/.test(base.css));
+  // 两处「费用明细」都是计费器自己的 .cm-btn，画 --dsw-alias-button-elevated-fill；
+  // 这个 token 不在 SURFACE_TOKENS 里，暗色主题下它解析成静态的 #43454a，
+  // 重混够不到，所以它们一直是黑胶囊。头部的那个在 header.actions 槽里。
+  check('cost pill in the dock is frosted', glass.css.includes('[data-composer-dock] .cm-btn'));
+  check(
+    'cost pill in the header is frosted',
+    glass.css.includes('[data-slot="conversation.session.header.actions"] .cm-btn'),
+  );
+  check(
+    'cost pills keep the host border width',
+    /\[data-composer-dock\] \.cm-btn[^{]*\{[^}]*border: 1px solid/.test(glass.css),
+  );
+  check('cost pills stay flat in solid mode', !base.css.includes('conversation.session.header.actions'));
+
   console.log('\nwindow caption buttons');
   // Electron paints min/max/close natively, so no rule on the frame can reach them. The
   // preload publishes the overlay colour from a hidden probe it appends to <body>, and
