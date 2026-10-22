@@ -682,6 +682,50 @@ html[data-dshbg-on] [data-composer-card] {
     }
 
     /**
+     * A control that floats *over* the transcript - the jump-to-bottom disc.
+     *
+     * `glassPane` is the wrong strength here. A pane sits in a column where the only thing
+     * behind it is wallpaper; this disc sits on top of message text, and at 22% the text
+     * underneath reads straight through it. It also keeps its drop shadow, because it is the
+     * one control in the transcript that has to look lifted off the page rather than part of
+     * it - the host's `--dsw-elevation-panel` goes away the moment a recipe replaces the
+     * box-shadow, so the shadow has to be re-stated.
+     */
+    function glassFloat(blur) {
+      const radius = Math.min(blur, 16);
+      return `  background-color: color-mix(in srgb, var(--dshbg-raw-l2) 58%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent) !important;
+  box-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.10),
+    0 10px 30px -14px rgb(0 0 0 / 0.55) !important;
+  -webkit-backdrop-filter: blur(${radius}px) saturate(160%) !important;
+  backdrop-filter: blur(${radius}px) saturate(160%) !important;`;
+    }
+
+    /**
+     * The user's own message.
+     *
+     * `_bubble` paints `--dsw-specific-bubble`, an opaque grey that is deliberately not in
+     * the remix list, so left alone it stays solid. The pane recipe then dropped it to 22%
+     * and the message stopped being readable: a bubble is a long run of body text, and at
+     * 22% the wallpaper's own highlights move through the letters.
+     *
+     * So this is the one glass surface whose brief is legibility first. It keeps a heavy
+     * fill - 78% of the layer-2 surface - and the blur is there to flatten whatever still
+     * gets through, not to show the artwork off. `--dshbg-raw-l2` rather than `raw-base`
+     * because a bubble is a raised surface, and it has to stay distinguishable from the
+     * column it sits in.
+     */
+    function glassBubble(blur) {
+      const radius = Math.min(blur, 16);
+      return `  background-color: color-mix(in srgb, var(--dshbg-raw-l2) 78%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 14%, transparent) !important;
+  box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.08) !important;
+  -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
+  backdrop-filter: blur(${radius}px) saturate(150%) !important;`;
+    }
+
+    /**
      * Glass inside the transcript - file cards and code blocks. Always on.
      *
      * These are content, not chrome: they sit in the middle of the work area on top of the
@@ -692,10 +736,22 @@ html[data-dshbg-on] [data-composer-card] {
      * Three shapes, three hooks, none of them a hashed class guess:
      *
      * - Code blocks expose `[data-code-block-banner]`. Their wrapper class is
-     *   `_block_<hash>_<line>` and the banner lives one level down, so the wrapper is found
-     *   with `[class*="_block_"]:has([data-code-block-banner])` - the `_block_` prefix
-     *   survives a rebuild, the hash does not. The banner and the `pre` paint the block's
-     *   own colour on top, so both are cleared or the pane is only half frosted.
+     *   `_block_<hash>_<line>` and the banner lives two levels down
+     *   (`_bannerWrap` > `_banner[data-code-block-banner]`), so the wrapper is found with
+     *   `[class*="_block_"]:has([data-code-block-banner])` - the `_block_` prefix survives a
+     *   rebuild, the hash does not. Note the host also puts a plain `md-code-block` class on
+     *   that same div, which is the one non-hashed hook in the whole transcript, but it only
+     *   carries a margin, so the hashed prefix is still what has to be matched.
+     *
+     *   Three things paint the block's colour, and clearing two of them is what left the
+     *   header bar solid: `_block` paints `var(--dsl-code-block-background)`, `pre` paints
+     *   the same variable (with `!important` for shiki), and `_banner` paints
+     *   `var(--dsl-code-block-banner-background-color)` - a *different* token that an
+     *   earlier version never touched, because it only cleared `_bannerWrap`. Clearing the
+     *   two custom properties on the wrapper handles all three at once, since both are
+     *   inherited and every one of those rules reads them through `var()`. The explicit
+     *   transparent rules stay as a belt-and-braces for the wrapper, which paints the
+     *   global `--dsw-alias-bg-base` instead.
      * - Attachment chips are `cJsG2q_fileCard` - hash first, then the local name, so
      *   `[class*="_fileCard"]` is the stable half.
      * - Deliverable cards are `flL80G_file`, and they paint `var(--deliverable-fill)` - a
@@ -723,10 +779,21 @@ html[data-dshbg-on] [data-composer-card] {
       // *item*, so a comma inside an item would leave its tail unprefixed.
       const deliverable = ['[data-presented-file]', `[class$="_file"]:has(> [class$="_fileBody"])`];
       return `
-${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, block, bubble])} {
+${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, block])} {
 ${glassPane(blur)}
 }
-${prefixed('html[data-dshbg-on]', [`${block} [class*="_bannerWrap"]`, `${block} pre`])} {
+${prefixed('html[data-dshbg-on]', [bubble])} {
+${glassBubble(blur)}
+}
+${prefixed('html[data-dshbg-on]', [block])} {
+  --dsl-code-block-background: transparent !important;
+  --dsl-code-block-banner-background-color: transparent !important;
+}
+${prefixed('html[data-dshbg-on]', [
+  `${block} [class*="_bannerWrap"]`,
+  `${block} [class*="_banner"]`,
+  `${block} pre`,
+])} {
   background: transparent !important;
 }
 ${prefixed('html[data-dshbg-on]', [inlineCode])} {
@@ -811,6 +878,10 @@ ${pane}
       const blur = clamp(settings.glassBlur, 0, 40);
       const dock = '[data-composer-dock]';
       const headerSlot = '[data-slot="conversation.session.header.actions"]';
+      // The jump-to-bottom disc. `_toBottomSlot` is the zero-height sticky wrapper the host
+      // puts around it, and it ends in `Slot`, so `[class$=...]` would already skip it - the
+      // `:not()` keeps that true even if a second class is ever appended to either one.
+      const toBottom = '[class*="_toBottom"]:not([class*="_toBottomSlot"])';
       return `
 ${prefixed('html[data-dshbg-on]', [dock])} {
   box-sizing: border-box !important;
@@ -823,6 +894,12 @@ ${glassChip(blur)}
 }
 ${prefixed('html[data-dshbg-on]', [`${dock} .cm-btn`])} {
 ${glassChip(blur, '1px')}
+}
+${prefixed('html[data-dshbg-on]', [toBottom])} {
+${glassFloat(blur)}
+}
+${prefixed('html[data-dshbg-on]', [`${toBottom}:hover`])} {
+  background-color: color-mix(in srgb, var(--dshbg-raw-l2) 76%, transparent) !important;
 }
 `;
     }
@@ -1220,7 +1297,9 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
      */
     const MARQUEE_PROBE = 'dsh.custom-background.marquee.probe';
     const MARQUEE_TRACE = `${MARQUEE_PROBE}.trace`;
-    const MARQUEE_TRACE_LIMIT = 70;
+    // Two full cycles at 100ms. One cycle is not enough: the title scrolls fine until the
+    // first wrap, which is exactly where the reported fault starts.
+    const MARQUEE_TRACE_LIMIT = 120;
 
     /**
      * TEMPORARY diagnostics, module scope on purpose.
@@ -1349,18 +1428,25 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
             const style = getComputedStyle(crumb);
             const running = typeof crumb.getAnimations === 'function' ? crumb.getAnimations() : [];
             const anim = running[0];
+            // `currentIteration` is what separates a legitimate wrap from a restart: a wrap
+            // steps it up by one, a restart drops `currentTime` back to zero and leaves the
+            // iteration where it was. `startTime` is the second witness - it only moves when
+            // the animation is thrown away and rebuilt.
+            const timing = anim ? anim.effect.getComputedTiming() : null;
             row = [
               Math.round(performance.now()),
               gen,
               style.textIndent,
-              style.animationName,
-              style.animationPlayState,
-              anim ? Math.round(Number(anim.currentTime) || 0) : -1,
               anim ? anim.playState : 'none',
+              anim ? Math.round(Number(anim.currentTime) || 0) : -1,
+              timing ? timing.currentIteration : -1,
+              anim && anim.startTime !== null ? Math.round(Number(anim.startTime)) : -1,
               crumb.clientWidth,
               crumb.hasAttribute('data-dshbg-mq') ? 1 : 0,
               crumb.style.getPropertyValue('--dshbg-mq-loop'),
               crumb.style.getPropertyValue('--dshbg-mq-dur'),
+              crumb.getAttribute('data-dshbg-mq')?.length ?? -1,
+              (crumb.textContent ?? '').length,
               sheetWrites,
               syncCalls,
             ];

@@ -313,6 +313,16 @@ async function main() {
     'user bubble is frosted, not just tinted',
     /\[data-chat-flow-kind="user"\] \[class\*="_bubble"\][^{]*\{[^}]*backdrop-filter/.test(base.css),
   );
+  // 气泡是整段正文，22% 的 pane 填充挡不住壁纸的高光，字会糊在图上。它要的是「能读」，
+  // 所以填充比 pane 重得多，而且取的是抬起来的那一层（l2），不是页面底色。
+  check('user bubble keeps a heavy fill', base.css.includes('var(--dshbg-raw-l2) 78%'));
+  check('user bubble is not left on the thin pane fill', !/\[class\*="_bubble"\][^{]*\{[^}]*22%/.test(base.css));
+  // 代码块有三处各自画底色：_block 和 pre 画 --dsl-code-block-background，
+  // _banner 画 --dsl-code-block-banner-background-color。早先只清了 _bannerWrap，
+  // 于是标题栏那条「代码块」一直是实心深色。
+  check('code block drops the host fill through its own variable', base.css.includes('--dsl-code-block-background: transparent'));
+  check('code block banner drops its fill too', base.css.includes('--dsl-code-block-banner-background-color: transparent'));
+  check('code block banner is cleared directly as well', base.css.includes('[class*="_banner"]'));
   // 一屏几十个芯片，模糊半径按最大值算会把 GPU 拖死；上限 10px，够用。
   const chipMax = await emit({ glassBlur: 40 });
   check('inline code chip blur is capped', chipMax.css.includes('blur(10px) saturate(150%)'));
@@ -332,6 +342,14 @@ async function main() {
   // 是一个整体，所以归属也跟输入框一致：实心模式就不磨砂。
   check('status row becomes a pane', glass.css.includes('[data-composer-dock]'));
   check('status row gets its own radius', /\[data-composer-dock\][^{]*\{[^}]*border-radius: 12px/.test(glass.css));
+  // 「回到最下面」那颗圆钮浮在正文上面，所以用比 pane 重的填充，并且要留住投影 ——
+  // 换掉 box-shadow 就等于把宿主给的 --dsw-elevation-panel 弄丢了，它会看起来贴在纸上。
+  check('jump-to-bottom disc is frosted', glass.css.includes('[class*="_toBottom"]:not([class*="_toBottomSlot"])'));
+  check(
+    'jump-to-bottom disc keeps its drop shadow',
+    /_toBottomSlot"\]\)\s*\{[^}]*0 10px 30px -14px/.test(glass.css),
+  );
+  check('jump-to-bottom disc follows the finish switch', !base.css.includes('_toBottom'));
   check('status row stays flat in solid mode', !/\[data-composer-dock\][^{]*\{[^}]*backdrop-filter/.test(base.css));
   // 「费用明细」是计费器自己的 .cm-btn，画 --dsw-alias-button-elevated-fill；这个 token
   // 不在 SURFACE_TOKENS 里，暗色主题下它解析成静态的 #43454a，重混够不到，所以它一直
