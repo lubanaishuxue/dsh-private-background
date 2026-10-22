@@ -498,10 +498,18 @@ window.__ModuleLoader__.load({
      * `sidebarOnly` marks the one token that belongs to the conversation sidebar. It is
      * deliberately *not* re-mixed unless the user asks for a whole-window background,
      * which is what keeps the sidebar untouched by default.
+     *
+     * Its `lift` is much larger than the others, and that is not elevation - it is the
+     * sidebar's own opacity tier. The column holds 13px labels over a full-bleed photo,
+     * so it needs a steadier backdrop than a panel does; at the plain surface value the
+     * history list reads as text floating on the artwork. The extra weight goes on the
+     * *column*, not on the rows, because the host lays the list out flush to the sidebar
+     * edge (it cancels `_root`'s padding with a negative margin), so any card drawn inside
+     * it has nothing to line up with - see `sidebarGlassCss`.
      */
     const SURFACE_TOKENS = [
       { token: '--dsw-alias-bg-base', raw: 'base', lift: 0 },
-      { token: '--dsw-specific-sidebar-fill', raw: 'sidebar', lift: 0, sidebarOnly: true },
+      { token: '--dsw-specific-sidebar-fill', raw: 'sidebar', lift: 24, sidebarOnly: true },
       { token: '--dsw-alias-bg-layer-1', raw: 'l1', lift: 8 },
       { token: '--dsw-specific-input-major', raw: 'input', lift: 8 },
       { token: '--dsw-specific-selector', raw: 'selector', lift: 8 },
@@ -726,6 +734,38 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewRes
     }
 
     /**
+     * Menus. Same bug as the preview card, one layer further out, and worse.
+     *
+     * The host's menu primitive paints *nothing* on the menu element itself: it puts a
+     * `[data-menu-material]` surface on the menu and a `[class*="_material"]` layer inside
+     * it, and that layer draws `--dsw-menu-surface-fill`. In the dark theme that value is
+     * `#43454a73` - **45% opaque** - and the design leans on
+     * `backdrop-filter: var(--dsw-menu-backdrop-filter)` (a 40px blur) to smear whatever is
+     * behind it. A 45% fill is not a safe base for text on its own: the moment the blur
+     * does not land, the paragraph under the menu reads straight through the menu's own
+     * labels, and neither is legible. The `/` command menu is the worst case because it is
+     * the full width of the composer and opens over the transcript, and because
+     * `_menu` carries no background of its own (`box-shadow` only), so there is nothing to
+     * fall back on.
+     *
+     * These are reading surfaces, so they get the same treatment as the preview card -
+     * opaque, with the host's own radius and elevation shadow left in place so they still
+     * read as floating. Matched on the primitive's data attribute for every menu that uses
+     * it, plus the composer menu's own `_itemDescription` row as a fallback in case that
+     * menu is ever rendered outside the primitive.
+     */
+    function menuSurfaceCss() {
+      return `
+${prefixed('html[data-dshbg-on]', ['[data-menu-material] > [class*="_material"]'])} {
+  background: var(--dshbg-raw-l1) !important;
+}
+${prefixed('html[data-dshbg-on]', ['[class*="_menu"]:has([class*="_itemDescription"])'])} {
+  background: var(--dshbg-raw-l1) !important;
+}
+`;
+    }
+
+    /**
      * Glass inside the transcript - file cards and code blocks. Always on.
      *
      * These are content, not chrome: they sit in the middle of the work area on top of the
@@ -810,46 +850,24 @@ ${glassPane(clamp(settings.glassBlur, 0, 40))}
     }
 
     /**
-     * The panel behind the sidebar's history list.
+     * Glass inside the sidebar - the new-session button and the cost meter.
      *
-     * Rows are 2px apart (`_flatList > * + *`), so giving *each* row its own fill turns the
-     * list into a stack of pills with no hierarchy - every folder reads like every session,
-     * and the one you have open is barely distinguishable from the rest. One panel behind
-     * the whole list is what the host itself assumes, and what every app of this shape does
-     * (VS Code, ChatGPT, Claude): a flat list on a surface, with only hover and selection
-     * tinted. So the rows are left completely alone - the host's own `:hover` and
-     * `._selected` rules are the feedback, and overriding them was what made the selection
-     * disappear.
+     * **The history list gets nothing, and that is the fix.** Three attempts at decorating
+     * it are worth recording, because two of them look reasonable on paper:
      *
-     * The ring is an inset shadow rather than a border: `_list` carries negative margins to
-     * park the scrollbar, and a 1px border on a `content-box` scroller shifts that gutter.
-     *
-     * The vertical padding is not decoration. `_list` clips its content to a rectangle, so a
-     * row painted near the bottom would show its own square corner poking through the
-     * panel's rounded one - and a hovered row is exactly when that is visible. 8px is past
-     * the point where a 10px corner has any curvature left (at y=8 the arc is 0.2px in), so
-     * no row can ever reach it.
-     *
-     * The host's `_fade` overlay (the 24px gradient at the bottom of the list) is left
-     * alone on purpose. It fades into `--dsw-specific-sidebar-fill`, and in whole-window
-     * scope that token is re-mixed too, so it is already a translucent wash rather than the
-     * solid band it would be if the token had stayed opaque. Painting over it would only
-     * trade a soft edge for a hard one.
-     */
-    function glassList(blur) {
-      const radius = Math.min(blur, 14);
-      return `  background-color: color-mix(in srgb, var(--dshbg-raw-l1) 48%, transparent) !important;
-  border-radius: 10px !important;
-  padding: 8px 0 !important;
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--dshbg-raw-label-0) 12%, transparent),
-    inset 0 1px 0 0 rgb(255 255 255 / 0.06) !important;
-  -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
-  backdrop-filter: blur(${radius}px) saturate(150%) !important;`;
-    }
-
-    /**
-     * Glass inside the sidebar - the new-session button, the history panel and the cost meter.
+     * 1. A fill per row. Rows sit 2px apart (`_flatList > * + *`), so this becomes a stack
+     *    of pills: every folder reads like every session, and overriding the host's own
+     *    `:hover` / `._selected` tint made the open session disappear into the crowd.
+     * 2. One panel behind the whole list, on `_treeBody`. Better hierarchy, but the host
+     *    lays the list out flush to the sidebar edge - `_root` pads by the edge inset and
+     *    `_listArea` cancels it again with a negative margin - so a card drawn there is
+     *    inset from nothing and aligned to nothing. It also has to be `flex: 1` (or fight
+     *    `_list`'s `flex: 1 1 0%` to shrink-wrap), which leaves a large empty slab under
+     *    the last session whenever the list is short.
+     * 3. What actually works: raise the column's own fill (`--dsw-specific-sidebar-fill`,
+     *    via `SURFACE_TOKENS`) and leave the list completely alone. One surface, flat rows,
+     *    host hover and selection intact - the same shape VS Code, ChatGPT and Claude use.
+     *    Nothing new is drawn, so there is nothing to misalign.
      *
      * Gated on whole-window scope, because in work-area scope the sidebar is deliberately
      * left exactly as the theme paints it. Frosting a button that sits on an opaque panel
@@ -871,9 +889,6 @@ ${glassPane(clamp(settings.glassBlur, 0, 40))}
       return `
 ${prefixed('html[data-dshbg-on]', ['[class$="_newSession"]', '.cm-footer-stack.summary:not(.rail)'])} {
 ${glassPane(blur)}
-}
-${prefixed('html[data-dshbg-on]', ['[class*="_treeBody"]'])} {
-${glassList(blur)}
 }
 `;
     }
@@ -1275,6 +1290,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         transcriptGlassCss(settings),
         // After every glass rule: this one puts transparency *back* to opaque.
         popoverCss(),
+        menuSurfaceCss(),
         composerGlassCss(settings),
         sidebarGlassCss(settings),
         statusGlassCss(settings),

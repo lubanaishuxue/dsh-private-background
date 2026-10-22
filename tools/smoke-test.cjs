@@ -328,6 +328,15 @@ async function main() {
     base.css.includes(':has([class*="_previewResponse"])') &&
       base.css.includes('var(--dshbg-raw-l1) !important'),
   );
+  // 菜单更糟：宿主把底色画在 [class*="_material"] 上，而 --dsw-menu-surface-fill 暗色下只有
+  // 45%（#43454a73），全靠 40px 的 backdrop-filter 糊——压在壁纸上那层模糊不落地，正文就
+  // 直接穿过菜单自己的字。`/` 命令菜单是全宽弹在转写区上的，最难看。
+  check(
+    'menu material is opaque',
+    base.css.includes('[data-menu-material] > [class*="_material"]') &&
+      /\[data-menu-material\] > \[class\*="_material"\][\s\S]{0,40}?\{[^}]*var\(--dshbg-raw-l1\)/.test(base.css),
+  );
+  check('composer command menu is opaque even outside the primitive', base.css.includes('_itemDescription'));
   // 一屏几十个芯片，模糊半径按最大值算会把 GPU 拖死；上限 10px，够用。
   const chipMax = await emit({ glassBlur: 40 });
   check('inline code chip blur is capped', chipMax.css.includes('blur(10px) saturate(150%)'));
@@ -342,28 +351,21 @@ async function main() {
   check('new-session children are not matched', !wide.css.includes('[class*="_newSession"]'));
   check('cost meter card is frosted with the sidebar', wide.css.includes('.cm-footer-stack.summary:not(.rail)'));
   // 侧栏历史记录：行与行只隔 2px（宿主 `_flatList > * + *`），给每一行各自一块圆角玻璃
-  // 就必然变成「一串药丸」——文件夹和会话一样重，选中的那条还看不出来。正确做法是一块
-  // 面板托住整个列表，行保持平的，只靠宿主自己的 hover / _selected 上色。
-  check('history list gets one panel behind it', wide.css.includes('[class*="_treeBody"]'));
+  // 就必然变成「一串药丸」——文件夹和会话一样重，选中的那条还看不出来。而一块内缩的卡片
+  // 在这个布局里也没有参照物（宿主用负边距把列表铺到侧栏边），短列表下还会留一大块空板。
+  // 正解是把侧栏**这一列**自己的填充调厚，列表一个字都不碰。
+  // 相对量断言，不写死数字：侧栏那一档必须比普通面板高 24 个点，否则就等于没加厚。
+  const baseAlpha = /--dsw-alias-bg-base: color-mix\(in srgb, var\(--dshbg-raw-base\) (\d+)%/.exec(wide.css);
+  const sidebarAlpha = /--dsw-specific-sidebar-fill: color-mix\(in srgb, var\(--dshbg-raw-sidebar\) (\d+)%/.exec(wide.css);
   check(
-    'history panel is frosted',
-    /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*backdrop-filter/.test(wide.css),
+    'sidebar column gets its own opacity tier',
+    baseAlpha !== null && sidebarAlpha !== null && Number(sidebarAlpha[1]) - Number(baseAlpha[1]) === 24,
   );
-  // 环用 inset 阴影，不用 border：_list 用负边距给滚动条让位，content-box 上 1px 边框会把
-  // 那条槽推歪。
-  check(
-    'history panel draws its ring without a border',
-    /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*inset 0 0 0 1px/.test(wide.css) &&
-      !/\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*border: 1px/.test(wide.css),
-  );
+  check('work-area scope leaves the sidebar fill alone', !base.css.includes('--dsw-specific-sidebar-fill:'));
   // 行必须保持原样：任何一条行级背景都会把宿主的选中态盖掉，层级就没了。
   check('history rows are left to the host', !wide.css.includes('_sessionRow') && !wide.css.includes('_projectRow'));
-  // 面板要有垂直内衬：_list 是按矩形裁内容的，贴着底边的那一行一旦 hover，自己的直角
-  // 就会从面板的圆角里戳出来。8px 已经越过 10px 圆角还有弧度的位置。
-  check(
-    'history panel keeps rows off its rounded corners',
-    /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*padding: 8px 0/.test(wide.css),
-  );
+  // 也不能在列表里画卡片：试过两版（每行一块 / 整块面板），都因为贴边布局没有对齐参照而难看。
+  check('no card is drawn inside the sidebar list', !wide.css.includes('_treeBody'));
 
   // 输入框下面那条状态栏（[data-composer-dock]）自己不铺任何底色，转写区的文字直接从
   // 底下穿过去，所以它读起来是「贴着窗口边的一行散字」而不是一条状态栏。它跟输入框
