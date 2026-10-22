@@ -328,50 +328,49 @@ async function main() {
     base.css.includes(':has([class*="_previewResponse"])') &&
       base.css.includes('var(--dshbg-raw-l1) !important'),
   );
-  // 菜单更糟：宿主把底色画在 [class*="_material"] 上，而 --dsw-menu-surface-fill 暗色下只有
-  // 45%（rgba(67,69,74,.45)），全靠 40px 的 backdrop-filter 糊。实测：45% 合成出来是
-  // #4f6c80，说明文字只有 3.0:1 —— **不到 WCAG AA**，这就是当初正文穿过菜单的真因。
-  // 76% 是量出来的下限（合成 #303c45、6.1:1），62% 会让背景上的大字透出鬼影。
-  // 这个比例目前由 settings.menuFill 驱动（设置页有个临时滑块），所以断言只校验
-  // 「有填充、带百分号」，不钉死具体数字 —— 数字由下面那条 menuFill 断言单独管。
+  // 菜单的玻璃画在**表面**（[data-menu-material]）上，不画在 _material 子元素上。
+  // 理由是两个朴素的：材料层是 z-index:-1，宿主只要给表面加一点背景就把它盖住；
+  // 而且一层同时出 fill 和 blur 就少一个合成层。
+  //
+  // 注意这里**不是**修复「模糊不生效」的地方 —— 真凶在祖先（见下面 composer card 那条）。
+  // 曾经怀疑是表面那句 isolation: isolate 把子元素围死了，但拿同样结构的对照页实测，
+  // Chromium 并不会因为 isolation 就隔离 backdrop 采样，所以这个假设是错的，别再写回去。
   check(
-    'menu material is dark glass, not opaque',
-    /\[data-menu-material\] > \[class\*="_material"\][\s\S]{0,40}?\{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) (\d{1,3})%, transparent\)/.test(
+    'menu surface paints its own glass',
+    /\[data-menu-material\] \{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) (\d{1,3})%, transparent\)[\s\S]{0,300}?backdrop-filter: blur\((\d{1,2})px\) saturate\(150%\)/.test(
       base.css,
     ),
   );
-  // 模糊半径同理：宿主钉 40px，但 40px 把壁纸糊成一片平色，正是「玻璃感不强」的另一半。
-  // 所以它也跟着 settings.menuBlur 走（设置页第二条临时滑块），断言只校验「有半径」。
+  // 材料层彻底让位：不画底色、也不画模糊。两层都画会叠成 1-(1-f)²，而且子元素那层
+  // 本来就被 isolation 隔离，留着只是白建一个合成层。
   check(
-    'menu material carries its own backdrop blur',
-    /\[data-menu-material\] > \[class\*="_material"\][\s\S]{0,300}?backdrop-filter: blur\((\d{1,2})px\) saturate\(150%\)/.test(
+    'menu material layer stands down',
+    /\[data-menu-material\] > \[class\*="_material"\] \{[^}]*background: transparent[\s\S]{0,200}?backdrop-filter: none/.test(
       base.css,
     ),
   );
   // `/` 命令菜单（.Z9Jnlq_menu）自己既没有底色、也没有 backdrop-filter —— 规则里只有
-  // max-height / box-shadow / padding / position / overflow:hidden。所以底色和模糊都得插件给，
-  // 少给一样就是「半透明但背后没糊」。
+  // max-height / box-shadow / padding / position / overflow:hidden。所以底色和模糊都得插件给。
   check(
     'composer command menu carries its own fill and blur',
     /\[class\*="_menu"\]:has\(\[class\*="_itemDescription"\]\)[\s\S]{0,60}?\{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) (\d{1,3})%, transparent\)[\s\S]{0,300}?backdrop-filter: blur\((\d{1,2})px\)/.test(
       base.css,
     ),
   );
-  // 万一 `/` 菜单本来就坐在原语的材料层上，两条 76% 会叠成 94%（1 - 0.24²）。
-  // 材料层让位，保证只有一层玻璃、一层模糊。
+  // 这是整件事**唯一**真正的修复：输入框卡片必须放弃自己的 backdrop-filter。
+  //
+  // 它是 `/` 菜单的祖先，一旦它有 backdrop-filter 就成了 backdrop root，菜单（挂在卡片
+  // 上方 100% + 4px，整个在 root 之外）的模糊就被采样成空白。实测对照页：同样的菜单规则、
+  // 同样的 45% 和 40px，卡片带 backdrop-filter 时菜单背后清清楚楚（能看清人像和栏杆），
+  // 卡片去掉后同一处直接糊成色块。**模糊失效时先查祖先链，别调填充。**
+  // 视觉代价接近零：壁纸在 html::before 已经糊过，卡片只丢掉 160% 饱和度。
+  // 这条必须在「质感 = 液态玻璃」下测：实心模式压根不给卡片套玻璃配方。
+  const glassy = await emit({ composerStyle: 'glass' });
   check(
-    'menu glass never stacks to 94%',
-    /\[data-menu-material\]:has\(\[class\*="_itemDescription"\]\) > \[class\*="_material"\][\s\S]{0,40}?\{[^}]*background: transparent/.test(
-      base.css,
-    ),
+    'composer card gives up its backdrop-filter',
+    /\[data-composer-card\] \{[^}]*backdrop-filter: none/.test(glassy.css),
   );
-  // 宿主那条 overflow 渐隐画的是**不透明**的 --dsw-specific-menu，压在玻璃上就是一条实色带。
-  check(
-    'menu overflow fade follows the glass',
-    /\[class\*="_menu"\]:has\(\[class\*="_itemDescription"\]\)\[data-overflow-below\]::after[\s\S]{0,40}?\{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) (\d{1,3})%, transparent\)/.test(
-      base.css,
-    ),
-  );
+
   // 这个比例目前是设置页上的**临时滑块**（settings.menuFill），所以上面几条只校验
   // 「有填充、带百分号」。这条单独校验滑块真的驱动了样式表 —— 它的意义在于：滑块拆掉、
   // 数字固化之后，如果谁把 menuSurfaceCss 改回写死字面量，上面几条照样会过（因为

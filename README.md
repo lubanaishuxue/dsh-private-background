@@ -126,24 +126,40 @@ html[data-windows-titlebar] .cm-footer-stack.summary:not(.rail) {
 
 所以 `[class*="_sessionRow"]` / `[class*="_projectRow"]` / `[class*="_searchResultRow"]` **一条规则都没有**——任何行级背景都会把宿主的选中态盖掉。
 
-**菜单是 76% 深色玻璃，不是不透明。** 宿主的菜单原语把底色画在内层 `[class*="_material"]` 上，值来自 `--dsw-menu-surface-fill`——暗色主题下是 `#43454a73`，**只有 45%**，设计上靠 `--dsw-menu-backdrop-filter: blur(40px) saturate(150%)` 把背后糊掉。问题在于 45% 在壁纸上撑不住文字：合成的底色是 `#4f6c80`，正文对比度 **3.0:1，连 WCAG AA 的 4.5 都不到**；更糟的是面板内部亮度（113）比同高度的页边（94）还亮——面板比背景更亮，它就不成其为面板了。所以这一层不能照抄宿主，要往上压。
+**菜单的模糊从来没真正工作过——这才是「正文穿过菜单」的真因，而且真凶在祖先。**
 
-压到多少是量出来的，不是拍的。壁纸亮部 + 13.5px 正文、宿主 40px 模糊下逐档实测：
+宿主把底色和模糊都画在内层 `[class*="_material"]` 上（`--dsw-menu-surface-fill`，暗色下 `#43454a73`，**只有 45%**；`--dsw-menu-backdrop-filter: blur(40px) saturate(150%)`）。看起来这是唯一该动手的地方，实际上怎么调都没用。
+
+`backdrop-filter` 会创建一个 **backdrop root**，后代的 `backdrop-filter` 只能采样这个 root **内部**已经绘制的内容。而 `/` 命令菜单是 **`[data-composer-card]` 的后代**，输入框卡片以前套的是 `glassPane`，带 `backdrop-filter` —— 卡片因此成了 backdrop root。菜单挂在 `bottom: calc(100% + 4px)`，**整个在卡片边界之外**，采样区域是空的。
+
+于是宿主那句 `blur(40px)` 一直在采样一个空盒子。菜单的真实表现就是一块 45% 的平色板，背后的正文原样穿过来。**没有任何填充比例能补偿一个不存在的模糊**——把填充从 45% 推到 76% 只是在给一个坏掉的模糊打补丁，而「液态玻璃感不强」正是这个补丁的副作用。
+
+对照实验（`diag/ancestor-isolation.html`）把这件事钉死了：两栏的菜单规则一字不差、都是 45% + `blur(40px)`、都挂在卡片上方 100% + 4px，**唯一变量是卡片自己有没有 `backdrop-filter`**——
+
+| | 卡片带 `backdrop-filter`（旧） | 卡片不带（新） |
+|---|---|---|
+| 菜单背后 | 人像、栏杆、窗框**清清楚楚** | 糊成一片柔和色块 |
+
+> **⚠️ 一个被证伪的假设，别写回去。** 最先怀疑的是 `._surface` 那句 `isolation: isolate`——它也是 backdrop root 的常见成因，看起来完美。但拿同结构的对照页实测，**Chromium 并不会因为 `isolation` 就隔离 backdrop 采样**，三栏全都正常糊。所以修复里没有 `isolation: auto`。教训：**`backdrop-filter` 失效时先查祖先链，再谈其他**；`isolation` 是嫌疑人但不是这个案子的凶手。
+
+修法只有一条：**`composerGlassCss` 不再调 `glassPane`，手写一份不带 `backdrop-filter` 的配方。** 视觉代价接近零——壁纸在 `html::before` 早就糊过了，卡片只丢掉 160% 的饱和度，填充、描边、内高光全留着。
+
+另外把玻璃从材料层挪到了**表面**（`[data-menu-material]`）上，理由朴素：材料层是 `z-index: -1`，宿主只要给表面加一点背景就把它盖住；而且一层同时出 fill 和 blur 少一个合成层。材料层则彻底让位（`background: transparent` + `backdrop-filter: none`），不重复画。
+
+**`/` 命令菜单还多一个问题**：`_menu` 自己**一点底色都没有**（`max-height:400px; box-shadow; padding:4px; position:absolute; bottom:calc(100% + 4px); left:0; right:0; overflow:hidden`，没有 `background`、没有 `backdrop-filter`）。所以它必须自己把 `background` 和 `backdrop-filter` 一起带上。
+
+`[data-overflow-below]::after` 那条渐隐遮罩也得跟着改：宿主拿不透明的 `--dsw-specific-menu` 渐到透明，压在玻璃上就是一道黑边。圆角和 `--dsw-elevation-prominent` 都留给宿主，仍然读得出浮在页面上。
+
+**填充量到多少合适？** 下面这张表是在**模糊还死着**的前提下量的（壁纸亮部 + 13.5px 正文）——所以它量的是「没有模糊时，多厚的色板才能压住字」，不是玻璃的参数：
 
 | 填充 | 合成底色 | 正文对比度 | 面板亮度 / 起伏 |
 |---|---|---|---|
 | 100%（不透明） | `#232324` | 8.5:1 | 35 / **0.00** |
-| **76%（采用）** | `#303c45` | **6.1:1** | 63 / 12.5 |
+| **76%（当前默认）** | `#303c45` | **6.1:1** | 63 / 12.5 |
 | 62% | `#374b58` | 7.1:1 | 79 / 20.0 |
 | 45%（宿主原值） | `#4f6c80` | 3.0:1 | 113 / 28.4 |
 
-62% 的对比度数字反而比 76% 高（底色更亮、白字更亮）——**只看对比度会选错档**。真正的判据是「背景大字能不能被抹掉」：壁纸上那行 60px 的时钟，在 40px 模糊下抹不掉，62% 时能看见鬼影，76% 基本没有；而 13.5px 的正文在 76% 和 62% 下都已经完全糊掉。所以 76% 是「最低能扛住背景大字」的那一档，再往上就是纯不透明，白丢了玻璃。**玻璃在这里的职责是把背景磨平，不是把画面露出来**——和气泡用 78% 是同一条理由。
-
-`/` 命令菜单是最坏情况：它铺满输入框宽度、弹在转写区正上方，而 `_menu` 自己**一点底色都没有**（`max-height:400px; box-shadow; padding:4px; position:absolute; bottom:calc(100% + 4px); left:0; right:0; overflow:hidden`，没有 `background`、没有 `backdrop-filter`）。这意味着光改透明度不够，`_menu` 那条必须自己把 `background` 和 `backdrop-filter` 一起带上，否则底下没有任何东西替它磨砂。
-
-两条同时命中时（`_menu` 里套着 `[data-menu-material] > [class*="_material"]`）会叠成 `0.76 + 0.76×0.24 = 94%`，等于又变回不透明。所以用 `:has([class*="_itemDescription"])` 认出「这是命令菜单」时，把材料层的 `background` 让成 `transparent`，磨砂由 `_menu` 一层出。同一个 `:has()` 也顺手接管了 `[data-overflow-below]::after` 那条渐隐遮罩——它原来是拿不透明的 `--dsw-menu-surface-fill` 渐到透明，玻璃化之后会变成一道黑边。
-
-圆角和 `--dsw-elevation-prominent` 都留给宿主，仍然读得出浮在页面上。
+62% 的对比度反而比 76% 高（底色更亮、白字更亮）——**只看对比度会选错档**。当时的判据是「背景大字能不能被抹掉」：壁纸上那行 60px 的时钟，40px 模糊下抹不掉，62% 能看见鬼影。**但那个「抹不掉」本身就是模糊失效的症状**——模糊真工作之后，40px 连 60px 的字都能抹平。所以这张表只能当「最坏情况的下限」看，真实取值交给滑块量。
 
 > **⚠️ 这两个数字目前是临时可调的。** 上面那张表是拿复刻场景量出来的，但真实壁纸千差万别，而且**填充和模糊是一对，不能单独调**：半径越大背景磨得越平，压住文字所需的填充就越少，而填充越少才越像玻璃。40px 恰好是「壁纸已经糊成一片平色、认不出形状」的那一档，这既是当初被迫把填充推到 76% 的原因，也是「玻璃感不强」的另一半。所以设置页上并排放了两条滑块：
 >
@@ -208,7 +224,7 @@ body > [class*="_card_"] {
 | 费用明细胶囊 | `[data-composer-dock] .cm-btn`（头部那颗用 `[data-slot="conversation.session.header.actions"] .cm-btn` 隐藏） | 槽位 data 属性 + 计费器自己的类名 |
 | 用户气泡 | `[data-chat-flow-kind="user"] [class*="_bubble"]` | flow item 的 data 属性 + 本地类名 |
 | 回到最下面 | `[class*="_toBottom"]:not([class*="_toBottomSlot"])` | 类名是 `<hash>_toBottom`；外层槽位是 `<hash>_toBottomSlot`，`$=` 天然区分，`:not()` 是防以后加第二个类名 |
-| 菜单 | `[data-menu-material] > [class*="_material"]`（命令菜单：`[class*="_menu"]:has([class*="_itemDescription"])`，并把材料层让成 `transparent`） | 原语写在菜单根上的 data 属性；命令菜单那条用「里面有没有那一列右对齐说明」收口，避免两层磨砂叠成 94% |
+| 菜单 | **表面**：`[data-menu-material]`（命令菜单再加 `[class*="_menu"]:has([class*="_itemDescription"])`）；**材料层**：`[data-menu-material] > [class*="_material"]` 让成 `transparent` + `backdrop-filter: none` | 原语写在菜单根上的 data 属性；命令菜单那条用「里面有没有那一列右对齐说明」收口。模糊能不能生效**不取决于这层**，取决于祖先有没有 `backdrop-filter` |
 | 侧栏历史块 | `[class*="_treeBody"]`（内层 `[class*="_list"]`、`[class*="_fade"]` 一起收口） | 类名是 `<hash>_treeBody`，本地名稳定；**行本身一条规则都不加**，见上 |
 | 悬停预览卡 | `[class*="_preview"]:has([class*="_previewResponse"])` | 好几个模块都用 `_preview` 命名，用「里面有没有 response 那行」收口 |
 | 工作区悬停卡 | `body > [class*="_card_"]` | `HoverCard` 原语 `createPortal` 到 `document.body`，是 body 的直接子节点；`body >` 挡掉不是 tooltip 的卡片 |
@@ -372,7 +388,21 @@ client.js
 计费器就在 `_footerActions { display: flex }` 里，`auto` 让它只包住最长那行文字，右边短 28px。想让它占满就得**明写宽度**，而且要用百分比对着包含块算（`calc(100% - 2px)`），不要写死像素。同理，`flex: 1` 在**列向**容器里是往竖着长，不能拿来当「横向拉满」的替代品。
 
 **9. 静态色值一条规则改不完，得先看它写在哪一层。**
-同样是「黑」，三种成因三种解法：写在内层 `[class*="_material"]` 上的（菜单，`--dsw-menu-surface-fill` 45%）→ 重定向该层的 `background`，压到 76% 就够（纯不透明会把玻璃白丢）；写在 `SURFACE_TOKENS` 里的（预览卡，`--dsw-alias-bg-layer-1`）→ 钉回捕获的原始值，因为那张卡的透明度是 bug 不是风格；**写在元素自己身上并且带写死字色的**（悬停卡 `--dsw-hovercard-bg: #2C2C2E` + `#fff`）→ 只能做深色玻璃，`color-mix` 保留原色去 alpha。改之前先确认字色是不是写死的，否则「变浅」会把字糊掉。
+同样是「黑」，三种成因三种解法：写在内层 `[class*="_material"]` 上的（菜单，`--dsw-menu-surface-fill` 45%）→ 重定向该层的 `background`；写在 `SURFACE_TOKENS` 里的（预览卡，`--dsw-alias-bg-layer-1`）→ 钉回捕获的原始值，因为那张卡的透明度是 bug 不是风格；**写在元素自己身上并且带写死字色的**（悬停卡 `--dsw-hovercard-bg: #2C2C2E` + `#fff`）→ 只能做深色玻璃，`color-mix` 保留原色去 alpha。改之前先确认字色是不是写死的，否则「变浅」会把字糊掉。
+
+**10. `backdrop-filter` 会创建 backdrop root，所以**别把它放在弹层的祖先上**。**
+这是这一版最贵的一课，而且我一开始查错了方向。
+
+`backdrop-filter` 会让元素变成 **backdrop root**，后代的 `backdrop-filter` 只能采样 root **内部**已经绘制的内容。`/` 命令菜单是 `[data-composer-card]` 的后代，卡片套了 `glassPane` 的 `backdrop-filter` → 卡片成了 root；菜单挂在卡片**外面**（`bottom: calc(100% + 4px)`），采样区域空 → 模糊完全无效。
+
+症状极具迷惑性：菜单看着像「太透明」，于是所有人（包括我）第一反应都是去调填充。**但调填充是给一个不存在的模糊打补丁**，补丁的代价就是「玻璃感不强」——为了让 45% 的平色板压住字，只能把填充推到 76%，而 76% 几乎就是不透明。
+
+**判据**：模糊「没效果」时，第一步不是调参数，是沿着 DOM 往上找有没有 `backdrop-filter` / `filter` / `opacity < 1` / `mask` / `clip-path`。叶子节点随便用，会拥有 popover 的容器不行。
+
+**11. `isolation: isolate` 看起来像凶手，实测不是。**
+`._surface` 带 `isolation: isolate`，按规范它也是 backdrop root 的成因之一，所以我第一版诊断就是它，还写了 `isolation: auto` 的修复。**拿同结构的对照页实测，Chromium 并不会因此隔离 backdrop 采样**——三栏（宿主结构 / 挪到表面 / 挪到表面 + 76%）全都正常糊。
+
+结论：`isolation` 在 Chromium 里**不是** backdrop root 的触发条件（至少这个场景不是）。真凶是祖先的 `backdrop-filter`。修复里的 `isolation: auto` 已经删掉了——**别把一个基于错误诊断的改动留在代码里**，它会让下一个人以为那条路径是必要的。
 
 ## 九、改了代码之后
 
@@ -380,7 +410,7 @@ client.js
 node tools/smoke-test.cjs
 ```
 
-198 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、液态玻璃五档归属与四套配方（面板 / 芯片 / 悬浮控件 / 深色玻璃）、底部状态栏、头部胶囊、用户气泡、费用明细胶囊与头部那颗的隐藏、回到最下面圆钮、侧栏历史块（随内容收缩、行一条规则都没有、三处边缘对齐、关掉宿主 `_fade`）、计费器宽度与 Windows 下的按钮内缩、悬停预览卡、菜单的深色玻璃与「两层不叠加」、两条临时滑块是否真的驱动样式表及其上下限、悬停卡与 tooltip 的深色玻璃（描边不用 border）、团队面板（portal 与内层 token 重混）、代码块三处底色与标题栏、标题的「放得下就不滚」与 `max-width` 还原时机、选择器 / 测量方式 / 无缝循环 / 自激防护 / 声明式动效与关键帧、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
+197 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、液态玻璃五档归属与四套配方（面板 / 芯片 / 悬浮控件 / 深色玻璃）、底部状态栏、头部胶囊、用户气泡、费用明细胶囊与头部那颗的隐藏、回到最下面圆钮、侧栏历史块（随内容收缩、行一条规则都没有、三处边缘对齐、关掉宿主 `_fade`）、计费器宽度与 Windows 下的按钮内缩、悬停预览卡、菜单的玻璃画在表面而非材料层、材料层让位、**输入框卡片放弃 backdrop-filter**（模糊失效的真凶）、两条临时滑块是否真的驱动样式表及其上下限、悬停卡与 tooltip 的深色玻璃（描边不用 border）、团队面板（portal 与内层 token 重混）、代码块三处底色与标题栏、标题的「放得下就不滚」与 `max-width` 还原时机、选择器 / 测量方式 / 无缝循环 / 自激防护 / 声明式动效与关键帧、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
 
 `--dump` 可打印实际产出的 CSS：
 

@@ -662,6 +662,13 @@ html[data-dshbg-on] [data-composer-card] {
      * `backdrop-filter` mostly adds saturation and edge definition rather than doing the
      * blurring work. That is deliberate: it keeps the GPU cost of a long transcript with
      * many blocks low while still reading as glass.
+     *
+     * **Never put this on an ancestor of a menu.** `backdrop-filter` creates a backdrop
+     * root, and a menu that hangs outside its ancestor's box then samples an empty area -
+     * its blur silently does nothing. That is exactly what the composer card used to do to
+     * the `/` command menu, which is why `composerGlassCss` hand-rolls the pane instead of
+     * calling this. The rule of thumb: leaves are fine, containers that own popovers are
+     * not.
      */
     function glassPane(blur) {
       return `  background-color: color-mix(in srgb, var(--dshbg-raw-base) 22%, transparent) !important;
@@ -752,69 +759,75 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewRes
     }
 
     /**
-     * Menus - the one place where the fill ratio had to be measured, not chosen.
+     * Menus.
      *
-     * Two different menus, two different problems.
+     * **The blur was never working, and the reason was upstream.**
      *
-     * **The primitive's menus** put a `[data-menu-material]` surface on the menu and a
-     * `[class*="_material"]` layer inside it, and that layer draws
-     * `--dsw-menu-surface-fill`: `rgba(67, 69, 74, .45)` in the dark theme, backed by
-     * `backdrop-filter: blur(40px) saturate(150%)`.
+     * The primitive puts a `[data-menu-material]` surface on the menu, with a
+     * `[class*="_material"]` layer inside it that draws `--dsw-menu-surface-fill`
+     * (`rgba(67, 69, 74, .45)` in the dark theme) plus
+     * `backdrop-filter: var(--dsw-menu-backdrop-filter)` = `blur(40px) saturate(150%)`.
      *
-     * **The `/` command menu** is the awkward one: `.Z9Jnlq_menu` carries no background of
-     * its own at all - its rule is `max-height:400px; box-shadow; padding:4px;
-     * position:absolute; overflow:hidden`, no fill and **no backdrop-filter either**. So it
-     * cannot be made glass by lightening a host value; it has to be given both the fill and
-     * the blur, or it is a 76%-transparent panel with the wallpaper unblurred behind it.
+     * `backdrop-filter` creates a *backdrop root*, and a descendant that also has one may
+     * only sample what has been painted **inside** that root. The `/` command menu is a
+     * descendant of `[data-composer-card]`, which used to get `glassPane`'s blur - so the
+     * card was a backdrop root, and the menu hangs at `bottom: calc(100% + 4px)`,
+     * *entirely outside the card*. Its sample area was empty. The menu has been behaving
+     * like a flat 45% plate all along, which is why the transcript read straight through
+     * it; no fill ratio can compensate for a blur that is not there. That is what the 76%
+     * was patching over. See `composerGlassCss` for the fix - the card gives its
+     * backdrop-filter up.
      *
-     * 76% is where the measurement landed. The menu is 992px wide with 12px
-     * `--dsw-alias-label-tertiary` description text, and the wallpaper behind it averages
-     * `#588cad`. Compositing the fill over that backdrop gives, per alpha:
+     * Note what is *not* the cause: the surface's own `isolation: isolate` looked like the
+     * culprit, but a control page with the same structure blurs fine, so Chromium does not
+     * treat it as a backdrop root here. The ancestor's backdrop-filter is the whole story.
      *
-     *   100% -> `#232324`, 8.5:1 against the description text (flat, no glass at all)
-     *    76% -> `#303c45`, 6.1:1  <- the default
-     *    62% -> `#374b58`, 7.1:1  only if the description text is brightened first
-     *    45% -> `#4f6c80`, 3.0:1  - below WCAG AA, and that is the host's own value
+     * The glass is still painted on the **surface** rather than on the material child, for
+     * two mundane reasons: the material layer is `z-index: -1`, so any background the host
+     * puts on the surface would cover it, and one layer doing fill + blur is one
+     * compositing layer instead of two. The material layer is stood down to
+     * `background: transparent` / `backdrop-filter: none` so nothing double-paints.
      *
-     * 45% is why the transcript used to read through the menu: it is not a matter of taste.
-     * 62% looked better in isolation but let the wallpaper's *large* type (a 60px clock in
-     * the test scene) ghost through the panel - a 40px blur erases 13px body text
-     * completely but cannot erase something 60px tall. At the host's 40px, 76% is the
-     * lowest fill that keeps both cases clean.
+     * **The `/` command menu** also carries no background and no backdrop-filter of its
+     * own - its rule is `max-height:400px; box-shadow; padding:4px; position:absolute;
+     * overflow:hidden` - so it needs both given to it explicitly.
      *
-     * That is a *pair* though, not a constant: fill and blur trade against each other.
-     * More radius flattens the backdrop harder, so less fill is needed to hold the text
-     * up - and less fill is exactly what makes it look like glass rather than a tinted
-     * panel. 40px is also where the wallpaper stops being readable as a picture at all,
-     * which is the other half of the complaint. So both numbers are on trial together;
-     * see the note on `settings.menuFill` / `menuBlur`.
-     *
-     * `:has()` keeps the two rules from stacking. If the composer menu ever renders on top
-     * of the primitive's material layer, both would paint the same fill and composite to
-     * `f + f(1-f)`; the third rule stands the material layer down so exactly one of them
-     * draws. Whichever layer wins, the result is one glass layer over one blur.
+     * Fill and radius are a *pair*, not two independent knobs: more radius flattens the
+     * backdrop harder, so less fill is needed to hold the text up - and less fill is what
+     * makes it look like glass rather than a tinted panel. Both are on trial together; see
+     * the note on `settings.menuFill` / `menuBlur`.
      *
      * The `[data-overflow-below]` fade is re-stated because the host paints it with the
      * *opaque* `--dsw-specific-menu`; over a translucent panel that gradient shows up as a
      * solid band across the bottom of the menu.
-     *
-     * The fill and the radius come from `settings.menuFill` / `settings.menuBlur` rather
-     * than literals because the pair is still on trial: both are sliders in the settings
-     * page so they can be judged on a real wallpaper instead of a reconstructed test scene.
-     * Once settled, bake the numbers into `DEFAULTS` and delete the slider block in
-     * `ConfigPage`.
      */
     function menuSurfaceCss(settings) {
       const menu = '[class*="_menu"]:has([class*="_itemDescription"])';
       const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 30, 100);
       const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
+      // The glass goes on the *surface*, not on the `_material` child, and this is the whole
+      // fix for "the menu blur does nothing".
+      //
+      // `._surface` carries `isolation: isolate`, which makes it a backdrop root: the
+      // `_material` child's own `backdrop-filter` may then only sample what is painted
+      // inside the surface - and inside the surface there is nothing but the material
+      // layer itself. So the host's `blur(40px)` was sampling an empty box and the menu
+      // behaved like a plain 45%-opaque plate. An element's own backdrop-filter is not
+      // limited by the root it creates (that root is for its descendants), so painting the
+      // blur on the surface samples the page properly.
+      //
+      // `isolation: auto` is belt and braces: the surface is already a stacking context by
+      // virtue of `position: absolute; z-index: 100`, so nothing needs the isolation, and
+      // dropping it removes one more way for the child to be fenced off.
       const glass = `  background: color-mix(in srgb, var(--dshbg-raw-l1) ${fill}%, transparent) !important;
   -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
   backdrop-filter: blur(${blur}px) saturate(150%) !important;`;
       return `
-${prefixed('html[data-dshbg-on]', ['[data-menu-material] > [class*="_material"]'])} {
+${prefixed('html[data-dshbg-on]', ['[data-menu-material]'])} {
 ${glass}
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.10) !important;
+  box-shadow:
+    var(--dsw-elevation-prominent),
+    inset 0 1px 0 rgb(255 255 255 / 0.10) !important;
 }
 ${prefixed('html[data-dshbg-on]', [menu])} {
 ${glass}
@@ -822,8 +835,10 @@ ${glass}
     var(--dsw-elevation-prominent),
     inset 0 1px 0 rgb(255 255 255 / 0.10) !important;
 }
-${prefixed('html[data-dshbg-on]', [`[data-menu-material]:has([class*="_itemDescription"]) > [class*="_material"]`])} {
+${prefixed('html[data-dshbg-on]', ['[data-menu-material] > [class*="_material"]'])} {
   background: transparent !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 ${prefixed('html[data-dshbg-on]', [`${menu}[data-overflow-below]::after`])} {
   background: linear-gradient(
@@ -957,12 +972,39 @@ ${glassChip(blur)}
 `;
     }
 
-    /** The message box, on its own switch. */
+    /**
+     * The message box, on its own switch.
+     *
+     * This one deliberately does **not** use `glassPane`, and the reason is the menu.
+     *
+     * The composer card is an ancestor of the `/` command menu. `backdrop-filter` creates
+     * a *backdrop root*, and a descendant that also has a backdrop-filter can only sample
+     * what has been painted **inside** that root. The menu hangs above the card
+     * (`bottom: calc(100% + 4px)`), so its sample area is empty and its blur does nothing
+     * at all. That is the real reason the transcript used to read straight through the
+     * menu even at the host's own 45%: the blur that was supposed to hide it had never
+     * been working, and no fill ratio can compensate for a blur that is not there.
+     *
+     * Dropping the card's own backdrop-filter costs almost nothing visually, because the
+     * wallpaper is already blurred at the `html::before` layer - the pane keeps its fill,
+     * its hairline and its inner highlight and only loses the 160% saturation boost. What
+     * it buys is a menu blur that actually samples the page.
+     *
+     * So: no `backdrop-filter` here, ever. If the composer ever needs more glass, raise the
+     * fill, do not put a blur back on the card.
+     */
     function composerGlassCss(settings) {
       if (settings.composerStyle !== 'glass') return '';
       return `
 ${prefixed('html[data-dshbg-on]', ['[data-composer-card]'])} {
-${glassPane(clamp(settings.glassBlur, 0, 40))}
+  background-color: color-mix(in srgb, var(--dshbg-raw-base) 22%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent) !important;
+  box-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.10),
+    inset 0 -1px 0 0 rgb(0 0 0 / 0.10),
+    0 10px 30px -14px rgb(0 0 0 / 0.55) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 `;
     }

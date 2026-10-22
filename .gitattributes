@@ -1,0 +1,3 @@
+# Keep every text file on LF so a Windows editor cannot turn a one-line change
+# into a whole-file diff. The repo had mixed line endings before this file existed.
+* text=auto eol=lf
