@@ -357,18 +357,44 @@ async function main() {
       base.css,
     ),
   );
-  // 这是整件事**唯一**真正的修复：输入框卡片必须放弃自己的 backdrop-filter。
+  // 输入框卡片：模糊必须挂在 ::before 上，卡片自己不能有 backdrop-filter。
   //
-  // 它是 `/` 菜单的祖先，一旦它有 backdrop-filter 就成了 backdrop root，菜单（挂在卡片
-  // 上方 100% + 4px，整个在 root 之外）的模糊就被采样成空白。实测对照页：同样的菜单规则、
-  // 同样的 45% 和 40px，卡片带 backdrop-filter 时菜单背后清清楚楚（能看清人像和栏杆），
-  // 卡片去掉后同一处直接糊成色块。**模糊失效时先查祖先链，别调填充。**
-  // 视觉代价接近零：壁纸在 html::before 已经糊过，卡片只丢掉 160% 饱和度。
+  // 卡片是 `/` 菜单的祖先，卡片一旦有 backdrop-filter 就成了 backdrop root，菜单（挂在
+  // 卡片上方 100% + 4px，整个在 root 之外）的模糊就被采样成空白。实测对照页
+  // （diag/card-pseudo.html）：卡片自己带模糊时，卡片糊了但**菜单背后清清楚楚**；
+  // 模糊挂到 ::before 上时，**卡片和菜单同时糊**。**模糊失效时先查祖先链，别调填充。**
+  //
+  // 卡片只需要成为 stacking context，让伪元素的 z-index:-1 落在背景之上、内容之下 ——
+  // `isolation: isolate` 正好干这个，而且实测**不会**隔离 backdrop 采样。所以这两个属性
+  // 一个安全、一个致命，别搞混。
+  //
   // 这条必须在「质感 = 液态玻璃」下测：实心模式压根不给卡片套玻璃配方。
   const glassy = await emit({ composerStyle: 'glass' });
   check(
-    'composer card gives up its backdrop-filter',
-    /\[data-composer-card\] \{[^}]*backdrop-filter: none/.test(glassy.css),
+    'composer card carries no backdrop-filter of its own',
+    /\[data-composer-card\] \{[^}]*isolation: isolate[\s\S]{0,220}?backdrop-filter: none/.test(
+      glassy.css,
+    ),
+  );
+  check(
+    'composer card puts the blur on its ::before',
+    /\[data-composer-card\]::before \{[^}]*z-index: -1[\s\S]{0,420}?backdrop-filter: blur\((\d{1,2})px\) saturate\(160%\)/.test(
+      glassy.css,
+    ),
+  );
+  // 右侧侧边栏：玻璃铺在 panel 根上（它自己本来一点底色都没有，可见的面在更下层），
+  // 下面几层 dockkit 必须停止画底色，否则盖住玻璃。
+  check(
+    'right sidebar gets the same glass',
+    /\[data-sidebar-right-panel\] \{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) (\d{1,3})%, transparent\)[\s\S]{0,300}?backdrop-filter: blur\((\d{1,2})px\) saturate\(150%\)/.test(
+      base.css,
+    ),
+  );
+  check(
+    'right sidebar inner layers stop painting',
+    /\[data-sidebar-right-panel\] \[data-dockkit-pane\][\s\S]{0,200}?\{[^}]*background-color: transparent/.test(
+      base.css,
+    ),
   );
 
   // 这个比例目前是设置页上的**临时滑块**（settings.menuFill），所以上面几条只校验
@@ -776,8 +802,8 @@ async function main() {
   check('finish control is on the page', blob.includes('液态玻璃'));
   check('panel opacity control is still there', blob.includes('面板不透明度'));
   // 临时滑块。它们是要被拆掉的东西，但拆之前必须真的出现在页面上 —— 否则用户找不到。
-  check('temporary menu blur slider is on the page', blob.includes('菜单背景模糊（临时）'));
-  check('temporary menu fill slider is on the page', blob.includes('菜单玻璃填充（临时）'));
+  check('temporary glass blur slider is on the page', blob.includes('玻璃模糊（临时）'));
+  check('temporary glass fill slider is on the page', blob.includes('玻璃填充（临时）'));
 
   console.log('\nslot registration');
   check('one slot registration', base.registered.length === 1, `got ${base.registered.length}`);

@@ -140,10 +140,10 @@ window.__ModuleLoader__.load({
         glassHint: '液态玻璃让输入框、底部状态栏、头部胶囊、代码块、文件卡片、消息气泡一起变磨砂半透明，边缘带一道高光。字压在图上更容易读，因为背景被磨平了。',
         glassHintSolid: '实心：各自按上面的不透明度铺底色，没有模糊和高光。',
         glassBlur: '玻璃模糊',
-        menuFill: '菜单玻璃填充（临时）',
-        menuFillHint: '临时调试用：填充越低越透、玻璃感越强，但背后的正文和壁纸大字也会越来越抢字。和上面那条「背景模糊」是一对——模糊越大，填充就可以压得越低还看得清。拖动之后敲 / 打开命令菜单看实际效果。试到满意告诉我这两个数字，我固化成默认值并把两条滑块都删掉。',
-        menuBlur: '菜单背景模糊（临时）',
-        menuBlurHint: '临时调试用：宿主原本钉死在 40px。模糊越大，菜单背后那层被磨得越平，字越好读、填充就可以越低；模糊越小，背景的形状越清楚、越像玻璃，但字也越容易被带花。0 就是完全不糊。',
+        menuFill: '玻璃填充（临时）',
+        menuFillHint: '临时调试用，同时管三处：弹出菜单、输入框、右侧侧边栏。填充越低越透、玻璃感越强，但背后的正文和壁纸大字也会越来越抢字。和上面那条「玻璃模糊」是一对——模糊越大，填充就可以压得越低还看得清。试到满意告诉我这两个数字，我固化成默认值并把两条滑块都删掉。',
+        menuBlur: '玻璃模糊（临时）',
+        menuBlurHint: '临时调试用，同时管三处：弹出菜单、输入框、右侧侧边栏。宿主原本钉死在 40px。模糊越大，背后那层被磨得越平，字越好读、填充就可以越低；模糊越小，背景的形状越清楚、越像玻璃，但字也越容易被带花。0 就是完全不糊。',
         reset: '恢复默认',
         autoSaved: '改动即时生效并自动保存',
         diagnostics: '样式 / 激活 / 框架 / 三栏',
@@ -189,10 +189,10 @@ window.__ModuleLoader__.load({
         glassLiquid: 'Liquid glass',
         glassHint: 'Liquid glass turns the message box, the status row, the header chips, code blocks, file cards and message bubbles into frosted panes with a lit edge. Text stays readable because the backdrop is flattened, not just dimmed.',
         glassHintSolid: 'Solid: each surface just fills with its own opacity - no blur, no highlight.',
-        menuFill: 'Menu glass fill (temporary)',
-        menuFillHint: 'Scratch control. Lower is more transparent and reads more like glass, but the transcript and any large wallpaper type start competing with the menu text. It pairs with the blur control below: more blur buys back fill. Open the / command menu to judge it. Tell me both numbers when you are happy and I will bake them in and delete both sliders.',
-        menuBlur: 'Menu backdrop blur (temporary)',
-        menuBlurHint: 'Scratch control. The host pins this at 40px. More blur flattens the backdrop harder, so the text stays readable at a lower fill; less blur keeps the wallpaper recognisable and looks more like glass, but the glyphs get dirtier. 0 is no blur at all.',
+        menuFill: 'Glass fill (temporary)',
+        menuFillHint: 'Scratch control for all three at once: popup menus, the composer, and the right sidebar. Lower is more transparent and reads more like glass, but the transcript and any large wallpaper type start competing with the text. It pairs with the blur control above: more blur buys back fill. Tell me both numbers when you are happy and I will bake them in and delete both sliders.',
+        menuBlur: 'Glass blur (temporary)',
+        menuBlurHint: 'Scratch control for all three at once: popup menus, the composer, and the right sidebar. The host pins this at 40px. More blur flattens the backdrop harder, so text stays readable at a lower fill; less blur keeps the wallpaper recognisable and looks more like glass, but the glyphs get dirtier. 0 is no blur at all.',
         glassBlur: 'Glass blur',
         reset: 'Reset',
         autoSaved: 'Changes apply and save immediately',
@@ -973,38 +973,90 @@ ${glassChip(blur)}
     }
 
     /**
-     * The message box, on its own switch.
+     * The message box, on its own switch - and it gets a *real* blur without breaking the
+     * menu's.
      *
-     * This one deliberately does **not** use `glassPane`, and the reason is the menu.
+     * The naive version (`glassPane` straight onto `[data-composer-card]`) kills the menu:
+     * `backdrop-filter` creates a backdrop root, and the `/` command menu is a descendant
+     * of this card that hangs *outside* its box (`bottom: calc(100% + 4px)`), so its own
+     * blur samples an empty area. That is why the card used to be a flat tint.
      *
-     * The composer card is an ancestor of the `/` command menu. `backdrop-filter` creates
-     * a *backdrop root*, and a descendant that also has a backdrop-filter can only sample
-     * what has been painted **inside** that root. The menu hangs above the card
-     * (`bottom: calc(100% + 4px)`), so its sample area is empty and its blur does nothing
-     * at all. That is the real reason the transcript used to read straight through the
-     * menu even at the host's own 45%: the blur that was supposed to hide it had never
-     * been working, and no fill ratio can compensate for a blur that is not there.
+     * The way out is to keep the card itself free of `backdrop-filter` and put the blur on
+     * a `::before` instead. The card only needs to become a stacking context so the
+     * pseudo-element's `z-index: -1` lands above the card's background and below its
+     * content - and `isolation: isolate` does exactly that. Measured on a control page:
+     * `isolation` does **not** fence off backdrop sampling (the menu behind such a card
+     * still blurs), while a `backdrop-filter` on the card does. So one property is safe and
+     * the other is not.
      *
-     * Dropping the card's own backdrop-filter costs almost nothing visually, because the
-     * wallpaper is already blurred at the `html::before` layer - the pane keeps its fill,
-     * its hairline and its inner highlight and only loses the 160% saturation boost. What
-     * it buys is a menu blur that actually samples the page.
+     * The pseudo-element is a leaf, so it can carry a backdrop-filter freely.
      *
-     * So: no `backdrop-filter` here, ever. If the composer ever needs more glass, raise the
-     * fill, do not put a blur back on the card.
+     * Fill and radius are shared with the menu and the right sidebar (`menuFill` /
+     * `menuBlur`), because they are the same material and have to move together - tuning
+     * the menu until it looks right and leaving the composer at a different opacity is what
+     * makes a UI look assembled from parts.
      */
     function composerGlassCss(settings) {
       if (settings.composerStyle !== 'glass') return '';
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
+      const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 30, 100);
       return `
 ${prefixed('html[data-dshbg-on]', ['[data-composer-card]'])} {
-  background-color: color-mix(in srgb, var(--dshbg-raw-base) 22%, transparent) !important;
+  position: relative !important;
+  isolation: isolate !important;
+  background-color: transparent !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
   border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent) !important;
+}
+${prefixed('html[data-dshbg-on]', ['[data-composer-card]::before'])} {
+  content: "" !important;
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: -1 !important;
+  pointer-events: none !important;
+  border-radius: inherit !important;
+  background-color: color-mix(in srgb, var(--dshbg-raw-base) ${fill}%, transparent) !important;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(160%) !important;
+  backdrop-filter: blur(${blur}px) saturate(160%) !important;
   box-shadow:
     inset 0 1px 0 0 rgb(255 255 255 / 0.10),
     inset 0 -1px 0 0 rgb(0 0 0 / 0.10),
     0 10px 30px -14px rgb(0 0 0 / 0.55) !important;
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
+}
+`;
+    }
+
+    /**
+     * The right-hand sidebar (dockkit panes).
+     *
+     * The panel root `[data-sidebar-right-panel]` is a bare `position: absolute` box with
+     * no background of its own - the visible surface is painted further down, on the
+     * dockkit host/pane. So the glass goes on the root, which spans the whole right column,
+     * and the layers underneath are told to stop painting: otherwise the host's own fill
+     * would sit on top of the glass and nothing would show through.
+     *
+     * Same fill and radius as the menu and the composer. No `backdrop-filter` problem here
+     * in reverse: this root *is* a backdrop root for anything inside it, but the only
+     * popovers that open inside the right sidebar are its own tab menus, which are portalled
+     * out to `<body>` by the host's menu primitive.
+     */
+    function rightPanelGlassCss(settings) {
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
+      const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 30, 100);
+      const panel = '[data-sidebar-right-panel]';
+      return `
+${prefixed('html[data-dshbg-on]', [panel])} {
+  background: color-mix(in srgb, var(--dshbg-raw-l1) ${fill}%, transparent) !important;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
+}
+${prefixed('html[data-dshbg-on]', [
+  `${panel} [data-dockkit-host]`,
+  `${panel} [data-dockkit-pane]`,
+  `${panel} [data-dockkit-float]`,
+])} {
+  background-color: transparent !important;
 }
 `;
     }
@@ -1523,6 +1575,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         menuSurfaceCss(settings),
         tooltipGlassCss(settings),
         composerGlassCss(settings),
+        rightPanelGlassCss(settings),
         sidebarGlassCss(settings),
         statusGlassCss(settings),
         menuGlassCss(settings),

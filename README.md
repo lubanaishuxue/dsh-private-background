@@ -62,8 +62,9 @@
 | 档 | 谁 | 什么时候开 |
 |---|---|---|
 | 转写区 | 文件卡片、交付卡片、代码块、**内联 code 芯片**、**用户消息气泡** | **常开** |
-| 输入框 | `[data-composer-card]`、底部状态栏、头部那排胶囊、底部那颗**「费用明细」胶囊**、**「回到最下面」圆钮** | 跟随「质感」开关 |
+| 输入框 | `[data-composer-card]`（模糊挂在 `::before` 上，见下）、底部状态栏、头部那排胶囊、底部那颗**「费用明细」胶囊**、**「回到最下面」圆钮** | 跟随「质感」开关 |
 | 侧栏 | 新会话按钮、**历史记录背后那一块（随对话增长）**、左下角计费器 | 只在**整窗**作用域下开 |
+| 右侧栏 | `[data-sidebar-right-panel]`（dockkit 的整列），下层 pane 停止画底色 | 跟随「质感」开关 |
 | 菜单 | 所有走宿主菜单原语的弹出菜单（`/` 命令菜单、模型选择等） | 常开（深色玻璃，模糊与填充**临时可调**，见下） |
 | 浮层 | 工作区悬停卡、短提示 tooltip | 常开（**深色**玻璃，字色写死成白，见下） |
 
@@ -149,6 +150,28 @@ html[data-windows-titlebar] .cm-footer-stack.summary:not(.rail) {
 **`/` 命令菜单还多一个问题**：`_menu` 自己**一点底色都没有**（`max-height:400px; box-shadow; padding:4px; position:absolute; bottom:calc(100% + 4px); left:0; right:0; overflow:hidden`，没有 `background`、没有 `backdrop-filter`）。所以它必须自己把 `background` 和 `backdrop-filter` 一起带上。
 
 `[data-overflow-below]::after` 那条渐隐遮罩也得跟着改：宿主拿不透明的 `--dsw-specific-menu` 渐到透明，压在玻璃上就是一道黑边。圆角和 `--dsw-elevation-prominent` 都留给宿主，仍然读得出浮在页面上。
+
+**输入框怎么既能模糊、又不弄死菜单？** 把模糊挂到 `::before` 上。
+
+卡片是 `/` 菜单的祖先，卡片**自己**一旦有 `backdrop-filter` 就成了 backdrop root，菜单的采样被切断（上一节）。但卡片想要玻璃感，就需要真模糊。解法是拆成两层：
+
+```css
+[data-composer-card] { isolation: isolate; background: transparent; backdrop-filter: none; }
+[data-composer-card]::before {
+  content: ""; position: absolute; inset: 0; z-index: -1;
+  border-radius: inherit; pointer-events: none;
+  background: color-mix(... fill%);
+  backdrop-filter: blur(Npx) saturate(160%);
+}
+```
+
+卡片只需要成为 stacking context，好让伪元素的 `z-index: -1` 落在卡片背景之上、内容之下 —— `isolation: isolate` 正好干这个，而**实测它不会隔离 backdrop 采样**。伪元素是叶子，带模糊没有任何副作用。
+
+对照页 `diag/card-pseudo.html` 把两种写法并排放：卡片自己带模糊 → 卡片糊了但**菜单背后清清楚楚**；模糊挂 `::before` → **卡片和菜单同时糊**。**两个属性一个安全、一个致命，别搞混。**
+
+**右侧侧边栏**（dockkit）结构是反的：`[data-sidebar-right-panel]` 这个根是个裸的 `position: absolute` 盒子，**自己一点底色都没有**，可见的面画在更下层的 `[data-dockkit-host]` / `[data-dockkit-pane]` 上。所以玻璃铺在**根**上（它横跨整列），然后把下面几层的 `background-color` 设成 `transparent` —— 否则宿主的填充会盖在玻璃上，什么都透不出来。
+
+填充和模糊这两个数字现在由菜单、输入框、右侧栏**共用**（`menuFill` / `menuBlur`）。它们是同一种材料，必须一起动；只把菜单调好看、让输入框停在另一个不透明度上，正是「一眼看出是拼起来的」那种效果。
 
 **填充量到多少合适？** 下面这张表是在**模糊还死着**的前提下量的（壁纸亮部 + 13.5px 正文）——所以它量的是「没有模糊时，多厚的色板才能压住字」，不是玻璃的参数：
 
@@ -410,7 +433,7 @@ client.js
 node tools/smoke-test.cjs
 ```
 
-197 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、液态玻璃五档归属与四套配方（面板 / 芯片 / 悬浮控件 / 深色玻璃）、底部状态栏、头部胶囊、用户气泡、费用明细胶囊与头部那颗的隐藏、回到最下面圆钮、侧栏历史块（随内容收缩、行一条规则都没有、三处边缘对齐、关掉宿主 `_fade`）、计费器宽度与 Windows 下的按钮内缩、悬停预览卡、菜单的玻璃画在表面而非材料层、材料层让位、**输入框卡片放弃 backdrop-filter**（模糊失效的真凶）、两条临时滑块是否真的驱动样式表及其上下限、悬停卡与 tooltip 的深色玻璃（描边不用 border）、团队面板（portal 与内层 token 重混）、代码块三处底色与标题栏、标题的「放得下就不滚」与 `max-width` 还原时机、选择器 / 测量方式 / 无缝循环 / 自激防护 / 声明式动效与关键帧、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
+200 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、液态玻璃五档归属与四套配方（面板 / 芯片 / 悬浮控件 / 深色玻璃）、底部状态栏、头部胶囊、用户气泡、费用明细胶囊与头部那颗的隐藏、回到最下面圆钮、侧栏历史块（随内容收缩、行一条规则都没有、三处边缘对齐、关掉宿主 `_fade`）、计费器宽度与 Windows 下的按钮内缩、悬停预览卡、菜单的玻璃画在表面而非材料层、材料层让位、**输入框卡片放弃 backdrop-filter 并把模糊挂到 `::before`**（模糊失效的真凶 + 卡片和菜单同时糊）、右侧侧边栏的玻璃与下层停止画底色、两条临时滑块是否真的驱动样式表及其上下限、悬停卡与 tooltip 的深色玻璃（描边不用 border）、团队面板（portal 与内层 token 重混）、代码块三处底色与标题栏、标题的「放得下就不滚」与 `max-width` 还原时机、选择器 / 测量方式 / 无缝循环 / 自激防护 / 声明式动效与关键帧、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
 
 `--dump` 可打印实际产出的 CSS：
 
