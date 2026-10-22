@@ -1,0 +1,33 @@
+{
+  "name": "@local/dsh-custom-background",
+  "version": "2.1.0",
+  "private": true,
+  "description": "为 DSH 界面设置自定义背景：本地图片、渐变或纯色，可调模糊、压暗、面板与对话区不透明度。默认只作用于工作区，左侧对话栏保持原样。",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
+    }
+  }
+}

@@ -1,0 +1,1387 @@
+/**
+ * @local/dsh-custom-background - browser half.
+ *
+ * Paints a wallpaper behind the DSH shell and renders its control panel into the
+ * plugin-manager detail page. Nothing here talks to the model, the session log or any
+ * host service; the whole feature is a stylesheet plus a small React form.
+ *
+ * ARCHITECTURE
+ *
+ *   html::before   the wallpaper itself (fixed, cover, blurred)
+ *   html::after    the dimming veil
+ *   body           captures the theme's surface tokens as raw values
+ *   frame          re-mixes those tokens with transparency, so every surface painted
+ *                  from a token turns to glass and the wallpaper shows through
+ *
+ * Scope is expressed by *omission*, not by overrides: the sidebar column paints
+ * `--dsw-specific-sidebar-fill`, so leaving that one token untouched keeps the
+ * conversation sidebar exactly as the theme drew it. "Whole window" simply adds it to
+ * the re-mix list.
+ *
+ * The settings page is the one place that must stay opaque - a wallpaper behind a
+ * heading is unreadable. That is driven by a marker the config component sets on
+ * <html> while it is mounted, so the stylesheet never has to guess where the page is.
+ *
+ * Everything below is written against three structural facts taken from the host's
+ * layout module, not against hashed class names:
+ *   - the frame is `#root div:has(> [data-shell-overlay])`
+ *   - its three column divs are the first three div children (DocumentTitle renders no
+ *     element), so nth-of-type(1|2|3) = sidebar | center | rightbar
+ *   - the bottom status bar carries `data-shell-bottom`
+ */
+window.__ModuleLoader__.load({
+  id: '@local/dsh-custom-background',
+  factory(require) {
+    const React = require('react');
+    const h = React.createElement;
+    const { useCallback, useEffect, useRef, useState, useSyncExternalStore } = React;
+
+    const PACKAGE = '@local/dsh-custom-background';
+    const SETTINGS_KEY = 'dsh.custom-background.settings.v3';
+    const DB_NAME = 'dsh-custom-background';
+    const DB_STORE = 'images';
+    const MAX_EDGE = 2560;
+    const MAX_DATA_URL = 3_600_000;
+
+    // ------------------------------------------------------------------ defaults
+
+    const DEFAULTS = {
+      mode: 'none',
+      imageId: null,
+      gradient: 0,
+      color: '#1b2233',
+      blur: 14,
+      dim: 30,
+      surface: 55,
+      chatSurface: 78,
+      fullWindow: false,
+      font: 'theme',
+      fontColor: '#f7f8fa',
+    };
+
+    const GRADIENTS = [
+      { zh: '极光', en: 'Aurora', css: 'linear-gradient(135deg, #0f2027 0%, #203a43 46%, #2c5364 100%)' },
+      { zh: '夜幕', en: 'Midnight', css: 'radial-gradient(120% 120% at 22% 12%, #1d2b4f 0%, #10141f 62%, #070910 100%)' },
+      { zh: '落日', en: 'Sunset', css: 'linear-gradient(135deg, #ff9a9e 0%, #fad0c4 48%, #fbc2eb 100%)' },
+      { zh: '深海', en: 'Abyss', css: 'linear-gradient(160deg, #0b1a2b 0%, #12324a 55%, #1c5a72 100%)' },
+      { zh: '青柠', en: 'Lime', css: 'linear-gradient(135deg, #a8ff78 0%, #78ffd6 100%)' },
+      { zh: '纸感', en: 'Paper', css: 'linear-gradient(135deg, #f6f4ef 0%, #e9e3d8 100%)' },
+    ];
+
+    const SWATCHES = ['#1b2233', '#0d1117', '#12324a', '#2b2135', '#f3efe7', '#e8eef7'];
+
+    const FONT_PALETTES = {
+      light: {
+        primary: '#f7f8fa',
+        secondary: '#d9dee6',
+        tertiary: '#b8bfc9',
+        caption: '#a6adb8',
+        dimmed: '#c9cfd8',
+        primaryDimmed: '#e3e7ee',
+      },
+      dark: {
+        primary: '#12161d',
+        secondary: '#3a4150',
+        tertiary: '#5b6472',
+        caption: '#6c7583',
+        dimmed: '#4a5260',
+        primaryDimmed: '#2a3140',
+      },
+    };
+
+    const TEXT = {
+      zh: {
+        title: '界面背景',
+        subtitle: '把 DSH 的底色换成自己的图。图片只存在这台电脑上，不会上传。',
+        preview: '效果预览',
+        previewSample: '正文示例 · 标题与消息都会跟着变',
+        previewPanel: '面板',
+        type: '背景类型',
+        modes: { none: '关闭', image: '图片', gradient: '渐变', color: '纯色' },
+        gallery: '背景图库',
+        galleryHint: '点一张图立即切换；图库里的图都保存在本机。',
+        add: '添加图片',
+        empty: '还没有图片。点「添加图片」选一张。',
+        gradient: '渐变',
+        color: '纯色',
+        customColor: '自选颜色',
+        scope: '作用范围',
+        fullWindow: '同时应用到左侧对话栏',
+        fullWindowHint: '关掉时只有工作区换背景，左侧对话列表保持原样；打开则整窗铺满。',
+        font: '字体颜色',
+        fonts: { theme: '跟随主题', auto: '自动', light: '浅色', dark: '深色', custom: '自定义' },
+        fontHint: '「自动」按背景实际明暗选黑或白；「跟随主题」不做任何改动。',
+        customFont: '自选颜色',
+        blur: '模糊',
+        dim: '压暗',
+        surface: '面板不透明度',
+        surfaceHint: '调低背景更明显；文字发虚时把它调高。',
+        chatSurface: '对话区不透明度',
+        chatSurfaceHint: '对话区单独一档。看字吃力就往上拉，想多露点壁纸就往下拉。',
+        reset: '恢复默认',
+        autoSaved: '改动即时生效并自动保存',
+        diagnostics: '样式 / 激活 / 框架 / 三栏',
+        toneLight: '深色背景 → 浅色字',
+        toneDark: '浅色背景 → 深色字',
+        broken: '没定位到 DSH 的外壳结构，背景无法铺开，但不会影响其他界面。请把这行告诉我。',
+        tooLarge: '这张图太大，换一张小一点的试试。',
+        readFail: '读取图片失败。',
+        remove: '删除',
+      },
+      en: {
+        title: 'Interface background',
+        subtitle: 'Replace the DSH base colour with your own artwork. Images stay on this machine.',
+        preview: 'Preview',
+        previewSample: 'Body text sample - headings and messages follow',
+        previewPanel: 'Panel',
+        type: 'Background type',
+        modes: { none: 'Off', image: 'Image', gradient: 'Gradient', color: 'Solid' },
+        gallery: 'Gallery',
+        galleryHint: 'Click an image to switch to it. Everything is stored locally.',
+        add: 'Add image',
+        empty: 'No images yet. Use "Add image" to pick one.',
+        gradient: 'Gradient',
+        color: 'Solid colour',
+        customColor: 'Custom colour',
+        scope: 'Scope',
+        fullWindow: 'Also apply to the conversation sidebar',
+        fullWindowHint: 'Off: only the work area changes and the sidebar keeps its own look. On: the wallpaper fills the window.',
+        font: 'Text colour',
+        fonts: { theme: 'Theme', auto: 'Auto', light: 'Light', dark: 'Dark', custom: 'Custom' },
+        fontHint: '"Auto" picks black or white from the background. "Theme" leaves text untouched.',
+        customFont: 'Custom colour',
+        blur: 'Blur',
+        dim: 'Dim',
+        surface: 'Panel opacity',
+        surfaceHint: 'Lower values reveal more of the wallpaper; raise it if text gets muddy.',
+        chatSurface: 'Conversation opacity',
+        chatSurfaceHint: 'Its own setting for the conversation area. Raise it when reading is hard, lower it to show more wallpaper.',
+        reset: 'Reset',
+        autoSaved: 'Changes apply and save immediately',
+        diagnostics: 'style / active / frame / columns',
+        toneLight: 'Dark background, light text',
+        toneDark: 'Light background, dark text',
+        broken: 'Could not locate the DSH shell, so the wallpaper cannot paint. Nothing else is affected. Please report this line.',
+        tooLarge: 'That image is too large. Try a smaller one.',
+        readFail: 'Could not read that image.',
+        remove: 'Remove',
+      },
+    };
+
+    // --------------------------------------------------------------------- utils
+
+    function clamp(value, low, high) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return low;
+      return Math.min(high, Math.max(low, number));
+    }
+
+    function currentLang() {
+      const raw = (typeof navigator !== 'undefined' && navigator.language) || 'zh';
+      return String(raw).toLowerCase().startsWith('zh') ? 'zh' : 'en';
+    }
+
+    // ---------------------------------------------------------------- persistence
+
+    function readSettings() {
+      const fallback = { ...DEFAULTS };
+      let parsed = null;
+      try {
+        const raw = window.localStorage.getItem(SETTINGS_KEY);
+        parsed = raw === null ? null : JSON.parse(raw);
+      } catch {
+        parsed = null;
+      }
+      if (parsed === null || typeof parsed !== 'object') return fallback;
+
+      const modes = ['none', 'image', 'gradient', 'color'];
+      const fonts = ['theme', 'auto', 'light', 'dark', 'custom'];
+      return {
+        mode: modes.includes(parsed.mode) ? parsed.mode : fallback.mode,
+        imageId: typeof parsed.imageId === 'string' ? parsed.imageId : null,
+        gradient: clamp(parsed.gradient === undefined ? 0 : parsed.gradient, 0, GRADIENTS.length - 1),
+        color: typeof parsed.color === 'string' && /^#[0-9a-f]{6}$/i.test(parsed.color) ? parsed.color : fallback.color,
+        blur: clamp(parsed.blur === undefined ? fallback.blur : parsed.blur, 0, 40),
+        dim: clamp(parsed.dim === undefined ? fallback.dim : parsed.dim, 0, 80),
+        surface: clamp(parsed.surface === undefined ? fallback.surface : parsed.surface, 0, 100),
+        chatSurface: clamp(
+          parsed.chatSurface === undefined ? fallback.chatSurface : parsed.chatSurface,
+          0,
+          100,
+        ),
+        fullWindow: parsed.fullWindow === true,
+        font: fonts.includes(parsed.font) ? parsed.font : fallback.font,
+        fontColor:
+          typeof parsed.fontColor === 'string' && /^#[0-9a-f]{6}$/i.test(parsed.fontColor)
+            ? parsed.fontColor
+            : fallback.fontColor,
+      };
+    }
+
+    function writeSettings(settings) {
+      try {
+        window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+      } catch {
+        // A full or disabled store only costs persistence; the session keeps working.
+      }
+    }
+
+    // -------------------------------------------------------------- image storage
+
+    function openDb() {
+      return new Promise((resolve, reject) => {
+        const request = window.indexedDB.open(DB_NAME, 1);
+        request.onupgradeneeded = () => {
+          const db = request.result;
+          if (!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE, { keyPath: 'id' });
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error('indexeddb'));
+      });
+    }
+
+    function dbRun(mode, run) {
+      return openDb().then(
+        (db) =>
+          new Promise((resolve, reject) => {
+            const transaction = db.transaction(DB_STORE, mode);
+            const request = run(transaction.objectStore(DB_STORE));
+            transaction.oncomplete = () => resolve(request === undefined ? undefined : request.result);
+            transaction.onerror = () => reject(transaction.error || new Error('idb-transaction'));
+            transaction.onabort = () => reject(transaction.error || new Error('idb-abort'));
+          }),
+      );
+    }
+
+    const listImageRecords = () => dbRun('readonly', (store) => store.getAll());
+    const putImageRecord = (record) => dbRun('readwrite', (store) => store.put(record));
+    const deleteImageRecord = (id) => dbRun('readwrite', (store) => store.delete(id));
+
+    /** Read a picked file and shrink it so a 4K photo does not blow the local quota. */
+    function ingestFile(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('read'));
+        reader.onload = () => {
+          const source = String(reader.result);
+          const image = new Image();
+          image.onerror = () => reject(new Error('decode'));
+          image.onload = () => {
+            try {
+              const scale = Math.min(1, MAX_EDGE / Math.max(image.width, image.height));
+              const canvas = document.createElement('canvas');
+              canvas.width = Math.max(1, Math.round(image.width * scale));
+              canvas.height = Math.max(1, Math.round(image.height * scale));
+              canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+              let quality = 0.88;
+              let dataUrl = canvas.toDataURL('image/jpeg', quality);
+              while (dataUrl.length > MAX_DATA_URL && quality > 0.42) {
+                quality -= 0.1;
+                dataUrl = canvas.toDataURL('image/jpeg', quality);
+              }
+              if (dataUrl.length > MAX_DATA_URL) reject(new Error('too-large'));
+              else resolve(dataUrl);
+            } catch (failure) {
+              reject(failure);
+            }
+          };
+          image.src = source;
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    // ---------------------------------------------------------------- luminance
+
+    /**
+     * What the text actually sits on: wallpaper -> dimmed -> veiled by the panel.
+     * A single pure function of the settings, so the tone it drives can never feed back
+     * into the measurement and oscillate.
+     */
+    const PANEL_LUMA = 46;
+    const TONE_THRESHOLD = 140;
+    const SAMPLE_W = 16;
+    const SAMPLE_H = 9;
+
+    function lumaOfCss(css) {
+      const stops = String(css).match(/#[0-9a-f]{6}/gi);
+      if (stops === null || stops.length === 0) return null;
+      let sum = 0;
+      for (const stop of stops) {
+        const value = parseInt(stop.slice(1), 16);
+        // Rec.601: the eye weights green far above blue, so a flat channel average
+        // would call a blue sky "dark" and pick white text for it.
+        sum += 0.299 * ((value >> 16) & 255) + 0.587 * ((value >> 8) & 255) + 0.114 * (value & 255);
+      }
+      return sum / stops.length;
+    }
+
+    function lumaOfImage(dataUrl) {
+      return new Promise((resolve) => {
+        const image = new Image();
+        image.onerror = () => resolve(null);
+        image.onload = () => {
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = SAMPLE_W;
+            canvas.height = SAMPLE_H;
+            const context = canvas.getContext('2d', { willReadFrequently: true });
+            if (context === null) {
+              resolve(null);
+              return;
+            }
+            context.drawImage(image, 0, 0, SAMPLE_W, SAMPLE_H);
+            const { data } = context.getImageData(0, 0, SAMPLE_W, SAMPLE_H);
+            let sum = 0;
+            for (let i = 0; i < data.length; i += 4) {
+              sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+            }
+            resolve(sum / (data.length / 4));
+          } catch {
+            resolve(null);
+          }
+        };
+        image.src = dataUrl;
+      });
+    }
+
+    async function measureLuma(settings, activeImage) {
+      let base = null;
+      if (settings.mode === 'gradient') base = lumaOfCss(GRADIENTS[settings.gradient].css);
+      else if (settings.mode === 'color') base = lumaOfCss(settings.color);
+      else if (settings.mode === 'image' && activeImage !== null) base = await lumaOfImage(activeImage);
+      if (base === null) return null;
+
+      const dimFactor = 1 - clamp(settings.dim, 0, 80) / 100;
+      const panelMix = clamp(settings.surface, 0, 100) / 100;
+      return base * dimFactor * (1 - panelMix) + PANEL_LUMA * panelMix;
+    }
+
+    /** Pure: the same luma always yields the same tone. No hysteresis, no feedback. */
+    function toneOf(luma) {
+      if (luma === null) return 'light';
+      return luma > TONE_THRESHOLD ? 'dark' : 'light';
+    }
+
+    // -------------------------------------------------------------------- store
+
+    let state = {
+      settings: readSettings(),
+      activeImage: null,
+      images: null,
+      luma: null,
+      ready: false,
+    };
+    const listeners = new Set();
+
+    function subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    }
+
+    function getSnapshot() {
+      return state;
+    }
+
+    function emit() {
+      for (const listener of listeners) listener();
+    }
+
+    function commit(patch) {
+      state = { ...state, ...patch };
+      emit();
+    }
+
+    function patchSettings(patch) {
+      state = { ...state, settings: { ...state.settings, ...patch } };
+      writeSettings(state.settings);
+      emit();
+    }
+
+    let booted = false;
+    function boot() {
+      if (booted) return;
+      booted = true;
+      listImageRecords()
+        .then((records) => {
+          const images = Array.isArray(records) ? records : [];
+          const settings = state.settings;
+          const active = images.find((record) => record.id === settings.imageId) || null;
+          commit({ images, activeImage: active === null ? null : active.dataUrl, ready: true });
+        })
+        .catch(() => commit({ images: [], activeImage: null, ready: true }));
+    }
+
+    async function addImage(file) {
+      const dataUrl = await ingestFile(file);
+      const record = { id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, dataUrl, addedAt: Date.now() };
+      await putImageRecord(record);
+      const images = (state.images === null ? [] : state.images).concat(record);
+      commit({ images, activeImage: dataUrl });
+      patchSettings({ mode: 'image', imageId: record.id });
+      return record;
+    }
+
+    async function removeImage(id) {
+      await deleteImageRecord(id);
+      const wasActive = state.settings.imageId === id;
+      const images = (state.images === null ? [] : state.images).filter((record) => record.id !== id);
+      commit({ images, activeImage: wasActive ? null : state.activeImage });
+      if (wasActive) {
+        patchSettings({ imageId: null, mode: state.settings.mode === 'image' ? 'none' : state.settings.mode });
+      }
+    }
+
+    // ------------------------------------------------------------------ selectors
+
+    function frameSelector() {
+      return '#root div:has(> [data-shell-overlay])';
+    }
+
+    /**
+     * Center + rightbar: everything that is *not* the conversation sidebar.
+     *
+     * Returned as a list rather than a joined string, because a comma list cannot be
+     * given a shared prefix later - `html[on] a, b` scopes only `a` and leaves `b` as a
+     * bare selector that matches unconditionally. Every caller must go through
+     * `prefixed()`.
+     */
+    function workAreaColumns() {
+      const frame = frameSelector();
+      return [`${frame} > div:nth-of-type(2)`, `${frame} > div:nth-of-type(3)`];
+    }
+
+    /** Repeat a prefix for every selector in the list. See `workAreaColumns`. */
+    function prefixed(prefix, selectors) {
+      return selectors.map((selector) => `${prefix} ${selector}`).join(',\n');
+    }
+
+    function bottomRowSelector() {
+      return `${frameSelector()} > [data-shell-bottom]`;
+    }
+
+    // --------------------------------------------------------------------- tokens
+
+    /**
+     * Every token that paints a surface. `lift` keeps elevation legible: a raised panel
+     * is re-mixed slightly more opaque than the surface under it, so stacked panels
+     * still read as stacked instead of dissolving into one sheet.
+     *
+     * `sidebarOnly` marks the one token that belongs to the conversation sidebar. It is
+     * deliberately *not* re-mixed unless the user asks for a whole-window background,
+     * which is what keeps the sidebar untouched by default.
+     */
+    const SURFACE_TOKENS = [
+      { token: '--dsw-alias-bg-base', raw: 'base', lift: 0 },
+      { token: '--dsw-specific-sidebar-fill', raw: 'sidebar', lift: 0, sidebarOnly: true },
+      { token: '--dsw-alias-bg-layer-1', raw: 'l1', lift: 8 },
+      { token: '--dsw-specific-input-major', raw: 'input', lift: 8 },
+      { token: '--dsw-specific-selector', raw: 'selector', lift: 8 },
+      { token: '--dsw-alias-bg-layer-2', raw: 'l2', lift: 16 },
+      { token: '--dsw-alias-bg-layer-3', raw: 'l3', lift: 16 },
+      { token: '--dsw-alias-bg-layer-4', raw: 'l4', lift: 16 },
+      { token: '--dsw-alias-button-tool-bar-fill', raw: 'toolbar', lift: 16 },
+    ];
+
+    const LABEL_TOKENS = [
+      '--dsw-alias-label-primary',
+      '--dsw-alias-label-secondary',
+      '--dsw-alias-label-tertiary',
+      '--dsw-alias-label-caption',
+      '--dsw-alias-label-dimmed',
+      '--dsw-alias-label-primary-dimmed',
+      '--dsw-alias-border-l1',
+      '--dsw-alias-border-l2',
+      '--dsw-alias-border-l3',
+    ];
+
+    // ------------------------------------------------------------------------ css
+
+    function backgroundValue(settings, activeImage) {
+      if (settings.mode === 'image') return activeImage === null ? null : `url("${activeImage}")`;
+      if (settings.mode === 'gradient') return GRADIENTS[settings.gradient].css;
+      if (settings.mode === 'color') return `linear-gradient(${settings.color}, ${settings.color})`;
+      return null;
+    }
+
+    function wallpaperCss(settings, value) {
+      const bleed = Math.round(settings.blur * 2 + 12);
+      return `
+html[data-dshbg-on] { background: transparent !important; }
+html[data-dshbg-on] body,
+html[data-dshbg-on] #root,
+html[data-dshbg-on] ${frameSelector()} { background: transparent !important; }
+html[data-dshbg-on]::before {
+  content: "";
+  position: fixed;
+  inset: -${bleed}px;
+  z-index: -1;
+  pointer-events: none;
+  background-image: ${value};
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  filter: blur(${settings.blur}px);
+  transform: translateZ(0);
+}
+html[data-dshbg-on]::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-color: rgb(0 0 0 / ${(settings.dim / 100).toFixed(3)});
+}
+`;
+    }
+
+    function tokenCss(settings) {
+      const captures = SURFACE_TOKENS.map((entry) => `  --dshbg-raw-${entry.raw}: var(${entry.token});`).join('\n');
+      const labelCaptures = LABEL_TOKENS.map((token, index) => `  --dshbg-raw-label-${index}: var(${token});`).join('\n');
+      const remixes = SURFACE_TOKENS.filter((entry) => settings.fullWindow || entry.sidebarOnly !== true)
+        .map((entry) => {
+          const alpha = Math.min(100, clamp(settings.surface, 0, 100) + entry.lift);
+          return `  ${entry.token}: color-mix(in srgb, var(--dshbg-raw-${entry.raw}) ${alpha}%, transparent) !important;`;
+        })
+        .join('\n');
+      return `
+html[data-dshbg-on] body {
+${captures}
+${labelCaptures}
+}
+html[data-dshbg-on] ${frameSelector()} {
+${remixes}
+}
+`;
+    }
+
+    /**
+     * The conversation column gets its own opacity.
+     *
+     * Reading long text over artwork needs a steadier backdrop than the panels do, and
+     * the two wants pull in opposite directions: the chrome should stay glassy, the
+     * transcript should stay legible. One shared slider forces a compromise, so this
+     * column overrides `--dsw-alias-bg-base` locally instead of stacking a second layer
+     * on top of the one the conversation root already paints - two translucent layers
+     * would compose to something neither number describes.
+     *
+     * `> div:nth-of-type(2)` is the center column (the same structural anchor the settings
+     * page rule uses), so this survives the hashed class names inside the conversation.
+     */
+    function chatSurfaceCss(settings) {
+      const alpha = clamp(settings.chatSurface, 0, 100);
+      return `
+html[data-dshbg-on] ${frameSelector()} > div:nth-of-type(2) {
+  --dsw-alias-bg-base: color-mix(in srgb, var(--dshbg-raw-base) ${alpha}%, transparent) !important;
+}
+`;
+    }
+
+    /**
+     * Window chrome. The layout paints the drag strip as a `::before` over the frame's
+     * top padding filled with the sidebar colour, so at panel opacity it reads as a
+     * band. Clearing it makes the strip reveal whatever is underneath at that x
+     * position - the sidebar's own solid fill on the left, the wallpaper in the middle.
+     *
+     * Both markers live on <html>, so they share one compound selector; a descendant
+     * combinator between them never matches.
+     */
+    function chromeCss(settings) {
+      // In work-area scope the strip must not become a full-width slice of wallpaper: it
+      // sits directly above the sidebar, so clearing it outright leaves the sidebar topped
+      // by a bright band. The layout publishes the sidebar's live width on the frame, so
+      // the strip is painted as sidebar fill up to that x and transparent after it - the
+      // sidebar reads as one continuous surface while the work area shows the wallpaper.
+      // Collapsed means the width is `0px`, which makes the whole strip transparent, which
+      // is the right answer when there is no sidebar to continue.
+      const strip = settings.fullWindow
+        ? 'transparent'
+        : `linear-gradient(to right, var(--dshbg-raw-sidebar) 0 var(--dsh-windows-sidebar-width, 0px), transparent var(--dsh-windows-sidebar-width, 0px))`;
+      return `
+html[data-dshbg-on][data-windows-titlebar] ${frameSelector()}::before { background: ${strip} !important; }
+html[data-dshbg-on][data-windows-titlebar] ${frameSelector()} { --dsh-windows-content-radius: 0px; }
+`;
+    }
+
+    /**
+     * Windows caption buttons (minimise / maximise / close).
+     *
+     * These are not DOM buttons. Electron draws them natively in a title-bar overlay, and
+     * the overlay's own fill is opaque, so no rule aimed at the frame can reach it - which
+     * is why they stay a solid block while everything around them turns to glass.
+     *
+     * The preload does expose one lever. It appends a hidden probe to `<body>`:
+     *
+     *   span[style="...;background-color:var(--dsw-specific-sidebar-fill);
+     *                    color:var(--dsw-alias-label-primary)"]
+     *
+     * then reads that probe's *computed* background and text colour and sends them to the
+     * main process over `dsh-desktop:windows-appearance`, which forwards them to
+     * `setTitleBarOverlay`. A MutationObserver watches `<head>` childList/characterData,
+     * so inserting this stylesheet is itself what triggers the re-read - no IPC access
+     * needed, and disabling the plugin puts the theme colour straight back.
+     *
+     * The probe resolves its inline `var()` on `<body>`, one level *above* the frame where
+     * the tokens are re-mixed. That is the whole bug: it kept reading the untouched,
+     * opaque sidebar fill. Overriding the probe itself is narrower than re-declaring the
+     * token on `<body>`, which would drag the sidebar along and make the `--dshbg-raw-*`
+     * capture on that same element self-referential.
+     *
+     * Symbols are coloured from the wallpaper's measured tone rather than the user's font
+     * choice: this is about contrast against the artwork, not about reading preference.
+     */
+    function captionCss(tone) {
+      const symbol = FONT_PALETTES[tone].primary;
+      return `
+html[data-dshbg-on] body > span[style*="--dsw-specific-sidebar-fill"] {
+  background-color: transparent !important;
+  color: ${symbol} !important;
+}
+`;
+    }
+
+    /**
+     * In work-area scope the bottom status bar spans the full grid width, so its
+     * translucency would leak the wallpaper underneath the sidebar. Keep it on the
+     * theme's own base colour instead. In whole-window scope it is glass like the rest.
+     */
+    function bottomRowCss(settings) {
+      if (settings.fullWindow) return '';
+      return `
+html[data-dshbg-on] ${bottomRowSelector()} { background-color: var(--dshbg-raw-base) !important; }
+`;
+    }
+
+    function fontPalette(settings, tone) {
+      if (settings.font === 'theme') return null;
+      if (settings.font === 'auto') return FONT_PALETTES[tone];
+      if (settings.font === 'custom') {
+        const color = settings.fontColor;
+        return {
+          primary: color,
+          secondary: `color-mix(in srgb, ${color} 80%, transparent)`,
+          tertiary: `color-mix(in srgb, ${color} 64%, transparent)`,
+          caption: `color-mix(in srgb, ${color} 54%, transparent)`,
+          dimmed: `color-mix(in srgb, ${color} 70%, transparent)`,
+          primaryDimmed: `color-mix(in srgb, ${color} 86%, transparent)`,
+        };
+      }
+      return FONT_PALETTES[settings.font] || null;
+    }
+
+    function fontCss(settings, tone) {
+      const palette = fontPalette(settings, tone);
+      if (palette === null) return '';
+      const scope = settings.fullWindow ? [frameSelector()] : workAreaColumns();
+      return `
+${prefixed('html[data-dshbg-on]', scope)} {
+  color: ${palette.primary};
+  --dsw-alias-label-primary: ${palette.primary};
+  --dsw-alias-label-secondary: ${palette.secondary};
+  --dsw-alias-label-tertiary: ${palette.tertiary};
+  --dsw-alias-label-caption: ${palette.caption};
+  --dsw-alias-label-dimmed: ${palette.dimmed};
+  --dsw-alias-label-primary-dimmed: ${palette.primaryDimmed};
+}
+`;
+    }
+
+    /**
+     * The settings page stays opaque while it is mounted.
+     *
+     * `data-dshbg-config` is set by the config component itself, so the stylesheet is
+     * told rather than guessing from DOM shape. The fill goes on the *columns*, not on
+     * a centred block: the page wrapper centres a 960px column inside a glass track, so
+     * filling only the block would leave a bright wallpaper margin down each side.
+     *
+     * Restoring the label tokens matters because the auto palette was chosen for the
+     * wallpaper; dark text on a dark base would be unreadable. They land on the same
+     * element `fontCss` writes to, hence both `!important` and the extra attribute
+     * selector to outrank it.
+     */
+    function configPageCss(settings) {
+      const restores = LABEL_TOKENS.map(
+        (token, index) => `  ${token}: var(--dshbg-raw-label-${index}) !important;`,
+      ).join('\n');
+      // The page has to turn opaque in exactly the area the wallpaper covers. In work-area
+      // scope that is columns two and three, and the sidebar keeps its own fill; in
+      // whole-window scope the sidebar is glass too, so leaving it out would put a
+      // see-through strip beside a solid page - the same seam, rotated ninety degrees.
+      const scope = settings.fullWindow ? [frameSelector()] : workAreaColumns();
+      return `
+${prefixed('html[data-dshbg-on][data-dshbg-config]', scope)} {
+  background-color: var(--dshbg-raw-base) !important;
+  background-image: none !important;
+  color: var(--dshbg-raw-label-0) !important;
+${restores}
+}
+`;
+    }
+
+    /**
+     * Compatibility shim for `dsh-cost-meter` (1.9.x).
+     *
+     * Its panels paint `background: rgb(from var(--dsw-alias-bg-layer-2, ...) r g b / 1)`.
+     * The trailing `/ 1` re-imposes full opacity, so any transparency put into the token
+     * is discarded before it reaches the screen and the ledger stays a flat block.
+     * Retargeting the classes is the only thing that survives that. If the plugin is not
+     * installed the selectors simply match nothing.
+     *
+     * Dialogs get a near-opaque fill on top: a statistics modal at panel opacity puts
+     * the wallpaper straight through the numbers.
+     */
+    const CM_PANELS = ['.cm-section', '.cm-footer-stack.simple', '.cm-simple-summary'];
+    const CM_DIALOGS = ['.cm-stat-dialog', '.cm-qguide', '.cm-peak-alert'];
+
+    function costMeterCss(settings) {
+      const alpha = clamp(settings.surface, 0, 100);
+      const dialogFill = Math.max(90, Math.min(97, alpha + 38));
+      const cardFill = Math.max(88, Math.min(96, alpha + 30));
+      return `
+${prefixed('html[data-dshbg-on] body', CM_PANELS)} {
+  background: color-mix(in srgb, var(--dshbg-raw-l2) ${alpha}%, transparent) !important;
+}
+${prefixed('html[data-dshbg-on] body', CM_DIALOGS)} {
+  background: color-mix(in srgb, var(--dshbg-raw-l2) ${dialogFill}%, transparent) !important;
+  --dsw-alias-bg-layer-1: color-mix(in srgb, var(--dshbg-raw-l1) ${cardFill}%, transparent) !important;
+  --dsw-alias-bg-layer-2: color-mix(in srgb, var(--dshbg-raw-l2) ${cardFill}%, transparent) !important;
+}
+html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
+`;
+    }
+
+    function buildCss(settings, activeImage, tone) {
+      const value = backgroundValue(settings, activeImage);
+      if (value === null) return '';
+      return [
+        wallpaperCss(settings, value),
+        tokenCss(settings),
+        chatSurfaceCss(settings),
+        chromeCss(settings),
+        captionCss(tone),
+        bottomRowCss(settings),
+        configPageCss(settings),
+        fontCss(settings, tone),
+        costMeterCss(settings),
+      ].join('');
+    }
+
+    // ------------------------------------------------------------------- install
+
+    function installStyles(ctx) {
+      const stale = document.querySelector(`style[data-dshbg-css="${PACKAGE}"]`);
+      if (stale !== null) stale.remove();
+
+      const tag = document.createElement('style');
+      tag.setAttribute('data-dshbg-css', PACKAGE);
+      document.head.appendChild(tag);
+
+      let disposed = false;
+      let measureToken = 0;
+
+      const paint = () => {
+        if (disposed) return;
+        const { settings, activeImage, luma } = state;
+        const on = backgroundValue(settings, activeImage) !== null;
+        const root = document.documentElement;
+        if (on) root.setAttribute('data-dshbg-on', '');
+        else root.removeAttribute('data-dshbg-on');
+        tag.textContent = on ? buildCss(settings, activeImage, toneOf(luma)) : '';
+      };
+
+      /**
+       * The artwork's pixels arrive asynchronously, so the tone lands a frame after the
+       * stylesheet. The token is versioned: scrubbing a slider queues several
+       * measurements and only the newest may write. The tone itself is a pure function
+       * of the measurement, so a commit can never drive another different commit.
+       *
+       * The measurement used to run only for the auto-contrast font, which made it free
+       * for everyone else. It now has a second consumer - the Windows caption symbols are
+       * coloured from the wallpaper's tone whatever the font setting is - so it has to run
+       * whenever a wallpaper is up. One 16x9 sample per change is not worth a second code
+       * path, and skipping it left the captions stuck on the light palette.
+       */
+      const refresh = () => {
+        paint();
+        const { settings, activeImage } = state;
+        if (settings.mode === 'none') {
+          if (state.luma !== null) commit({ luma: null });
+          return;
+        }
+        const token = ++measureToken;
+        measureLuma(settings, activeImage).then((luma) => {
+          if (disposed || token !== measureToken) return;
+          if (state.luma === luma) return;
+          commit({ luma });
+        });
+      };
+
+      const unsubscribe = subscribe(refresh);
+      refresh();
+      boot();
+
+      try {
+        ctx.effect(
+          () => () => {
+            disposed = true;
+            unsubscribe();
+            tag.remove();
+            document.documentElement.removeAttribute('data-dshbg-on');
+          },
+          'custom-background: stylesheet',
+        );
+      } catch (failure) {
+        console.error('[dsh-custom-background] effect registration failed:', failure);
+      }
+    }
+
+    function readDiagnostics() {
+      return {
+        style: document.querySelector(`style[data-dshbg-css="${PACKAGE}"]`) !== null,
+        active: document.documentElement.hasAttribute('data-dshbg-on'),
+        frame: document.querySelector(frameSelector()) !== null,
+        columns: document.querySelectorAll(workAreaColumns().join(',')).length,
+      };
+    }
+
+    // ------------------------------------------------------------------------ ui
+
+    function Switch(props) {
+      const { checked, label, hint, onChange } = props;
+      return h(
+        'label',
+        { className: 'dshbg-switch' },
+        h('input', {
+          type: 'checkbox',
+          checked: checked === true,
+          onChange: (event) => onChange(event.target.checked),
+        }),
+        h('span', { className: 'dshbg-switch-track', 'data-on': String(checked === true) }),
+        h(
+          'span',
+          { className: 'dshbg-switch-text' },
+          h('span', { className: 'dshbg-switch-label' }, label),
+          hint ? h('span', { className: 'dshbg-switch-hint' }, hint) : null,
+        ),
+      );
+    }
+
+    function Segmented(props) {
+      return h(
+        'div',
+        { className: 'dshbg-seg' },
+        ...props.options.map((option) =>
+          h(
+            'button',
+            {
+              key: option.value,
+              type: 'button',
+              'data-active': String(option.value === props.value),
+              onClick: () => props.onChange(option.value),
+            },
+            option.label,
+          ),
+        ),
+      );
+    }
+
+    function Slider(props) {
+      return h(
+        'div',
+        { className: 'dshbg-slider' },
+        h(
+          'div',
+          { className: 'dshbg-slider-head' },
+          h('span', { className: 'dshbg-label' }, props.label),
+          h('span', { className: 'dshbg-value' }, `${props.value}${props.suffix || ''}`),
+        ),
+        h('input', {
+          type: 'range',
+          min: props.min,
+          max: props.max,
+          step: props.step,
+          value: props.value,
+          onChange: (event) => props.onChange(Number(event.target.value)),
+        }),
+      );
+    }
+
+    const PAGE_CSS = `
+.dshbg { display: flex; flex-direction: column; gap: 18px; font-size: 13px; color: var(--dsw-alias-label-primary, #0f1115); }
+.dshbg-head { display: flex; flex-direction: column; gap: 3px; }
+.dshbg-title { font-size: 14px; font-weight: 600; line-height: 20px; margin: 0; }
+.dshbg-sub { font-size: 12px; line-height: 17px; margin: 0; color: var(--dsw-alias-label-tertiary, #6b7280); }
+.dshbg-preview { position: relative; height: 136px; border-radius: 10px; overflow: hidden; border: 0.5px solid var(--dsw-alias-border-l2, rgb(0 0 0 / 12%)); background: var(--dsw-alias-bg-layer-2, #eef0f3); }
+.dshbg-preview-art { position: absolute; inset: -28px; background-position: center; background-size: cover; background-repeat: no-repeat; }
+.dshbg-preview-dim { position: absolute; inset: 0; }
+.dshbg-preview-row { position: relative; height: 100%; display: flex; }
+.dshbg-preview-side { flex: 0 0 34%; background: var(--dsw-specific-sidebar-fill, #eceef1); display: flex; align-items: center; padding: 0 12px; }
+.dshbg-preview-main { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 5px; padding: 0 14px; }
+.dshbg-preview-t1 { font-size: 13px; font-weight: 600; }
+.dshbg-preview-t2 { font-size: 12px; opacity: 0.82; }
+.dshbg-preview-tag { font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.55; }
+.dshbg-section { display: flex; flex-direction: column; gap: 8px; }
+.dshbg-label { font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-secondary, #4b5563); }
+.dshbg-hint { font-size: 11px; line-height: 15px; color: var(--dsw-alias-label-caption, #8b9098); margin: 0; }
+.dshbg-seg { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--dsw-alias-bg-layer-2, rgb(0 0 0 / 4%)); }
+.dshbg-seg button { flex: 1; border: 0; border-radius: 6px; padding: 6px 0; font-size: 12px; cursor: pointer; background: transparent; color: var(--dsw-alias-label-secondary, #4b5563); transition: background 0.12s ease, color 0.12s ease; }
+.dshbg-seg button:hover { color: var(--dsw-alias-label-primary, #0f1115); }
+.dshbg-seg button[data-active="true"] { background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, #0f1115); font-weight: 500; box-shadow: 0 1px 2px rgb(0 0 0 / 10%); }
+.dshbg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+.dshbg-tile { position: relative; display: block; box-sizing: border-box; aspect-ratio: 16 / 10; border-radius: 8px; overflow: hidden; padding: 0; cursor: pointer; border: 1.5px solid transparent; background: var(--dsw-alias-bg-layer-2, #eef0f3); background-size: cover; background-position: center; }
+.dshbg-tile[data-active="true"] { border-color: var(--dsw-alias-state-business-primary, #4176e6); }
+.dshbg-tile-x { position: absolute; top: 4px; right: 4px; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 9px; cursor: pointer; font-size: 12px; line-height: 1; color: #fff; background: rgb(0 0 0 / 55%); }
+.dshbg-add { border: 1px dashed var(--dsw-alias-border-l2, rgb(0 0 0 / 18%)); border-radius: 8px; background: transparent; cursor: pointer; color: var(--dsw-alias-label-secondary, #4b5563); font-size: 12px; aspect-ratio: 16 / 10; }
+.dshbg-add:hover { border-color: var(--dsw-alias-state-business-primary, #4176e6); color: var(--dsw-alias-label-primary, #0f1115); }
+.dshbg-switch { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.dshbg-switch input { position: absolute; opacity: 0; pointer-events: none; }
+.dshbg-switch-track { position: relative; flex: none; width: 34px; height: 20px; margin-top: 1px; border-radius: 10px; background: var(--dsw-alias-bg-layer-3, rgb(0 0 0 / 18%)); transition: background 0.15s ease; }
+.dshbg-switch-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 8px; background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / 28%); transition: transform 0.15s ease; }
+.dshbg-switch-track[data-on="true"] { background: var(--dsw-alias-state-business-primary, #4176e6); }
+.dshbg-switch-track[data-on="true"]::after { transform: translateX(14px); }
+.dshbg-switch-text { display: flex; flex-direction: column; gap: 2px; }
+.dshbg-switch-label { font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-primary, #0f1115); }
+.dshbg-switch-hint { font-size: 11px; line-height: 15px; color: var(--dsw-alias-label-caption, #8b9098); }
+.dshbg-slider { display: flex; flex-direction: column; gap: 6px; }
+.dshbg-slider-head { display: flex; align-items: baseline; justify-content: space-between; }
+.dshbg-value { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-caption, #8b9098); }
+.dshbg-slider input { width: 100%; accent-color: var(--dsw-alias-state-business-primary, #4176e6); }
+.dshbg-swatches { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.dshbg-swatch { width: 30px; height: 26px; border-radius: 6px; border: 1.5px solid transparent; cursor: pointer; padding: 0; }
+.dshbg-swatch[data-active="true"] { border-color: var(--dsw-alias-state-business-primary, #4176e6); }
+.dshbg-color { display: flex; align-items: center; gap: 8px; }
+.dshbg-color input { width: 34px; height: 26px; padding: 0; border: 0.5px solid var(--dsw-alias-border-l2, rgb(0 0 0 / 18%)); border-radius: 6px; background: transparent; cursor: pointer; }
+.dshbg-code { font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dsw-alias-label-tertiary, #6b7280); }
+.dshbg-tone { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dsw-alias-label-caption, #8b9098); }
+.dshbg-tone i { width: 10px; height: 10px; border-radius: 5px; border: 1px solid rgb(0 0 0 / 18%); }
+.dshbg-error { font-size: 11px; line-height: 16px; padding: 8px 10px; border-radius: 6px; background: rgb(224 80 60 / 12%); color: var(--dsw-alias-label-primary, #0f1115); }
+.dshbg-foot { display: flex; align-items: center; gap: 12px; padding-top: 2px; border-top: 0.5px solid var(--dsw-alias-border-l1, rgb(0 0 0 / 8%)); }
+.dshbg-link { border: 0; background: transparent; padding: 0; cursor: pointer; font-size: 11px; color: var(--dsw-alias-state-business-primary, #4176e6); }
+.dshbg-diag { font-size: 10px; color: var(--dsw-alias-label-caption, #8b9098); margin-left: auto; font-variant-numeric: tabular-nums; }
+`;
+
+    // -------------------------------------------------------------------- config
+
+    function ConfigPage(props) {
+      const view = props && props.view;
+      const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+      const { settings, images, activeImage, luma } = snapshot;
+      const lang = currentLang();
+      const text = TEXT[lang];
+      const tone = toneOf(luma);
+
+      const [error, setError] = useState(null);
+      const [diag, setDiag] = useState(readDiagnostics);
+      const fileInput = useRef(null);
+
+      useEffect(() => {
+        boot();
+      }, []);
+
+      /**
+       * Tell the stylesheet that the settings page is on screen. Only the full detail
+       * view counts: the same component also renders as a summary row inside the plugin
+       * list, and going opaque there would repaint a page the user did not open.
+       */
+      useEffect(() => {
+        if (view !== 'page') return undefined;
+        const root = document.documentElement;
+        root.setAttribute('data-dshbg-config', '');
+        return () => root.removeAttribute('data-dshbg-config');
+      }, [view]);
+
+      useEffect(() => {
+        const timer = window.setTimeout(() => setDiag(readDiagnostics()), 80);
+        return () => window.clearTimeout(timer);
+      }, [snapshot]);
+
+      const pickFile = useCallback((file) => {
+        if (!file) return;
+        setError(null);
+        addImage(file).catch((failure) => {
+          setError(failure && failure.message === 'too-large' ? text.tooLarge : text.readFail);
+        });
+      }, [text.readFail, text.tooLarge]);
+
+      const palette = fontPalette(settings, tone);
+      const previewColor = palette === null ? null : palette.primary;
+      const previewValue = backgroundValue(settings, activeImage);
+      const sections = [];
+
+      sections.push(
+        h(
+          'div',
+          { key: 'preview', className: 'dshbg-section' },
+          h('div', { className: 'dshbg-label' }, text.preview),
+          h(
+            'div',
+            { className: 'dshbg-preview' },
+            h('div', {
+              className: 'dshbg-preview-art',
+              style: {
+                backgroundImage: previewValue === null ? 'none' : previewValue,
+                filter: `blur(${Math.round(settings.blur / 2)}px)`,
+              },
+            }),
+            h('div', {
+              className: 'dshbg-preview-dim',
+              style: { backgroundColor: `rgba(0, 0, 0, ${(settings.dim / 100).toFixed(3)})` },
+            }),
+            h(
+              'div',
+              { className: 'dshbg-preview-row' },
+              h(
+                'div',
+                {
+                  className: 'dshbg-preview-side',
+                  style: settings.fullWindow
+                    ? {
+                        background: 'transparent',
+                        color: previewColor === null ? undefined : previewColor,
+                      }
+                    : undefined,
+                },
+                h('span', { className: 'dshbg-preview-t2' }, text.previewPanel),
+              ),
+              h(
+                'div',
+                {
+                  className: 'dshbg-preview-main',
+                  style: {
+                    backgroundColor: `color-mix(in srgb, var(--dsw-alias-bg-base, #fff) ${settings.chatSurface}%, transparent)`,
+                    color: previewColor === null ? undefined : previewColor,
+                  },
+                },
+                h('span', { className: 'dshbg-preview-tag' }, text.preview),
+                h('span', { className: 'dshbg-preview-t1' }, text.title),
+                h('span', { className: 'dshbg-preview-t2' }, text.previewSample),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      sections.push(
+        h(
+          'div',
+          { key: 'type', className: 'dshbg-section' },
+          h('div', { className: 'dshbg-label' }, text.type),
+          h(Segmented, {
+            value: settings.mode,
+            options: [
+              { value: 'none', label: text.modes.none },
+              { value: 'image', label: text.modes.image },
+              { value: 'gradient', label: text.modes.gradient },
+              { value: 'color', label: text.modes.color },
+            ],
+            onChange: (value) => patchSettings({ mode: value }),
+          }),
+        ),
+      );
+
+      if (settings.mode === 'image') {
+        const gallery = images === null ? [] : images;
+        sections.push(
+          h(
+            'div',
+            { key: 'gallery', className: 'dshbg-section' },
+            h('div', { className: 'dshbg-label' }, text.gallery),
+            h(
+              'div',
+              { className: 'dshbg-grid' },
+              ...gallery.map((record) =>
+                h(
+                  'div',
+                  {
+                    key: record.id,
+                    role: 'button',
+                    tabIndex: 0,
+                    className: 'dshbg-tile',
+                    'data-active': String(record.id === settings.imageId),
+                    style: { backgroundImage: `url("${record.dataUrl}")` },
+                    onClick: () => patchSettings({ imageId: record.id }),
+                    onKeyDown: (event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        patchSettings({ imageId: record.id });
+                      }
+                    },
+                  },
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'dshbg-tile-x',
+                      'aria-label': text.remove,
+                      title: text.remove,
+                      onClick: (event) => {
+                        event.stopPropagation();
+                        removeImage(record.id).catch(() => setError(text.readFail));
+                      },
+                    },
+                    '\u00d7',
+                  ),
+                ),
+              ),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'dshbg-add',
+                  onClick: () => fileInput.current && fileInput.current.click(),
+                },
+                text.add,
+              ),
+            ),
+            gallery.length === 0 ? h('p', { className: 'dshbg-hint' }, text.empty) : null,
+            h('p', { className: 'dshbg-hint' }, text.galleryHint),
+          ),
+        );
+      }
+
+      if (settings.mode === 'gradient') {
+        sections.push(
+          h(
+            'div',
+            { key: 'gradient', className: 'dshbg-section' },
+            h('div', { className: 'dshbg-label' }, text.gradient),
+            h(
+              'div',
+              { className: 'dshbg-grid' },
+              ...GRADIENTS.map((preset, index) =>
+                h('button', {
+                  key: index,
+                  type: 'button',
+                  className: 'dshbg-tile',
+                  'data-active': String(index === settings.gradient),
+                  style: { backgroundImage: preset.css },
+                  onClick: () => patchSettings({ gradient: index }),
+                }),
+              ),
+            ),
+          ),
+        );
+      }
+
+      if (settings.mode === 'color') {
+        sections.push(
+          h(
+            'div',
+            { key: 'color', className: 'dshbg-section' },
+            h('div', { className: 'dshbg-label' }, text.color),
+            h(
+              'div',
+              { className: 'dshbg-swatches' },
+              ...SWATCHES.map((swatch) =>
+                h('button', {
+                  key: swatch,
+                  type: 'button',
+                  className: 'dshbg-swatch',
+                  'data-active': String(swatch.toLowerCase() === settings.color.toLowerCase()),
+                  style: { backgroundColor: swatch },
+                  onClick: () => patchSettings({ color: swatch }),
+                }),
+              ),
+              h(
+                'label',
+                { className: 'dshbg-color' },
+                h('input', {
+                  type: 'color',
+                  value: settings.color,
+                  'aria-label': text.customColor,
+                  onChange: (event) => patchSettings({ color: event.target.value }),
+                }),
+                h('span', { className: 'dshbg-code' }, settings.color.toUpperCase()),
+              ),
+            ),
+          ),
+        );
+      }
+
+      sections.push(
+        h(
+          'div',
+          { key: 'scope', className: 'dshbg-section' },
+          h('div', { className: 'dshbg-label' }, text.scope),
+          h(Switch, {
+            checked: settings.fullWindow,
+            label: text.fullWindow,
+            hint: text.fullWindowHint,
+            onChange: (value) => patchSettings({ fullWindow: value }),
+          }),
+        ),
+      );
+
+      const toneSwatch =
+        settings.font === 'auto'
+          ? h(
+              'span',
+              { className: 'dshbg-tone' },
+              h('i', { style: { background: FONT_PALETTES[tone].primary } }),
+              luma === null ? '' : `${tone === 'dark' ? text.toneDark : text.toneLight} · ${Math.round(luma)}`,
+            )
+          : null;
+
+      sections.push(
+        h(
+          'div',
+          { key: 'font', className: 'dshbg-section' },
+          h('div', { className: 'dshbg-label' }, text.font),
+          h(Segmented, {
+            value: settings.font,
+            options: [
+              { value: 'theme', label: text.fonts.theme },
+              { value: 'auto', label: text.fonts.auto },
+              { value: 'light', label: text.fonts.light },
+              { value: 'dark', label: text.fonts.dark },
+              { value: 'custom', label: text.fonts.custom },
+            ],
+            onChange: (value) => patchSettings({ font: value }),
+          }),
+          settings.font === 'custom'
+            ? h(
+                'div',
+                { className: 'dshbg-color' },
+                h('input', {
+                  type: 'color',
+                  value: settings.fontColor,
+                  'aria-label': text.customFont,
+                  onChange: (event) => patchSettings({ fontColor: event.target.value }),
+                }),
+                h('span', { className: 'dshbg-code' }, settings.fontColor.toUpperCase()),
+              )
+            : null,
+          toneSwatch,
+          h('p', { className: 'dshbg-hint' }, text.fontHint),
+        ),
+      );
+
+      if (settings.mode !== 'none') {
+        sections.push(
+          h(
+            'div',
+            { key: 'sliders', className: 'dshbg-section', style: { gap: '12px' } },
+            h(Slider, {
+              label: text.blur,
+              value: settings.blur,
+              min: 0,
+              max: 40,
+              step: 1,
+              suffix: 'px',
+              onChange: (value) => patchSettings({ blur: value }),
+            }),
+            h(Slider, {
+              label: text.dim,
+              value: settings.dim,
+              min: 0,
+              max: 80,
+              step: 1,
+              suffix: '%',
+              onChange: (value) => patchSettings({ dim: value }),
+            }),
+            h(Slider, {
+              label: text.surface,
+              value: settings.surface,
+              min: 0,
+              max: 100,
+              step: 1,
+              suffix: '%',
+              onChange: (value) => patchSettings({ surface: value }),
+            }),
+            h('p', { className: 'dshbg-hint' }, text.surfaceHint),
+            h(Slider, {
+              label: text.chatSurface,
+              value: settings.chatSurface,
+              min: 0,
+              max: 100,
+              step: 1,
+              suffix: '%',
+              onChange: (value) => patchSettings({ chatSurface: value }),
+            }),
+            h('p', { className: 'dshbg-hint' }, text.chatSurfaceHint),
+          ),
+        );
+      }
+
+      return h(
+        'div',
+        { className: 'dshbg' },
+        h('style', { 'data-dshbg-page': 'config' }, PAGE_CSS),
+        h(
+          'input',
+          {
+            ref: fileInput,
+            type: 'file',
+            accept: 'image/*',
+            style: { display: 'none' },
+            onChange: (event) => {
+              const file = event.target.files && event.target.files[0];
+              pickFile(file);
+              event.target.value = '';
+            },
+          },
+        ),
+        h(
+          'div',
+          { className: 'dshbg-head' },
+          h('h3', { className: 'dshbg-title' }, text.title),
+          h('p', { className: 'dshbg-sub' }, text.subtitle),
+        ),
+        ...sections,
+        error === null ? null : h('div', { className: 'dshbg-error' }, error),
+        diag.frame && diag.columns > 0 ? null : h('div', { className: 'dshbg-error' }, text.broken),
+        h(
+          'div',
+          { className: 'dshbg-foot' },
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'dshbg-link',
+              onClick: () => {
+                setError(null);
+                patchSettings({ ...DEFAULTS, imageId: settings.imageId });
+              },
+            },
+            text.reset,
+          ),
+          h(
+            'span',
+            { className: 'dshbg-diag' },
+            `${text.diagnostics} ${diag.style ? '\u2713' : '\u2717'} / ${diag.active ? '\u2713' : '\u2717'} / ${
+              diag.frame ? '\u2713' : '\u2717'
+            } / ${diag.columns}`,
+          ),
+        ),
+      );
+    }
+
+    // --------------------------------------------------------------- registration
+
+    return {
+      inject: ['slots'],
+      apply(ctx) {
+        // The two halves are isolated: a failure in either must never take the other
+        // down, and neither may escape `apply` and break the WebUI module load.
+        try {
+          installStyles(ctx);
+        } catch (failure) {
+          console.error('[dsh-custom-background] stylesheet install failed:', failure);
+        }
+
+        try {
+          ctx.slots.inject('plugins.bundle.config', () =>
+            ctx.slots.register(
+              { name: 'plugins.bundle.config', key: PACKAGE, id: 'custom-background', order: 10 },
+              ConfigPage,
+            ),
+          );
+        } catch (failure) {
+          console.error('[dsh-custom-background] config slot registration failed:', failure);
+        }
+      },
+    };
+  },
+});
