@@ -266,7 +266,14 @@ async function main() {
   console.log('\nliquid glass');
   const glass = await emit({ composerStyle: 'glass' });
   check('message box becomes a pane', glass.css.includes('[data-composer-card]'));
-  check('file cards become panes', glass.css.includes('[class*="_fileCard"]'));
+  check('attachment chips become panes', glass.css.includes('[class*="_fileCard"]'));
+  // 交付卡片画的是 --deliverable-fill（静态中性色），token 重混够不到它，只能整块铺玻璃。
+  // 只认 _file 会误伤 24px 的输入框附件片和变更文件行，所以要求它自带 _fileBody 子节点。
+  check('deliverable cards are found by their data attribute', glass.css.includes('[data-presented-file]'));
+  check(
+    'deliverable cards keep a class fallback',
+    glass.css.includes('[class$="_file"]:has(> [class$="_fileBody"])'),
+  );
   check('code block wrapper found by stable half of its class', glass.css.includes('[class*="_block_"]:has([data-code-block-banner])'));
   check('blur comes from the glass slider', glass.css.includes('blur(14px) saturate(160%)'));
   check('edge highlight is present', glass.css.includes('inset 0 1px 0 0 rgb(255 255 255 / 0.10)'));
@@ -280,7 +287,22 @@ async function main() {
   check('every glass selector is prefixed', !/(^|\})\s*(?:\[|div)/.test(glass.css));
   const glassLow = await emit({ composerStyle: 'glass', glassBlur: 3 });
   check('glass blur is adjustable', glassLow.css.includes('blur(3px) saturate(160%)'));
-  check('solid mode emits no glass at all', !base.css.includes('backdrop-filter'));
+
+  // 转写区的表面是内容、不是外壳：输入框切回实心是「输入框」的决定，不该连带把所有
+  // 代码块和文件卡也拉回实色。所以这两类与输入框的开关解耦，常开。
+  check('solid mode leaves the message box flat', !/\[data-composer-card\][^{]*\{[^}]*backdrop-filter/.test(base.css));
+  check('file cards stay glass in solid mode', /\[class\*="_fileCard"\][^{]*\{[^}]*backdrop-filter/.test(base.css));
+  check('code blocks stay glass in solid mode', /\[class\*="_block_"\][^{]*\{[^}]*backdrop-filter/.test(base.css));
+
+  // 侧栏里的表面（新会话按钮、计费器）跟着侧栏走：只改工作区时侧栏要保持主题原样，
+  // 给不透明的面板磨砂没有意义，还会成为这一列里唯一被碰过的元素。
+  check('sidebar panes stay flat in work-area scope', !base.css.includes('_newSession'));
+  // 用 $= 而不是 *=：按钮的子节点是 _newSessionContent / _newSessionLabel /
+  // _newSessionLabelMask / _newSessionShortcut，全含 _newSession 子串，*= 会给它们
+  // 各自套一层边框和投影。
+  check('sidebar panes frost in whole-window scope', wide.css.includes('[class$="_newSession"]'));
+  check('new-session children are not matched', !wide.css.includes('[class*="_newSession"]'));
+  check('cost meter card is frosted with the sidebar', wide.css.includes('.cm-footer-stack.summary:not(.rail)'));
 
   console.log('\nwindow caption buttons');
   // Electron paints min/max/close natively, so no rule on the frame can reach them. The

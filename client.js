@@ -618,9 +618,8 @@ html[data-dshbg-on] ${frameSelector()} > div:nth-of-type(2) {
      * rendering glitch rather than as a design choice.
      */
     function composerCss(settings) {
-      // Glass mode paints these surfaces directly, so a second token override would just
-      // fight it. Solid mode keeps the token route, which also carries the file cards that
-      // reuse `--dsw-specific-input-major`.
+      // Glass mode paints the composer directly, so a second token override would just
+      // fight it. Solid mode keeps the token route.
       if (settings.composerStyle === 'glass') return '';
       const alpha = clamp(settings.composerSurface, 0, 100);
       return `
@@ -631,29 +630,15 @@ html[data-dshbg-on] [data-composer-card] {
     }
 
     /**
-     * Liquid glass: the message box, the code blocks and the file cards become frosted
-     * panes with a lit edge instead of flat translucent fills.
-     *
-     * Three surfaces, three different hooks, none of them a hashed class guess:
-     *
-     * - The message box already carries `[data-composer-card]`.
-     * - Code blocks expose `[data-code-block-banner]`. Their wrapper class is
-     *   `_block_<hash>_<line>` and the banner lives one level down, so the wrapper is
-     *   found with `[class*="_block_"]:has([data-code-block-banner])` - the `_block_`
-     *   prefix survives a rebuild, the hash does not. The banner and the `pre` paint the
-     *   block's own colour on top, so both are cleared or the pane is only half frosted.
-     * - File cards are `cJsG2q_fileCard` - hash first, then the local name, so
-     *   `[class*="_fileCard"]` is the stable half.
+     * The frosted-pane recipe, shared by every surface that gets the liquid-glass look.
      *
      * The wallpaper is already blurred at the `html::before` layer, so the pane's own
      * `backdrop-filter` mostly adds saturation and edge definition rather than doing the
      * blurring work. That is deliberate: it keeps the GPU cost of a long transcript with
      * many blocks low while still reading as glass.
      */
-    function glassCss(settings) {
-      if (settings.composerStyle !== 'glass') return '';
-      const blur = clamp(settings.glassBlur, 0, 40);
-      const pane = `  background-color: color-mix(in srgb, var(--dshbg-raw-base) 22%, transparent) !important;
+    function glassPane(blur) {
+      return `  background-color: color-mix(in srgb, var(--dshbg-raw-base) 22%, transparent) !important;
   border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent) !important;
   box-shadow:
     inset 0 1px 0 0 rgb(255 255 255 / 0.10),
@@ -661,13 +646,81 @@ html[data-dshbg-on] [data-composer-card] {
     0 10px 30px -14px rgb(0 0 0 / 0.55) !important;
   -webkit-backdrop-filter: blur(${blur}px) saturate(160%) !important;
   backdrop-filter: blur(${blur}px) saturate(160%) !important;`;
+    }
+
+    /**
+     * Glass inside the transcript - file cards and code blocks. Always on.
+     *
+     * These are content, not chrome: they sit in the middle of the work area on top of the
+     * wallpaper, and a flat opaque block there reads as a hole punched in the artwork. So
+     * they do not follow the composer switch - turning the message box back to solid is a
+     * statement about the box, not about every code block in the transcript.
+     *
+     * Three shapes, three hooks, none of them a hashed class guess:
+     *
+     * - Code blocks expose `[data-code-block-banner]`. Their wrapper class is
+     *   `_block_<hash>_<line>` and the banner lives one level down, so the wrapper is found
+     *   with `[class*="_block_"]:has([data-code-block-banner])` - the `_block_` prefix
+     *   survives a rebuild, the hash does not. The banner and the `pre` paint the block's
+     *   own colour on top, so both are cleared or the pane is only half frosted.
+     * - Attachment chips are `cJsG2q_fileCard` - hash first, then the local name, so
+     *   `[class*="_fileCard"]` is the stable half.
+     * - Deliverable cards are `flL80G_file`, and they paint `var(--deliverable-fill)` - a
+     *   *static neutral*, not one of the semantic tokens, which is why the token remix
+     *   never reached them. The card also carries `data-presented-file`, which is the
+     *   primary hook; `_file` alone would also catch the 24px composer chip and the
+     *   changed-files row, so the class fallback requires the card's own `_fileBody` child.
+     *   Both halves of that fallback are local names, so a rebuild does not move them.
+     */
+    function transcriptGlassCss(settings) {
+      const blur = clamp(settings.glassBlur, 0, 40);
       const block = `[class*="_block_"]:has([data-code-block-banner])`;
+      // Separate array entries, never one comma-joined string: `prefixed()` prefixes each
+      // *item*, so a comma inside an item would leave its tail unprefixed.
+      const deliverable = ['[data-presented-file]', `[class$="_file"]:has(> [class$="_fileBody"])`];
       return `
-${prefixed('html[data-dshbg-on]', ['[data-composer-card]', '[class*="_fileCard"]', block])} {
-${pane}
+${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, block])} {
+${glassPane(blur)}
 }
 ${prefixed('html[data-dshbg-on]', [`${block} [class*="_bannerWrap"]`, `${block} pre`])} {
   background: transparent !important;
+}
+`;
+    }
+
+    /** The message box, on its own switch. */
+    function composerGlassCss(settings) {
+      if (settings.composerStyle !== 'glass') return '';
+      return `
+${prefixed('html[data-dshbg-on]', ['[data-composer-card]'])} {
+${glassPane(clamp(settings.glassBlur, 0, 40))}
+}
+`;
+    }
+
+    /**
+     * Glass inside the sidebar - the new-session button and the cost meter.
+     *
+     * Gated on whole-window scope, because in work-area scope the sidebar is deliberately
+     * left exactly as the theme paints it. Frosting a button that sits on an opaque panel
+     * buys nothing: there is no artwork behind it to refract, and it would be the one
+     * touched element in a column that is supposed to stay untouched.
+     *
+     * The button paints `--dsw-alias-button-elevated-fill` and the meter card paints
+     * `--dsw-alias-bg-layer-1`, neither of which is glass by itself, so both get the full
+     * recipe rather than a token nudge.
+     *
+     * The button is matched with `[class$=...]`, not `[class*=...]`: its children are
+     * `_newSessionContent`, `_newSessionLabel`, `_newSessionLabelMask` and
+     * `_newSessionShortcut`, every one of which contains `_newSession` as a substring and
+     * would get a border and a drop shadow of its own.
+     */
+    function sidebarGlassCss(settings) {
+      if (!settings.fullWindow) return '';
+      const pane = glassPane(clamp(settings.glassBlur, 0, 40));
+      return `
+${prefixed('html[data-dshbg-on]', ['[class$="_newSession"]', '.cm-footer-stack.summary:not(.rail)'])} {
+${pane}
 }
 `;
     }
@@ -873,7 +926,9 @@ html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
         fontCss(settings, tone),
         costMeterCss(settings),
         // Last, so the frosted panes are not re-painted by anything above.
-        glassCss(settings),
+        transcriptGlassCss(settings),
+        composerGlassCss(settings),
+        sidebarGlassCss(settings),
       ].join('');
     }
 
