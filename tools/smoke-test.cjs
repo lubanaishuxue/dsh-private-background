@@ -152,6 +152,8 @@ function harness(settingsOverride) {
     // (querySelectorAll returns nothing), but constructing them exercises the real path.
     ResizeObserver: class { observe() {} disconnect() {} },
     MutationObserver: class { observe() {} disconnect() {} },
+    // 跑马灯在 measure() 里读内边距，用的是裸 getComputedStyle（渲染进程里就是 window 上那个）。
+    getComputedStyle: window.getComputedStyle,
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
@@ -375,12 +377,25 @@ async function main() {
   // 但里面的成员卡画 --dsw-alias-bg-layer-2，是主题自己的深色层，透在面板里就是一块黑洞。
   // 面板虽然 position:fixed，DOM 上仍是槽的后代，所以用槽收口 —— workflow 面板里也有一个
   // _memberButton，不收口会一起被套上。
-  const MEMBER_SEL = '[data-slot="conversation.session.header.actions"] button[class*="_member"]';
+  // 团队面板是 createPortal 渲染到 document.body 的，**不在 header 槽的 DOM 子树里** ——
+  // 所以只能靠面板自己的 data-team-panel 收口。面板内部有两处画
+  // --dsw-alias-bg-layer-2：成员卡（button.member）和任务卡（div.task），
+  // 在已经磨砂的面板里都是黑洞。任务卡靠面板内的 token 重混，成员卡再加一层芯片。
+  const TEAM_PANEL = '[data-team-panel]';
+  const MEMBER_SEL = '[data-team-panel] button[class*="_member"]';
+  check('team panel is addressed by its own data attribute', glass.css.includes(TEAM_PANEL));
+  check(
+    'team panel remixes its inner layer token',
+    /\[data-team-panel\]\s*\{[^}]*--dsw-alias-bg-layer-2: color-mix/.test(glass.css),
+  );
   check('team roster member card is frosted', glass.css.includes(MEMBER_SEL));
   const memberRule = glass.css.slice(glass.css.indexOf(`${MEMBER_SEL} {`), glass.css.indexOf(`${MEMBER_SEL} {`) + 400);
   check('member card is a chip, not a second pane', memberRule.includes('inset 0 1px 0 0') && !memberRule.includes('0 10px 30px'));
   check('member card keeps the hairline border', memberRule.includes('border: .5px solid'));
-  check('member card stays flat in solid mode', !base.css.includes('_member"'));
+  // 槽位收口是错的：面板被 portal 走了，这条选择器一个元素都匹配不到。留着它只会让
+  // 以后的人以为「已经收口过了」，而实际生效的是另一条。
+  check('member card is no longer scoped to the header slot', !glass.css.includes('header.actions"] button[class*="_member"]'));
+  check('team panel stays flat in solid mode', !base.css.includes('data-team-panel'));
 
   console.log('\ntitle marquee');
   // 标题是面包屑，宿主封顶 220px + text-overflow: ellipsis。CSS 自己算不出「藏了多少」，
@@ -394,6 +409,41 @@ async function main() {
   // 关掉背景时整张表是空的，clip 也跟着没了 —— 所以 JS 那边必须按激活属性停掉动画，
   // 否则标题会在没有 clip 的情况下继续滑动。
   check('title clip is scoped to the activation attribute', base.css.includes(`html[data-dshbg-on] ${CRUMB_SEL}`));
+
+  // 距离的测量方式换过一次，换的原因值得留档：scrollWidth 读的是「内容边缘」，而
+  // text-indent 动的正是这个边缘，所以动画一跑，每次重量都在读自己被挪过的结果。
+  // Range 读的是文字本身的宽度，与盒子怎么裁无关。
+  check('marquee measures the text with a Range', CODE.includes('createRange'));
+  check('marquee no longer trusts scrollWidth first', CODE.indexOf('createRange') < CODE.indexOf('crumb.scrollWidth'));
+  // inline-block 是 shrink-to-fit，text-indent 会参与首行 max-content 计算，所以往左
+  // 拉文字同时也会把盒子拉窄 —— 触发 ResizeObserver 重启动画，形成自激。用 min-width 钉住。
+  check('marquee pins the box width while running', CODE.includes("setProperty('min-width'"));
+  check('marquee releases the pin when it stops', CODE.includes("removeProperty('min-width')"));
+  // 观察面包屑导航而不是标题本身：观察标题会让自己的动画变成 resize 源。
+  check('marquee observes the crumbs nav, not the crumb', CODE.includes('resize.observe(host)'));
+  check('marquee does not observe the crumb itself', !CODE.includes('resize.observe(crumb)'));
+  // 单向连续滚动：文字往左匀速走，走完「文字宽 + 间距」刚好和起点重合，循环无跳变。
+  // 靠 ::after 复制一份接在后面（content 取 attr()，不动 React 管的文本节点），
+  // 只复制一份的话每个循环里会有一半时间是空盒子。
+  check('title repeat is a pseudo-element', base.css.includes(`${CRUMB_SEL}[data-dshbg-mq]`) && base.css.includes('::after'));
+  check('title repeat takes its text from the attribute', base.css.includes('content: attr(data-dshbg-mq)'));
+  check('title repeat keeps a gap before the seam', /::after\s*\{[^}]*margin-left: 32px/.test(base.css));
+  check('marquee loop distance includes the gap', CODE.includes('metrics.text + MARQUEE_GAP'));
+  // 不取整：循环距离必须严格等于「文字宽 + 间距」，否则每次接缝都会跳一下。
+  check('marquee loop distance is not rounded', CODE.includes('loop.toFixed(2)'));
+  check('marquee drops the repeat when it stops', CODE.includes("removeAttribute('data-dshbg-mq')"));
+  check('marquee keeps the repeat in sync with the title', CODE.includes("getAttribute('data-dshbg-mq') !== text"));
+  // 单向、匀速、无限循环：关键帧只有两个，中间没有停顿也没有回程。
+  check('marquee animates one direction only', !CODE.includes("easing: 'ease-in-out'"));
+  check('marquee travels at a constant speed', CODE.includes('loop / MARQUEE_SPEED'));
+  check('marquee dropped the fixed-duration formula', !CODE.includes('7000 + shift * 60'));
+  // 头部可能在还没有宽度的时候就挂载了，第一次测量读到 0 会直接放弃。
+  check('marquee re-syncs after boot', /const retries = \[[^\]]+\]\.map/.test(CODE));
+  check('marquee clears its retries on dispose', CODE.includes('for (const handle of retries) clearTimeout(handle)'));
+  // 跑马灯是这个插件里唯一「坏了也看不出来」的部分：不滚的标题和刚好放得下的标题长得一样。
+  // 所以它把最后一次测量留在 localStorage 里，打包后的 App 没有 devtools 也能从磁盘读回来。
+  check('marquee leaves its numbers behind', CODE.includes('MARQUEE_PROBE'));
+  check('marquee probe is namespaced to the plugin', CODE.includes("'dsh.custom-background.marquee.probe'"));
 
   console.log('\nwindow caption buttons');
   // Electron paints min/max/close natively, so no rule on the frame can reach them. The

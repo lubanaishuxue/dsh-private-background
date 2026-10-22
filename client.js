@@ -828,33 +828,45 @@ ${glassChip(blur, '1px')}
     }
 
     /**
-     * Glass inside the popovers hanging off the header.
+     * Glass inside the team popover.
      *
-     * The panels themselves are already frosted - the host paints them with
-     * `--dsw-specific-menu` plus `--dsw-menu-backdrop-filter` on a `::before` - but their
-     * contents are not. The team roster's member cards paint `--dsw-alias-bg-layer-2`, which
-     * resolves to the theme's own dark layer, so inside an otherwise see-through panel they
+     * The panel itself is already frosted - the host paints it with `--dsw-specific-menu`
+     * plus `--dsw-menu-backdrop-filter` on a `::before` - but its contents are not. Two
+     * surfaces in there paint `--dsw-alias-bg-layer-2`, the theme's own opaque layer: the
+     * member cards (`.member`) and the task cards (`.task`). Inside a see-through panel they
      * read as black holes punched in it.
      *
-     * These are cards *inside* an existing pane, not panes themselves, so the chip recipe is
-     * the right one: heavier fill to keep the name readable, hairline edge, and no drop shadow
-     * - a second shadow under an already-elevated panel is just noise.
+     * `[data-team-panel]`, not the header slot: the panel is rendered through
+     * `createPortal` into `document.body`, so it is **not** a descendant of
+     * `conversation.session.header.actions` - a slot-scoped selector silently matches
+     * nothing. The host puts `data-team-panel` on the panel root precisely as a hook, and
+     * unlike a hashed class it survives rebuilds.
      *
-     * `button[class*="_member"]` and not `[class*="_member"]`: the card's own children are
-     * `_memberName`, `_memberText`, `_memberDot` and `_memberModel`, and the card for the
-     * current session also carries `_memberCurrent` - so neither `$=` nor a bare `*=` picks
-     * out the card alone. Only the card itself is a button.
+     * Two layers of fix, because the two surfaces are not the same kind of thing:
      *
-     * Scoped through the header slot even though the panel is `position: fixed`: fixed only
-     * changes where it paints, not where it sits in the tree, and the workflow-run panel has
-     * a `_memberButton` of its own that must not be caught here.
+     * - The panel re-mixes `--dsw-alias-bg-layer-2` for everything inside it. That is what
+     *   the task cards need: they keep their own hairline border and radius, they just stop
+     *   being opaque.
+     * - The member cards are buttons, so they get the chip recipe on top: a lit top edge
+     *   reads as "this is clickable" where a flat tint would not.
+     *
+     * `button[class*="_member"]` and not `[class*="_member"]`: the card's children are
+     * `_memberName`, `_memberNameText`, `_memberText`, `_memberDot` and `_memberModel`, and
+     * the card for the current session also carries `_memberCurrent` - so neither `$=` nor a
+     * bare `*=` picks out the card alone. Only the card itself is a button, which also keeps
+     * the workflow-run panel's `_memberButton` out of reach even if that panel ever grows the
+     * same data attribute.
      */
     function menuGlassCss(settings) {
       if (settings.composerStyle !== 'glass') return '';
-      const headerSlot = '[data-slot="conversation.session.header.actions"]';
+      const blur = clamp(settings.glassBlur, 0, 40);
+      const teamPanel = '[data-team-panel]';
       return `
-${prefixed('html[data-dshbg-on]', [`${headerSlot} button[class*="_member"]`])} {
-${glassChip(clamp(settings.glassBlur, 0, 40))}
+${prefixed('html[data-dshbg-on]', [teamPanel])} {
+  --dsw-alias-bg-layer-2: color-mix(in srgb, var(--dshbg-raw-l2) 62%, transparent) !important;
+}
+${prefixed('html[data-dshbg-on]', [`${teamPanel} button[class*="_member"]`])} {
+${glassChip(blur)}
 }
 `;
     }
@@ -886,10 +898,30 @@ ${glassChip(clamp(settings.glassBlur, 0, 40))}
      * the ellipsis would otherwise stay pinned to the right edge, reading as "…" in the
      * middle of a word. `installTitleMarquee` measures and drives the animation.
      */
+    /**
+     * The gap the marquee puts between the title and its own repeat.
+     *
+     * Shared by the stylesheet and the animation: the repeat is a `::after` whose content
+     * comes from `attr()`, so the distance it occupies has to be known by both sides. The
+     * animation travels exactly `text width + this`, which is what makes the loop land on a
+     * frame identical to the one it started from.
+     */
+    const MARQUEE_GAP = 32;
+
+    /**
+     * Speed the title travels at, in pixels per second. Slow enough to read, fast enough
+     * that a short overflow still registers as movement.
+     */
+    const MARQUEE_SPEED = 45;
+
     function titleCss() {
       return `
 ${prefixed('html[data-dshbg-on]', [CRUMB])} {
   text-overflow: clip !important;
+}
+${prefixed('html[data-dshbg-on]', [`${CRUMB}[data-dshbg-mq]`])}::after {
+  content: attr(data-dshbg-mq);
+  margin-left: ${MARQUEE_GAP}px;
 }
 `;
     }
@@ -1121,24 +1153,47 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
     /**
      * Drives the session-title marquee.
      *
-     * Pure CSS cannot do this: the distance to scroll is `scrollWidth - clientWidth`, and
-     * no length unit expresses "however much is hidden". So the distance is measured here
-     * and handed to a Web Animation.
+     * Pure CSS cannot do this: the distance to scroll is "however much is hidden", and no
+     * length unit expresses that. So the distance is measured here and handed to a Web
+     * Animation.
      *
-     * Two things make the measurement trustworthy:
+     * Measurement uses a `Range` over the title's contents instead of `scrollWidth`. The
+     * range reports the text's own width - the thing that actually has to travel - and it
+     * stays correct while an animation is running. `scrollWidth` is read off the content
+     * edge that `text-indent` is moving, so a live animation makes every re-measure read
+     * its own output.
      *
-     * - The running animation is cancelled *before* the read. `text-indent` shifts the text,
-     *   which moves the content edge that `scrollWidth` reports, so a live animation would
-     *   make every re-measure read its own output and the title would creep left.
-     * - Re-measuring is driven by the title's own signals - a ResizeObserver on the crumb
-     *   plus a MutationObserver filtered to the crumbs - not by a global observer. The
-     *   transcript mutates on every streamed token, and a global observer would restart the
-     *   marquee dozens of times a second.
+     * The box is pinned with `min-width` while the animation runs. An inline-block is
+     * shrink-to-fit, and `text-indent` contributes to the first line's max-content width,
+     * so pulling the text left also narrows the box - which re-fires the ResizeObserver and
+     * restarts the very animation that caused it. Pinning removes that feedback path. The
+     * pin is cleared before every measure so a real resize still lands.
+     *
+     * Travel is one-directional and continuous: the title slides left at a constant speed
+     * and the loop point lands on a frame identical to the one it started from. Two pieces
+     * make that seamless. A `::after` repeats the text (its content comes from the
+     * `data-dshbg-mq` attribute, so no DOM surgery on a React-owned node), and the animation
+     * travels exactly `text width + MARQUEE_GAP` - the distance from "first copy starts at
+     * the left edge" to "second copy starts at the left edge". Anything shorter shows a
+     * blank box for part of every cycle; anything longer stutters at the seam.
+     *
+     * The distance was previously driven by the *overflow* and the motion was a there-and-back
+     * pass on a fixed formula, "7s + 60ms/px". A title 22px too long got the same 8s pass as
+     * one 200px too long: 2.6px/s, which reads as a title that does not move at all. Speed is
+     * now a constant, so the overflow only decides whether it scrolls, not how long it takes.
+     *
+     * Re-measuring is driven by the title's own signals - a ResizeObserver on the crumbs nav
+     * plus a MutationObserver filtered to the crumbs - not by a global observer. The
+     * transcript mutates on every streamed token, and a global observer would restart the
+     * marquee dozens of times a second. A few timed re-syncs after boot cover the case where
+     * the header has not been laid out yet when the plugin starts.
      *
      * Everything is cancelled when the wallpaper is off, because the matching
      * `text-overflow: clip` lives in the activation-scoped stylesheet. Left running without
      * it, a scrolling title would still pin its ellipsis to the right edge.
      */
+    const MARQUEE_PROBE = 'dsh.custom-background.marquee.probe';
+
     function installTitleMarquee() {
       // The marquee is an enhancement, not a load-bearing part of the plugin: if the host
       // ever runs this outside a full renderer there is nothing to observe, and the title
@@ -1147,51 +1202,141 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         return { sync() {}, dispose() {} };
       }
 
-      /** @type {WeakMap<Element, Animation>} */
+      /** @type {WeakMap<Element, {loop: number, animation: Animation}>} */
       const running = new WeakMap();
       /** @type {WeakSet<Element>} */
       const observed = new WeakSet();
       let timer = 0;
       let disposed = false;
+      let probe = '';
 
       const stop = (crumb) => {
-        const animation = running.get(crumb);
-        if (animation === undefined) return;
-        animation.cancel();
+        // The repeat only exists to feed the loop. Leaving it behind would draw the title
+        // twice in a box that is no longer scrolling.
+        crumb.removeAttribute('data-dshbg-mq');
+        const entry = running.get(crumb);
+        if (entry === undefined) return;
+        entry.animation.cancel();
+        crumb.style.removeProperty('min-width');
         running.delete(crumb);
       };
 
-      const start = (crumb) => {
-        // `scrollWidth - clientWidth` is already the exact hidden width: the overflow area
-        // starts at the padding edge, so the difference excludes both paddings. Keeping a
-        // few pixels back stops the last glyph from sitting flush on the clip edge.
-        const distance = crumb.scrollWidth - crumb.clientWidth;
-        const shift = distance - 6;
-        if (shift < 8) return;
-        const duration = Math.min(26000, 7000 + shift * 60);
+      /** Text width, box width, and the distance the text has to travel. */
+      const measure = (crumb) => {
+        const style = getComputedStyle(crumb);
+        const padding = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+        const box = crumb.clientWidth;
+        const inner = Math.max(0, box - padding);
+        let text = 0;
+        try {
+          const range = document.createRange();
+          range.selectNodeContents(crumb);
+          text = range.getBoundingClientRect().width;
+        } catch {
+          text = 0;
+        }
+        // `scrollWidth` as a fallback only: it is wrong exactly when it matters most (while
+        // an animation is running), but it is better than nothing if Range is unavailable.
+        // With the repeat attached the line is two copies plus the gap, so the fallback has
+        // to undo that first - otherwise each pass measures its own repeat and the loop
+        // distance grows on every sync.
+        if (!(text > 0)) {
+          const line = Math.max(0, crumb.scrollWidth - padding);
+          text = crumb.hasAttribute('data-dshbg-mq') ? Math.max(0, (line - MARQUEE_GAP) / 2) : line;
+        }
+        // `min-width` is resolved against the content box unless the box is `border-box`,
+        // and `clientWidth` always includes the padding. Pinning the raw `clientWidth` on a
+        // content-box crumb widens it by one padding pair - the title box grows and pushes
+        // the chips beside it.
+        const pin = style.boxSizing === 'border-box' ? box : inner;
+        return { box, inner, pin, text, shift: Math.round(text - inner) };
+      };
+
+      /**
+       * Last measurement, in localStorage. The marquee is the one part of this plugin whose
+       * failure is invisible in a screenshot - a title that does not scroll looks exactly
+       * like a title that fits - so it leaves its numbers behind where they can be read back
+       * off disk when the plugin is running inside a packaged app with no devtools.
+       * Deduplicated, so a steady state writes nothing.
+       */
+      const record = (crumb, metrics, note) => {
+        try {
+          const payload = JSON.stringify({
+            on: document.documentElement.hasAttribute('data-dshbg-on'),
+            n: document.querySelectorAll(CRUMB).length,
+            cls: String(crumb.className ?? '').slice(0, 48),
+            box: metrics.box,
+            inner: metrics.inner,
+            text: Math.round(metrics.text),
+            shift: metrics.shift,
+            sw: crumb.scrollWidth,
+            mq: crumb.hasAttribute('data-dshbg-mq') ? 1 : 0,
+            note,
+            at: Date.now(),
+          });
+          if (payload === probe) return;
+          probe = payload;
+          window.localStorage.setItem(MARQUEE_PROBE, payload);
+        } catch {
+          // Diagnostics must never be able to break the marquee.
+        }
+      };
+
+      const apply = (crumb) => {
+        const metrics = measure(crumb);
+        const previous = running.get(crumb);
+        if (metrics.shift < 2) {
+          stop(crumb);
+          record(crumb, metrics, 'fits');
+          return;
+        }
+        // The repeat is what makes the loop seamless, and its text has to track the title:
+        // a renamed session keeps the same crumb node, so the attribute is refreshed on
+        // every pass rather than only when the animation is (re)built.
+        const text = crumb.textContent ?? '';
+        // Unrounded: the seam is exact only if the distance equals the measured text width
+        // plus the gap. Rounding to whole pixels leaves a sub-pixel jump on every loop.
+        const loop = metrics.text + MARQUEE_GAP;
+        if (previous !== undefined && previous.loop === loop && previous.animation.playState !== 'idle') {
+          // Same geometry as last time: leave the animation alone, but re-pin - `sync()`
+          // clears the pin before measuring - and keep the repeat in sync with the title.
+          if (crumb.getAttribute('data-dshbg-mq') !== text) crumb.setAttribute('data-dshbg-mq', text);
+          if (metrics.pin > 0) crumb.style.setProperty('min-width', `${metrics.pin}px`, 'important');
+          return;
+        }
+        stop(crumb);
+        if (crumb.getAttribute('data-dshbg-mq') !== text) crumb.setAttribute('data-dshbg-mq', text);
+        if (metrics.pin > 0) crumb.style.setProperty('min-width', `${metrics.pin}px`, 'important');
+        const total = Math.max(3000, Math.round((loop / MARQUEE_SPEED) * 1000));
         const animation = crumb.animate(
           [
             { textIndent: '0px', offset: 0 },
-            { textIndent: '0px', offset: 0.14 },
-            { textIndent: `-${shift}px`, offset: 0.52 },
-            { textIndent: `-${shift}px`, offset: 0.64 },
-            { textIndent: '0px', offset: 1 },
+            { textIndent: `-${loop.toFixed(2)}px`, offset: 1 },
           ],
-          { duration, iterations: Infinity, easing: 'ease-in-out' },
+          { duration: total, iterations: Infinity, easing: 'linear' },
         );
-        running.set(crumb, animation);
+        running.set(crumb, { loop, animation });
+        record(crumb, metrics, 'scroll');
       };
 
       const sync = () => {
         if (disposed) return;
-        const on = document.documentElement.hasAttribute('data-dshbg-on');
-        for (const crumb of document.querySelectorAll(CRUMB)) {
-          if (!observed.has(crumb)) {
-            observed.add(crumb);
-            resize.observe(crumb);
+        const crumbs = document.querySelectorAll(CRUMB);
+        if (!document.documentElement.hasAttribute('data-dshbg-on')) {
+          for (const crumb of crumbs) stop(crumb);
+          return;
+        }
+        for (const crumb of crumbs) {
+          // Observe the crumbs nav, not the crumb: observing the crumb would make our own
+          // animation a resize source.
+          const host = crumb.parentElement;
+          if (host !== null && !observed.has(host)) {
+            observed.add(host);
+            resize.observe(host);
           }
-          stop(crumb);
-          if (on) start(crumb);
+          // Clear the pin first so the measurement sees the layout's own width.
+          crumb.style.removeProperty('min-width');
+          apply(crumb);
         }
       };
 
@@ -1229,11 +1374,21 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       mutations.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
       sync();
 
+      // The header can mount before it has a width - a session still settling, a tab being
+      // restored. Those first measurements read zero and bail, so ask again a few times
+      // instead of waiting for a resize that may never come.
+      const retries = [400, 1200, 3000].map((delay) =>
+        setTimeout(() => {
+          if (!disposed) sync();
+        }, delay),
+      );
+
       return {
         sync,
         dispose() {
           disposed = true;
           if (timer !== 0) clearTimeout(timer);
+          for (const handle of retries) clearTimeout(handle);
           resize.disconnect();
           mutations.disconnect();
           for (const crumb of document.querySelectorAll(CRUMB)) stop(crumb);

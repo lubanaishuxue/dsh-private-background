@@ -77,7 +77,8 @@
 |---|---|---|
 | 输入框 | `[data-composer-card]` | 官方 data 属性 |
 | 底部状态栏 | `[data-composer-dock]` | 官方 data 属性（宿主的 `InputBar.dock`） |
-| 头部胶囊 | `[data-slot="conversation.session.header.actions"] button` | 槽位 data 属性；`_headerActions` 里只渲染这一个槽，所以「槽里每个 button」正好是标题旁边那一排 |
+| 头部胶囊 | `[data-slot="conversation.session.header.actions"] button:not([class*="_trigger"])` | 槽位 data 属性；`_headerActions` 里只渲染这一个槽，所以「槽里每个 button」正好是标题旁边那一排。触发器排除，见下 |
+| 团队面板 | `[data-team-panel]` | 宿主给面板根写的 data 属性；面板是 portal 出来的，槽位收口够不到它，见下 |
 | 费用明细胶囊 | `[data-composer-dock] .cm-btn`（头部那颗用 `[data-slot="conversation.session.header.actions"] .cm-btn` 隐藏） | 槽位 data 属性 + 计费器自己的类名 |
 | 用户气泡 | `[data-chat-flow-kind="user"] [class*="_bubble"]` | flow item 的 data 属性 + 本地类名 |
 | 代码块 | `[class*="_block_"]:has([data-code-block-banner])` | 类名是 `_block_<hash>_<line>`，`_block_` 这半截能跨版本存活 |
@@ -94,6 +95,10 @@
 **头部那颗费用明细是藏掉的，不是磨砂的。** 计费器把同一个按钮注册了两处：一处是会话头部（`conversation.session.header.actions` 槽），一处是底部状态栏。同一行数字出现两遍是重复信息，只留下面那颗，所以头部那条规则整句是 `display: none !important`。
 
 它**不受「质感」开关管辖**——这不是装饰，是「一颗按钮出现了两次」这个问题的修复，实心模式下也不该冒出来，所以它写在 `costMeterCss` 里而不是 `statusGlassCss` 里。计费器自己有个 `hideSessionCostHeader` 配置键做同一件事，但那个值存在它自己的 ledger 里、每次用量 tick 都会重写，手改的值撑不到下次启动。选择器收口在头部槽上，底部那颗和统计弹窗里的都不受影响。
+
+**团队面板为什么不能用槽位收口。** 面板是 `createPortal` 渲染到 `document.body` 的，**不是** `conversation.session.header.actions` 的后代——`position: fixed` 只改变它画在哪里，但这里连 DOM 位置都换了。所以 `[data-slot="…header.actions"] button[class*="_member"]` 一个元素都匹配不到，规则静默失效，成员卡照旧是一块黑。宿主在面板根上写了 `data-team-panel`，这才是那个能用的钩子，而且它比哈希类名活得久。
+
+面板本身宿主已经磨砂过了（`--dsw-specific-menu` + `--dsw-menu-backdrop-filter` 画在 `::before` 上），但里面有两处画 `--dsw-alias-bg-layer-2`——成员卡和任务卡——在透光的面板里就是两个黑洞。两处用两种修法：面板内整体重混这个 token（任务卡保留自己的发丝边和圆角，只是不再不透明），成员卡额外套一层芯片配方（顶部内高光读作「可点」）。成员卡选择器是 `button[class*="_member"]`：卡的子节点叫 `_memberName` / `_memberText` / `_memberDot` / `_memberModel`，当前那张还带 `_memberCurrent`，`$=` 和裸 `*=` 都选不中；只有卡自己是 `<button>`，这条也顺手把 workflow 面板的 `_memberButton` 挡在外面。
 
 **头部那排胶囊为什么用一个槽就能全选中。** `_headerActions` 这个容器里只渲染了 `renderSlot("conversation.session.header.actions")` 一个东西，所以「这个槽里的每个 button」正好等于「标题旁边那排」：智能体团队、标准模式、4 个子智能体。它们全都是宿主用 `background: 0 0; border: 0` 画的纯文字按钮，铺上玻璃才从一排散字变成一排面板。这些按钮本来没有边框，所以给的是芯片那套 `.5px` 发丝边。触发器（`_trigger` / `_switcherTrigger`）用 `:not()` 排除掉——给一个开下拉的按钮常驻一块底色，读起来像「按下去没弹起来」，玻璃应该只出现在弹出来的面板里。
 
@@ -118,16 +123,20 @@
 
 ### 标题超长就滚动
 
-会话标题是面包屑，宿主封顶 `max-width: 220px` + `text-overflow: ellipsis`，长名字从第 220px 起就没了。纯 CSS 补不了这个洞：滚动的距离是 `scrollWidth - clientWidth`，没有任何长度单位能表达「藏了多少」。
+会话标题是面包屑，宿主封顶 `max-width: 220px` + `text-overflow: ellipsis`，长名字从第 220px 起就没了。纯 CSS 补不了这个洞：滚动的距离是「藏了多少」，没有任何长度单位能表达。
 
 所以分成两半：**clip 在样式表里，距离由 JS 量出来交给 Web Animation**。
 
 - 动的是 `text-indent` 而不是 `transform`。要动的是元素**内部**的文字；`transform` 会把整个盒子——连悬停底色和点击区域——拖到旁边那几个胶囊上面去。
-- 量之前必须先 `cancel()` 正在跑的动画。`text-indent` 会把文字整体左移，`scrollWidth` 报的就是移动后的溢出边，不先停就会越量越小、标题一路往左爬。
-- 重新测量的触发源只有标题自己：一个盯面包屑的 `ResizeObserver`，加一个**过滤过**的 `MutationObserver`。转写区每吐一个 token 都在改 DOM，全局监听会让跑马灯一秒重启几十次。
+- **单向匀速、无缝循环**：文字一直往左走，走完「文字宽 + 32px 间距」就回到起点，而那一帧和出发那一帧像素级重合，所以看不出接缝。循环距离用未取整的文字宽度算——取整会在每次接缝留下不到一个像素的跳动。
+- 接缝靠 `::after` 复制一份文字：`content: attr(data-dshbg-mq)`，文字通过属性传进去。**不去碰 React 管的文本节点**——不复制的话，每个循环里有一半时间是空盒子；复制两份则永远填满。
+- 距离用 `Range` 量文字本身，不是 `scrollWidth`。`Range` 报的是文字宽度，和盒子怎么裁无关，动画跑着也照样准；`scrollWidth` 读的正是 `text-indent` 在挪的那个内容边缘，动画一跑，每次重量都在读自己被挪过的结果。
+- 盒子用 `min-width` 钉住。`inline-block` 是 shrink-to-fit，而 `text-indent` 参与首行 max-content 计算——往左拉文字的同时也把盒子拉窄，`ResizeObserver` 于是重新触发，动画被自己重启。钉住的宽度要按 `box-sizing` 折算：`clientWidth` 含内边距，`min-width` 默认对 content box 生效，直接钉 `clientWidth` 会让标题框自己胖一圈。
+- 重新测量的触发源只有标题自己：一个盯**面包屑导航**的 `ResizeObserver`（盯标题本身会让自己的动画变成 resize 源），加一个**过滤过**的 `MutationObserver`。转写区每吐一个 token 都在改 DOM，全局监听会让跑马灯一秒重启几十次。启动后再补几次定时同步，防头部还没排版好时第一次量到 0。
+- 速度是常数 `45px/s`，距离只决定「要不要滚」，不决定「滚多久」。旧公式是 `7s + 每像素 60ms`，一个只超出 22px 的标题也要走 8.3 秒——2.6px/s，肉眼就是一个不动的标题。
 - 面包屑的当前那一节是 `<span>`，祖先才是 `<button>`，两个都要选中。`_crumbSeg` / `_crumbSep` / `_crumbs` 也含 `_crumb` 子串，所以按名字排除，而不是靠层级位置猜。
-- 动画节奏是「停 → 滑到尾部 → 停 → 滑回来」，不是匀速跑圈：速度按距离算，`7s + 每像素 60ms`，上限 26s。停的两段各占 14%，所以扫一眼就能读到开头。
-- 关掉壁纸时动画跟着停——因为配套的 `text-overflow: clip` 在激活作用域里，没有它，滑动的标题会一直把省略号钉在右边。
+- 关掉壁纸时动画跟着停，`data-dshbg-mq` 一起摘掉——因为配套的 `text-overflow: clip` 在激活作用域里，没有它，滑动的标题会一直把省略号钉在右边；而重复的那份会在一个不再滚动的盒子里画两遍标题。
+- 它把最后一次测量写进 `localStorage`（`dsh.custom-background.marquee.probe`，去重写入）。跑马灯是这个插件里唯一「坏了也看不出来」的部分：不滚的标题和刚好放得下的标题长得一模一样，而打包后的 App 没有 devtools。
 
 ## 四、设置页为什么是不透明的
 
@@ -214,7 +223,7 @@ client.js
 node tools/smoke-test.cjs
 ```
 
-125 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、液态玻璃三档归属与两套配方（面板 / 芯片）、底部状态栏、头部胶囊、用户气泡、费用明细胶囊与头部那颗的隐藏、标题滚动选择器、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
+148 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、液态玻璃三档归属与两套配方（面板 / 芯片）、底部状态栏、头部胶囊、用户气泡、费用明细胶囊与头部那颗的隐藏、团队面板（portal 与内层 token 重混）、标题滚动的选择器 / 测量方式 / 无缝循环 / 自激防护、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
 
 `--dump` 可打印实际产出的 CSS：
 
