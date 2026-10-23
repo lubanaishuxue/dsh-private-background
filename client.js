@@ -531,9 +531,28 @@ window.__ModuleLoader__.load({
      * wallpaper entirely behind it; the history list carries its own block instead - see
      * `historyBlockCss`.
      */
+    /**
+     * How opaque the sidebar column is allowed to get, at minimum.
+     *
+     * `--dsw-specific-sidebar-fill` used to be `lift: 0`, so its alpha *was* the panel
+     * slider. At `surface: 0` that means the sidebar paints nothing at all - and a sidebar
+     * with no fill is not "more glassy", it is gone: the nav items, the workspace group and
+     * the session list all float on the photograph with no column to belong to, and the
+     * only thing separating them from the transcript is a border that is not there.
+     *
+     * The number is measured, not guessed: `diag/sidebar-floor.png` composites the veil over
+     * the user's own screenshot at 0 / 20 / 30 / 40 / 55%, and 40% is where the column reads
+     * as a surface while the picture still comes through. Below that the grouping is lost;
+     * above it the wallpaper starts to disappear.
+     *
+     * This only applies when the sidebar is re-mixed at all (whole-window scope). In
+     * work-area scope the token is not emitted, so the sidebar keeps the theme's own fill.
+     */
+    const SIDEBAR_FLOOR = 40;
+
     const SURFACE_TOKENS = [
       { token: '--dsw-alias-bg-base', raw: 'base', lift: 0 },
-      { token: '--dsw-specific-sidebar-fill', raw: 'sidebar', lift: 0, sidebarOnly: true },
+      { token: '--dsw-specific-sidebar-fill', raw: 'sidebar', lift: 0, floor: SIDEBAR_FLOOR, sidebarOnly: true },
       { token: '--dsw-alias-bg-layer-1', raw: 'l1', lift: 8 },
       { token: '--dsw-specific-input-major', raw: 'input', lift: 8 },
       { token: '--dsw-specific-selector', raw: 'selector', lift: 8 },
@@ -598,19 +617,38 @@ html[data-dshbg-on]::after {
     /**
      * Token capture and remix - the "one global variable" everything else hangs off.
      *
-     * **Capture goes on `<html>`, remix goes on `<body>`, and the split is load-bearing.**
+     * **Capture goes on `<body>`, remix goes on `body > *`, and both halves of that are
+     * load-bearing.**
      *
      * `--dshbg-raw-x: var(--dsw-alias-x)` is a *computed-value-time* substitution, so it
      * resolves against whatever `--dsw-alias-x` is on the element that declares it. If the
      * capture and the remix sat on the same element, the capture would read the already
-     * re-mixed value and the whole recipe would collapse to transparent.
+     * re-mixed value and the whole recipe would collapse.
      *
-     * The remix has to live on `body` rather than on the app frame, because **`#root` is
-     * not the whole document**. Every portal - the cost-meter dialogs, the hover card, the
-     * team panel, any third-party popover - is a *sibling* of `#root` under `body`, so a
+     * **And the capture has to sit on `body`, because that is where the host declares the
+     * tokens.** DSH's palettes are `body { --dsw-alias-* }` for the light theme and
+     * `body[data-ds-dark-theme] { --dsw-alias-* }` for the dark one - not `:root`. Custom
+     * properties only inherit *downwards*, so capturing on `<html>` read the guaranteed-
+     * invalid value for every single token: `color-mix(in srgb, <nothing> 16%, transparent)`
+     * is invalid at computed-value time, the re-mixed property becomes invalid too, and
+     * `background: var(--dsw-alias-bg-layer-2)` then falls back to `transparent`.
+     *
+     * **That was a live bug, not a theory.** Every panel the plugin claimed to be "16%
+     * opaque" was in fact fully transparent; the only thing making any of them look like
+     * glass was the `backdrop-filter` blur, which is why the whole UI read as washed out and
+     * why the sidebar lost its grey base at `surface: 0` and the settings dialog had nothing
+     * behind its text. Capturing on `body` and re-mixing one level below fixes all of it at
+     * once. `diag/eval.cjs` is how it was found: `getComputedStyle(panel).backgroundColor`
+     * was `rgba(0, 0, 0, 0)` when the host's own rule said otherwise.
+     *
+     * The remix lives on `body > *` rather than on the app frame, because **`#root` is not
+     * the whole document**. Every portal - the cost-meter dialogs, the hover card, the team
+     * panel, any third-party popover - is a *sibling* of `#root` under `body`, so a
      * frame-scoped remix never reached them. That was the single largest source of "black
      * boxes": everything inside the frame went glass, and everything portaled outside it
-     * kept painting the theme's opaque surface tokens.
+     * kept painting the theme's opaque surface tokens. One level below `body` covers `#root`
+     * and every portal at once, and stops exactly where it has to: `body` itself keeps the
+     * theme's values, so the capture above it stays a capture.
      *
      * Work-area scope still works: the sidebar token is simply *not emitted* into the
      * remix, so it keeps whatever the theme painted.
@@ -620,16 +658,17 @@ html[data-dshbg-on]::after {
       const labelCaptures = LABEL_TOKENS.map((token, index) => `  --dshbg-raw-label-${index}: var(${token});`).join('\n');
       const remixes = SURFACE_TOKENS.filter((entry) => settings.fullWindow || entry.sidebarOnly !== true)
         .map((entry) => {
-          const alpha = Math.min(100, clamp(settings.surface, 0, 100) + entry.lift);
+          const floor = entry.floor === undefined ? 0 : entry.floor;
+          const alpha = Math.min(100, Math.max(floor, clamp(settings.surface, 0, 100) + entry.lift));
           return `  ${entry.token}: color-mix(in srgb, var(--dshbg-raw-${entry.raw}) ${alpha}%, transparent) !important;`;
         })
         .join('\n');
       return `
-html[data-dshbg-on] {
+html[data-dshbg-on] body {
 ${captures}
 ${labelCaptures}
 }
-html[data-dshbg-on] body {
+html[data-dshbg-on] body > * {
 ${remixes}
 }
 `;
@@ -1681,17 +1720,58 @@ ${restores}
      * scrim in both themes by construction - if the host ever changes what a mask looks
      * like, both move together. (`:has()` cannot be nested, so the strip is gated on the
      * panel rather than on the scrim; in practice the scrim only exists alongside it.)
+     *
+     * **The fill follows the panel slider, with a floor.** A modal that stayed at one fixed
+     * number regardless of `surface` would be a hole in an otherwise opaque window at
+     * `surface: 100`, and would refuse to get glassier when the user asks for glass. So it
+     * tracks the slider with `MODAL_LIFT`, and `MODAL_FLOOR` is the point below which it
+     * stops - not for looks, but because past it the dialog stops being readable, and being
+     * readable is the entire reason a modal is allowed to be opaque in the first place.
+     *
+     * **The controls inside the panel are the other half, and they need the opposite fix.**
+     * `--dsw-alias-bg-module-platform` (selectors, steppers, the selected theme cube) and
+     * `--dsw-specific-sidebar-nav-item-active` (the selected nav row) are *opaque neutrals*
+     * - `#353638` and `#43454a` - so on a frosted panel they are the last solid boxes in
+     * the dialog, and they read as holes punched in the glass.
+     *
+     * They cannot simply be made translucent versions of themselves. The host picks them
+     * *lighter than the panel* on purpose (that is what makes a control look raised); with
+     * both layers translucent over a bright photograph, a lighter-but-opaque neutral turns
+     * into the darkest thing on screen. Raising their alpha makes them solid again, lowering
+     * it makes them vanish - there is no alpha that fixes the polarity.
+     *
+     * So inside the panel they are replaced by a **veil of the label colour**: 14% white in
+     * the dark theme, 14% black in the light one, because `--dsw-alias-label-primary` already
+     * flips polarity with the theme. That is the same device the host itself uses for every
+     * interactive state it owns (`--dsw-alias-interactive-bg-hover` is `rgba(255,255,255,.08)`,
+     * `-active` is `.14`), so the controls stay inside the design language instead of
+     * inventing a new one.
+     *
+     * The override is declared **on the panel**, so it inherits down into the dialog and
+     * stops there: the app's own sidebar keeps its opaque selected row, and tables, code
+     * blocks and badges elsewhere - which read the same token - are untouched.
      */
-    const MODAL_FILL = 76;
-    const MODAL_BLUR = 26;
+    const MODAL_LIFT = 16;
+    const MODAL_FLOOR = 58;
+    const MODAL_CEILING = 96;
+    const MODAL_BLUR = 42;
+    const MODAL_CONTROL_FILL = 24;
+    const MODAL_NAV_FILL = 32;
+
+    function modalFill(settings) {
+      return Math.min(MODAL_CEILING, Math.max(MODAL_FLOOR, clamp(settings.surface, 0, 100) + MODAL_LIFT));
+    }
 
     function modalCss(settings) {
       const panel = '[role="dialog"][aria-modal="true"]';
+      const fill = modalFill(settings);
       return `
 ${prefixed('html[data-dshbg-on] body', [`:where(${panel})`])} {
-  background-color: color-mix(in srgb, var(--dshbg-raw-l2) ${MODAL_FILL}%, transparent) !important;
-  -webkit-backdrop-filter: blur(${MODAL_BLUR}px) saturate(150%) !important;
-  backdrop-filter: blur(${MODAL_BLUR}px) saturate(150%) !important;
+  background-color: color-mix(in srgb, var(--dshbg-raw-l2) ${fill}%, transparent) !important;
+  -webkit-backdrop-filter: blur(${MODAL_BLUR}px) saturate(165%) !important;
+  backdrop-filter: blur(${MODAL_BLUR}px) saturate(165%) !important;
+  --dsw-alias-bg-module-platform: color-mix(in srgb, var(--dshbg-raw-label-0) ${MODAL_CONTROL_FILL}%, transparent) !important;
+  --dsw-specific-sidebar-nav-item-active: color-mix(in srgb, var(--dshbg-raw-label-0) ${MODAL_NAV_FILL}%, transparent) !important;
 }
 html[data-dshbg-on]:has(${panel}) ${frameSelector()}::before {
   background-image: linear-gradient(

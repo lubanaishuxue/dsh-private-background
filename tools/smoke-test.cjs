@@ -225,6 +225,18 @@ function check(name, condition, detail) {
   }
 }
 
+/**
+ * Pull one number out of a matched CSS block, defensively.
+ *
+ * Assertions should not be able to crash the suite: when the rule is missing entirely this
+ * returns NaN, and `NaN < x` / `NaN === x` are both false, so the assertion reports FAIL the
+ * normal way instead of throwing on a null match halfway through the run.
+ */
+function pick(block, pattern) {
+  const found = block === null ? null : pattern.exec(block);
+  return found === null ? Number.NaN : Number(found[1]);
+}
+
 /** Apply the plugin with the given settings and return the emitted stylesheet. */
 async function emit(settingsOverride, options) {
   const run = harness(settingsOverride, options);
@@ -278,23 +290,35 @@ async function main() {
   check('captures label tokens for the settings page', base.css.includes('--dshbg-raw-label-0: var(--dsw-alias-label-primary)'));
   check('re-mixes the base surface', base.css.includes('--dsw-alias-bg-base: color-mix'));
   check('keeps elevation order', /--dsw-alias-bg-layer-2: color-mix\(in srgb, var\(--dshbg-raw-l2\) 36%/.test(base.css));
-  // **捕获在 <html>，重混在 <body>，这个分离是承重的。**
+  // **捕获在 <body>，重混在 `body > *`，两半都是承重的。**
   //
   // `--dshbg-raw-x: var(--dsw-alias-x)` 是「计算值时刻」的替换：它读的是**声明它的那个
   // 元素**上的 `--dsw-alias-x`。捕获和重混放在同一元素上，捕获就会读到已经被重混过的值，
   // 整条配方塌成透明。
   //
-  // 重混必须在 `body` 而不是在 `#root` 那个 frame 上，因为 **`#root` 不是整个文档**：
-  // 计费器弹窗、悬停卡、团队面板、任何第三方浮层都是 `#root` 在 `body` 下的**兄弟节点**。
-  // 挂在 frame 上时它们一个都读不到重混值，于是继续画主题原来的不透明色 —— 这就是所有
-  // 「黑框」的总根源。这条断言钉住的是这个性质，不是某个选择器字符串。
+  // 而捕获必须在 `body` 上，因为**主题就是声明在 `body` 上的**：DSH 的调色板是
+  // `body { --dsw-alias-* }`（浅色）和 `body[data-ds-dark-theme] { --dsw-alias-* }`（深色），
+  // 不是 `:root`。自定义属性只向下继承，所以捕获挂在 `<html>` 上时每一个 token 读到的都是
+  // guaranteed-invalid：`color-mix(in srgb, <空> 16%, transparent)` 在计算值时刻非法 →
+  // 重混出来的属性也非法 → `background: var(--dsw-alias-bg-layer-2)` 退回 `transparent`。
+  //
+  // **这是一个真实的线上 bug**：所有「16% 不透明」的面板其实全透明，看起来像玻璃全靠
+  // backdrop-filter。这三条断言钉住的就是这个结构。
   check(
-    'capture sits on <html>, where the theme tokens are untouched',
-    /html\[data-dshbg-on\] \{[^}]*--dshbg-raw-base: var\(--dsw-alias-bg-base\)/.test(base.css),
+    'capture sits on <body>, where the theme declares its tokens',
+    /html\[data-dshbg-on\] body \{[^}]*--dshbg-raw-base: var\(--dsw-alias-bg-base\)/.test(base.css),
   );
   check(
-    're-mix sits on <body>, so portals outside #root inherit it',
-    /html\[data-dshbg-on\] body \{[^}]*--dsw-alias-bg-base: color-mix/.test(base.css),
+    'the capture is not on <html>, where the tokens do not exist',
+    !/html\[data-dshbg-on\] \{[^}]*--dshbg-raw-base:/.test(base.css),
+  );
+  check(
+    're-mix sits one level below the capture, so it cannot read itself',
+    /html\[data-dshbg-on\] body > \* \{[^}]*--dsw-alias-bg-base: color-mix/.test(base.css),
+  );
+  check(
+    'the re-mix covers #root and every portal, but not body itself',
+    !/html\[data-dshbg-on\] body \{[^}]*--dsw-alias-bg-base: color-mix/.test(base.css),
   );
   check(
     'the re-mix is NOT fenced into the app frame',
@@ -314,6 +338,19 @@ async function main() {
   console.log('\nscope: whole window');
   check('sidebar token IS re-mixed', wide.css.includes('--dsw-specific-sidebar-fill: color-mix'));
   check('bottom bar left glassy', !wide.css.includes('[data-shell-bottom] {'));
+
+  // The sidebar has a floor. Without one, `surface: 0` - the setting that makes everything
+  // else maximally glassy - leaves the column with no fill at all, and a sidebar with no
+  // fill is not "more glassy", it is gone: nav items and the workspace group float on the
+  // photograph with nothing to belong to. See `SIDEBAR_FLOOR`.
+  const sidebarAlpha = (css) =>
+    pick(
+      /--dsw-specific-sidebar-fill: color-mix\(in srgb, var\(--dshbg-raw-sidebar\) (\d{1,3})%, transparent\)/.exec(css),
+      /(\d{1,3})%/,
+    );  check('the sidebar keeps a base at surface 0', sidebarAlpha((await emit({ fullWindow: true, surface: 0 })).css) === 40);
+  check('the floor is a floor, not a lift', sidebarAlpha((await emit({ fullWindow: true, surface: 25 })).css) === 40);
+  check('above the floor the slider still wins', sidebarAlpha((await emit({ fullWindow: true, surface: 70 })).css) === 70);
+  check('the floor never makes the sidebar solid', sidebarAlpha((await emit({ fullWindow: true, surface: 100 })).css) === 100);
 
   console.log('\nconversation opacity');
   // The transcript needs a steadier backdrop than the chrome. It overrides the base token
@@ -899,22 +936,20 @@ async function main() {
   // --dsw-alias-bg-layer-2 —— 在重混列表里，surface=0 时只剩 16%。它背后那个遮罩的
   // --dsw-mask-blur 主题值是 none，也就是**只压暗、完全不磨**。于是正文原样穿过面板。
   // 这一节钉住的是「模态必须有填充 + 模糊」，而不是某个类名。
+  // `BASE_SETTINGS.surface` is 20, which is below the modal's floor, so this is the floor
+  // value. The three regimes are pinned separately, further down.
   check(
     'a modal panel gets fill and blur',
-    /:where\(\[role="dialog"\]\[aria-modal="true"\]\) \{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l2\) 76%, transparent\)[^}]*backdrop-filter: blur\(26px\)/.test(
+    /:where\(\[role="dialog"\]\[aria-modal="true"\]\) \{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l2\) 58%, transparent\)[^}]*backdrop-filter: blur\(42px\)/.test(
       base.css,
     ),
   );
   // 模态是浮在「已经压暗过」的背景上的一张卡，所以可以比整页设置更透一点。
-  // 这条断言守的是那个关系，不是两个数：谁把 MODAL_FILL 调到比 SETTINGS_FILL 还实，
+  // 这条断言守的是那个关系，不是两个数：谁把模态调到比 SETTINGS_FILL 还实，
   // 就等于把「卡片」当成了「页面」。
   //
-  // 取值写成防御式的：断言本身不该把测试跑挂。规则整条缺失时这里拿到 NaN，
-  // `NaN < x` 为假，于是这条断言正常报 FAIL 而不是抛异常中断整个 suite。
-  const pick = (block, pattern) => {
-    const found = block === null ? null : pattern.exec(block);
-    return found === null ? Number.NaN : Number(found[1]);
-  };
+  // 取值走上面那个防御式的 `pick()`：规则整条缺失时拿到 NaN，
+  // `NaN < x` 为假，于是断言正常报 FAIL 而不是抛异常中断整个 suite。
   const modalBlock = /:where\(\[role="dialog"\]\[aria-modal="true"\]\) \{([^}]*)\}/.exec(base.css);
   const pageBlock = /\[data-dshbg-config\][^{]*\{([^}]*)\}/.exec(base.css);
   const modalFill = pick(modalBlock, /--dshbg-raw-l2\) (\d{1,3})%/);
@@ -970,6 +1005,55 @@ async function main() {
     'no build-hashed class name anywhere in the sheet',
     !/\.[A-Za-z0-9]{6}_/.test(base.css),
     (/\.[A-Za-z0-9]{6}_/.exec(base.css) || [''])[0],
+  );
+
+  // The modal fill is not a fixed number: it tracks the panel slider, with a floor it will
+  // not go under and a ceiling it will not pass. Three points are enough to pin all three
+  // regimes - below the floor, in the linear band, above the ceiling.
+  const modalFillOf = async (surface) => pick(
+    /:where\(\[role="dialog"\]\[aria-modal="true"\]\) \{([^}]*)\}/.exec((await emit({ surface })).css),
+    /--dshbg-raw-l2\) (\d{1,3})%/,
+  );
+  check('the modal has a readability floor', (await modalFillOf(0)) === 58, `fill=${await modalFillOf(0)}`);
+  check('above the floor the panel slider wins', (await modalFillOf(60)) === 76, `fill=${await modalFillOf(60)}`);
+  check('the modal never goes fully solid', (await modalFillOf(100)) === 96, `fill=${await modalFillOf(100)}`);
+
+  // The controls inside the dialog are the other half of "the buttons are not adapted".
+  // `--dsw-alias-bg-module-platform` and `--dsw-specific-sidebar-nav-item-active` are opaque
+  // neutrals, so on a frosted panel they are the last solid boxes in the dialog. They cannot
+  // just be made translucent versions of themselves (see the comment on `modalCss`), so
+  // inside the panel they become a veil of the label colour - white in the dark theme,
+  // black in the light one, because that token already flips polarity.
+  check(
+    'selectors and steppers become a veil, not a solid chip',
+    /--dsw-alias-bg-module-platform: color-mix\(in srgb, var\(--dshbg-raw-label-0\) 24%, transparent\)/.test(
+      base.css,
+    ),
+  );
+  check(
+    'the selected nav row gets a slightly stronger veil',
+    /--dsw-specific-sidebar-nav-item-active: color-mix\(in srgb, var\(--dshbg-raw-label-0\) 32%, transparent\)/.test(
+      base.css,
+    ),
+  );
+  check(
+    'the veil is derived from the theme, not from a literal colour',
+    !/--dsw-alias-bg-module-platform: (rgb|#)/.test(base.css) && !/--dsw-specific-sidebar-nav-item-active: (rgb|#)/.test(base.css),
+  );
+  // Scoped on the panel, so it inherits into the dialog and stops there. The app's own
+  // sidebar keeps its opaque selected row, and tables / code blocks / badges - which read
+  // the same token - are untouched.
+  check(
+    'the control override exists exactly once, on the panel',
+    (base.css.match(/--dsw-alias-bg-module-platform:/g) || []).length === 1 &&
+      modalBlock !== null &&
+      modalBlock[1].includes('--dsw-alias-bg-module-platform:'),
+  );
+  check(
+    'the nav override does not leak into the app sidebar',
+    (base.css.match(/--dsw-specific-sidebar-nav-item-active:/g) || []).length === 1 &&
+      modalBlock !== null &&
+      modalBlock[1].includes('--dsw-specific-sidebar-nav-item-active:'),
   );
 
   console.log('\ndetector');
