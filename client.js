@@ -1620,6 +1620,89 @@ ${restores}
     }
 
     /**
+     * Host modals - and the seam directly above them.
+     *
+     * **A modal is not a panel, and the difference is not cosmetic.** Everything else in
+     * this file treats a surface as "the wallpaper, seen through N% of a colour". A modal
+     * is the one place where that is wrong: it exists to be *read*, and the thing behind it
+     * is the transcript. Two separate failures came out of ignoring that, and both are
+     * visible in one screenshot of DSH's own settings dialog.
+     *
+     * **1. The panel lost its fill and never had a blur.**
+     *
+     * `ui-settings-general`'s panel paints `background: var(--dsw-alias-bg-layer-2)`
+     * (`SettingsRoot.module.css`). That token is in `SURFACE_TOKENS`, so the re-mix pushes
+     * it to `surface + 16` - **16%** at `surface: 0`. The panel was designed as an opaque
+     * dialog, so it carries no `backdrop-filter` of its own, and the scrim behind it cannot
+     * help either: `--dsw-mask-blur` is **`none`** in both themes. The scrim only dims.
+     * Net result: 16% of a layer colour over a dimmed-but-sharp transcript. The text reads
+     * straight through the dialog.
+     *
+     * So the modal gets a real recipe - fill *and* blur - because the blur is what actually
+     * makes 13px text legible over a photograph, not the fill.
+     *
+     * **2. The scrim deliberately skips the Windows title bar, which draws a hard line.**
+     *
+     * The scrim is `inset: var(--dsh-frame-chrome-top, 0px) 0 0`, and on Windows
+     * `--dsh-frame-chrome-top` is exactly `--dsh-windows-titlebar-height`. The host does
+     * that on purpose ("让模态遮罩不绘制 Windows 顶栏区域") so the native caption buttons are
+     * not dimmed. Over a flat theme colour nobody notices. Over a wallpaper it is a hard
+     * horizontal boundary right under the minimise / maximise / close row: the strip above
+     * is the raw artwork, everything below is dimmed 50%.
+     *
+     * The strip is `frame::before` - the drag region, `position: absolute; inset: 0 0 auto;
+     * height: titlebar`. So the missing band is a known, addressable box: while a modal is
+     * up, it gets the same treatment the scrim gives everything else.
+     *
+     * The scrim is extended to `inset: 0` instead? No: the scrim is a real element with an
+     * `onClick` that closes the dialog, and it would cover the drag region - the window
+     * would stop being draggable by its title bar whenever a dialog was open. Painting the
+     * strip is purely visual and costs nothing.
+     *
+     * **The scrim is left as a pure dim, on purpose.** Frosting it too was the first
+     * attempt, and the replica page (`diag/settings-modal.html`) shows why it is wrong: a
+     * 28px blur on a full-viewport scrim turns the *entire* window - sidebar, transcript,
+     * everything - into unreadable mush. The dialog is the one thing that has to be
+     * readable, so the frost belongs on the dialog. The scrim keeps doing the job the host
+     * gave it, and the strip is dimmed to match it.
+     *
+     * **`role="dialog"` + `aria-modal="true"` is the hook, not a class name.** The hashed
+     * class changes every build (that is how v2.24.0 shipped a rule that matched nothing);
+     * `role` and `aria-modal` are semantics the component has to keep for accessibility, so
+     * they survive restyling. It also means this covers *every* host modal - sign-in, the
+     * release prompt, the shortcut sheet - not just the one in the screenshot.
+     *
+     * **`:where()` keeps this rule at the bottom of the cascade on purpose.** It carries
+     * zero specificity, so any hand-written recipe in this file outranks it: `costMeterCss`
+     * keeps its own 93% dialogs, and a future rule for a specific modal can simply be more
+     * specific. A catch-all should be the thing that loses, not the thing that wins.
+     *
+     * The strip copies `--dsw-alias-bg-mask-1` rather than a literal, so it tracks the
+     * scrim in both themes by construction - if the host ever changes what a mask looks
+     * like, both move together. (`:has()` cannot be nested, so the strip is gated on the
+     * panel rather than on the scrim; in practice the scrim only exists alongside it.)
+     */
+    const MODAL_FILL = 76;
+    const MODAL_BLUR = 26;
+
+    function modalCss(settings) {
+      const panel = '[role="dialog"][aria-modal="true"]';
+      return `
+${prefixed('html[data-dshbg-on] body', [`:where(${panel})`])} {
+  background-color: color-mix(in srgb, var(--dshbg-raw-l2) ${MODAL_FILL}%, transparent) !important;
+  -webkit-backdrop-filter: blur(${MODAL_BLUR}px) saturate(150%) !important;
+  backdrop-filter: blur(${MODAL_BLUR}px) saturate(150%) !important;
+}
+html[data-dshbg-on]:has(${panel}) ${frameSelector()}::before {
+  background-image: linear-gradient(
+    var(--dsw-alias-bg-mask-1),
+    var(--dsw-alias-bg-mask-1)
+  ) !important;
+}
+`;
+    }
+
+    /**
      * Compatibility shim for `dsh-cost-meter` (1.9.x).
      *
      * Its panels paint `background: rgb(from var(--dsw-alias-bg-layer-2, ...) r g b / 1)`.
@@ -1731,6 +1814,9 @@ ${prefixed('html[data-dshbg-on]', ['dialog::backdrop'])} {
         bottomRowCss(settings),
         configPageCss(settings),
         fontCss(settings, tone),
+        // Before `costMeterCss` on purpose: `modalCss` is a catch-all with zero specificity,
+        // and a hand-written recipe for a specific modal has to be able to outrank it.
+        modalCss(settings),
         costMeterCss(settings),
         titleCss(),
         // Last, so the frosted panes are not re-painted by anything above.

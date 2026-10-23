@@ -23,6 +23,23 @@ const CLIENT = path.resolve(
     : 'D:/dsh-plugins/custom-background/client.js',
 );
 const DUMP = process.argv.includes('--dump');
+
+function flag(name) {
+  const hit = process.argv.find((arg) => arg.startsWith(`--${name}=`));
+  return hit === undefined ? null : hit.slice(name.length + 3);
+}
+
+const CSS_OUT = flag('css-out');
+const OVERRIDES = (() => {
+  const raw = flag('settings');
+  if (raw === null) return {};
+  try {
+    return JSON.parse(raw);
+  } catch (failure) {
+    console.error(`--settings is not valid JSON: ${failure.message}`);
+    process.exit(1);
+  }
+})();
 const CODE = fs.readFileSync(CLIENT, 'utf8');
 
 const BASE_SETTINGS = {
@@ -877,6 +894,84 @@ async function main() {
   check('dialog scrim is lightened globally', base.css.includes('html[data-dshbg-on] dialog::backdrop'));
   check('dialog scrim stays a scrim', /dialog::backdrop \{\s*background: rgb\(0 0 0 \/ \d{1,2}%\)/.test(base.css));
 
+  console.log('\nhost modals');
+  // DSH 自带的设置弹窗（ui-settings-general）挂在 `#root` **外面**，面板画的是
+  // --dsw-alias-bg-layer-2 —— 在重混列表里，surface=0 时只剩 16%。它背后那个遮罩的
+  // --dsw-mask-blur 主题值是 none，也就是**只压暗、完全不磨**。于是正文原样穿过面板。
+  // 这一节钉住的是「模态必须有填充 + 模糊」，而不是某个类名。
+  check(
+    'a modal panel gets fill and blur',
+    /:where\(\[role="dialog"\]\[aria-modal="true"\]\) \{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l2\) 76%, transparent\)[^}]*backdrop-filter: blur\(26px\)/.test(
+      base.css,
+    ),
+  );
+  // 模态是浮在「已经压暗过」的背景上的一张卡，所以可以比整页设置更透一点。
+  // 这条断言守的是那个关系，不是两个数：谁把 MODAL_FILL 调到比 SETTINGS_FILL 还实，
+  // 就等于把「卡片」当成了「页面」。
+  //
+  // 取值写成防御式的：断言本身不该把测试跑挂。规则整条缺失时这里拿到 NaN，
+  // `NaN < x` 为假，于是这条断言正常报 FAIL 而不是抛异常中断整个 suite。
+  const pick = (block, pattern) => {
+    const found = block === null ? null : pattern.exec(block);
+    return found === null ? Number.NaN : Number(found[1]);
+  };
+  const modalBlock = /:where\(\[role="dialog"\]\[aria-modal="true"\]\) \{([^}]*)\}/.exec(base.css);
+  const pageBlock = /\[data-dshbg-config\][^{]*\{([^}]*)\}/.exec(base.css);
+  const modalFill = pick(modalBlock, /--dshbg-raw-l2\) (\d{1,3})%/);
+  const pageFill = pick(pageBlock, /--dshbg-raw-base\) (\d{1,3})%/);
+  check(
+    'a modal card stays glassier than a full settings page',
+    modalFill < pageFill,
+    `modal=${modalFill} page=${pageFill}`,
+  );
+  // 遮罩只压暗不磨，是「字透出来」的另一半 —— 但**不要**顺手把遮罩也磨了：
+  // diag/settings-modal.html 上试过，全视口 28px 模糊会把侧栏和正文一起糊成一片，
+  // 那是在损失信息，不是在修 bug。磨砂只属于「必须能读」的那个面板。
+  check(
+    'the scrim is left as a pure dim',
+    !/\[aria-hidden="true"\]:has\(\+ \[role="dialog"\]/.test(base.css),
+  );
+  check(
+    'the scrim is still the host\'s own dim',
+    !/\[role="dialog"\]\[aria-modal="true"\]\) \{\s*-webkit-backdrop-filter/.test(base.css),
+  );
+  // 遮罩的 inset 是 `var(--dsh-frame-chrome-top,0px) 0 0`，Windows 下那个值正好等于标题栏
+  // 高度 —— 宿主是**故意**不画顶栏的（为了不压暗原生按钮）。压上壁纸之后，那就是一条
+  // 横穿窗口的硬边。所以模态打开期间，顶栏那条 ::before 要跟上同样的压暗。
+  check(
+    'the title bar strip joins the scrim while a modal is open',
+    /html\[data-dshbg-on\]:has\(\[role="dialog"\]\[aria-modal="true"\]\) #root div:has\(> \[data-shell-overlay\]\)::before \{[^}]*var\(--dsw-alias-bg-mask-1\)/.test(
+      base.css,
+    ),
+  );
+  // 顶栏补的那一层必须是**同一个变量**，不是写死的黑色：遮罩换主题时两边要一起动。
+  check(
+    'the strip copies the mask token, not a literal',
+    !/::before \{[^}]*background-image: linear-gradient\(\s*rgba?\(/.test(base.css),
+  );
+  // **兜底规则必须输给手写规则。** hook 包在 `:where()` 里，特异性归零，于是这条规则的
+  // 特异性只有 `html[data-dshbg-on] body` —— 任何 `.class` 规则都能压过它。
+  // cost-meter 的 93% 弹窗就是靠这一点保住自己的数字的。谁把 `:where()` 去掉，这条会炸。
+  check(
+    'the catch-all carries a zero-specificity hook',
+    (base.css.match(/:where\(\[role="dialog"\]\[aria-modal="true"\]\)/g) || []).length === 1,
+  );
+  check(
+    'a hand-written modal recipe still outranks it',
+    base.css.includes('body .cm-stat-dialog') && !/cm-stat-dialog[^{]*:where/.test(base.css),
+  );
+  check(
+    'the catch-all is emitted before the specific recipes',
+    base.css.indexOf('[aria-modal="true"]') < base.css.indexOf('.cm-stat-dialog'),
+  );
+  // v2.24.0 的死因：规则指向了一个构建期哈希类名，真机上早就换了，测试还全绿。
+  // 这条全局断言把那种写法从根上堵掉 —— 引宿主类名只能引**稳定的一半**（[class*="_menu"]）。
+  check(
+    'no build-hashed class name anywhere in the sheet',
+    !/\.[A-Za-z0-9]{6}_/.test(base.css),
+    (/\.[A-Za-z0-9]{6}_/.exec(base.css) || [''])[0],
+  );
+
   console.log('\ndetector');
   // 这一节测的是**行为**，不是自己生成的 CSS 字符串。
   //
@@ -1114,6 +1209,15 @@ async function main() {
     console.log(`\n--- emitted css (font: auto) ---\n${lit.css}`);
     const glassy = await emit({ composerStyle: 'glass' });
     console.log(`\n--- emitted css (liquid glass) ---\n${glassy.css}`);
+  }
+  // `--dump --css-out=<path> --settings=<json>`: write the sheet for an arbitrary set of
+  // settings. The replica pages under `diag/` need the *real* output for the *user's* real
+  // numbers - a bug that only appears at `surface: 0` cannot be reproduced from the
+  // defaults, and hand-editing a dumped sheet would defeat the point of the replica.
+  if (CSS_OUT !== null) {
+    const custom = await emit(OVERRIDES);
+    fs.writeFileSync(CSS_OUT, custom.css, 'utf8');
+    console.log(`\n--- wrote ${custom.css.length} bytes to ${CSS_OUT} ---`);
   }
   process.exit(failures.length === 0 ? 0 : 1);
 }
