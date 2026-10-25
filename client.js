@@ -69,6 +69,10 @@ window.__ModuleLoader__.load({
       // from the panel slider because that column has two paint layers (host column plus
       // its inner root) and therefore reads darker than the same alpha elsewhere.
       sidebarFill: 40,
+      // Whether the temporary tuning card is shown in the sidebar foot. It lives in the
+      // plugin page so the card can be put away once the numbers are settled, without
+      // having to delete code.
+      showDock: true,
       fullWindow: false,
       font: 'theme',
       fontColor: '#f7f8fa',
@@ -123,6 +127,8 @@ window.__ModuleLoader__.load({
         scope: '作用范围',
         fullWindow: '同时应用到左侧对话栏',
         fullWindowHint: '关掉时只有工作区换背景，左侧对话列表保持原样；打开则整窗铺满。',
+        dockVisible: '显示左侧调参栏',
+        dockVisibleHint: '侧栏底部那张临时调参卡（滑杆 + 探针）。数值调完就关掉它，界面恢复干净；随时可以再打开。',
         font: '字体颜色',
         fonts: { theme: '跟随主题', auto: '自动', light: '浅色', dark: '深色', custom: '自定义' },
         fontHint: '「自动」按背景实际明暗选黑或白；「跟随主题」不做任何改动。',
@@ -178,6 +184,8 @@ window.__ModuleLoader__.load({
         scope: 'Scope',
         fullWindow: 'Also apply to the conversation sidebar',
         fullWindowHint: 'Off: only the work area changes and the sidebar keeps its own look. On: the wallpaper fills the window.',
+        dockVisible: 'Show tuning card',
+        dockVisibleHint: 'The temporary tuning card at the sidebar foot (sliders + probe). Turn it off once the numbers are settled; it can always be turned back on.',
         font: 'Text colour',
         fonts: { theme: 'Theme', auto: 'Auto', light: 'Light', dark: 'Dark', custom: 'Custom' },
         fontHint: '"Auto" picks black or white from the background. "Theme" leaves text untouched.',
@@ -268,6 +276,7 @@ window.__ModuleLoader__.load({
         menuFill: clamp(parsed.menuFill === undefined ? fallback.menuFill : parsed.menuFill, 20, 100),
         menuBlur: clamp(parsed.menuBlur === undefined ? fallback.menuBlur : parsed.menuBlur, 0, 320),
         sidebarFill: clamp(parsed.sidebarFill === undefined ? fallback.sidebarFill : parsed.sidebarFill, 0, 100),
+        showDock: parsed.showDock !== false,
         fullWindow: parsed.fullWindow === true,
         font: fonts.includes(parsed.font) ? parsed.font : fallback.font,
         fontColor:
@@ -1028,7 +1037,20 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
       // that is not in the remix list, so it stays the theme's opaque grey no matter what
       // the wallpaper is doing. Scoped by the flow item's `data-chat-flow-kind="user"` so
       // the same local name in other modules (trajectory, terminal) is not touched.
-      const bubble = '[data-chat-flow-kind="user"] [class*="_bubble"]';
+      // Scoped by the flow item's kind so the same local name in other modules (trajectory,
+      // terminal, goal input, question reply) is not touched.
+      //
+      // **Three kinds, not one.** Only the first user message of a conversation is
+      // `flow-kind="user"`; a prompt added mid-turn arrives as `steering`, and a queued
+      // follow-up as `turn-trigger`. Matching just `user` gave the "only the first message
+      // gets glass" behaviour. `_userRow` is the fallback for whatever kind the host adds
+      // next - it is the row that wraps this bubble and nothing else.
+      const bubble = [
+        '[data-chat-flow-kind="user"] [class*="_bubble"]',
+        '[data-chat-flow-kind="steering"] [class*="_bubble"]',
+        '[data-chat-flow-kind="turn-trigger"] [class*="_bubble"]',
+        '[class*="_userRow"] [class*="_bubble"]',
+      ];
       // Separate array entries, never one comma-joined string: `prefixed()` prefixes each
       // *item*, so a comma inside an item would leave its tail unprefixed.
       const deliverable = ['[data-presented-file]', `[class$="_file"]:has(> [class$="_fileBody"])`];
@@ -1040,7 +1062,7 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
       // those two custom properties are stood down (which also kills the static hover tint).
       const changed = '[data-changed-files]';
       return `
-${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, block, bubble, changed])} {
+${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, block, ...bubble, changed])} {
 ${glassPane(blur)}
 }
 ${prefixed('html[data-dshbg-on]', [changed])} {
@@ -2693,6 +2715,12 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
             hint: text.fullWindowHint,
             onChange: (value) => patchSettings({ fullWindow: value }),
           }),
+          h(Switch, {
+            checked: settings.showDock !== false,
+            label: text.dockVisible,
+            hint: text.dockVisibleHint,
+            onChange: (value) => patchSettings({ showDock: value }),
+          }),
         ),
       );
 
@@ -3010,6 +3038,9 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       const [probe, setProbe] = useState(null);
       const lang = currentLang();
       const text = TEXT[lang];
+      // A tool, not part of the product: once the numbers are settled it is switched off
+      // from the plugin page and stops rendering entirely.
+      if (settings.showDock === false) return null;
 
       useEffect(() => {
         if (!open) {

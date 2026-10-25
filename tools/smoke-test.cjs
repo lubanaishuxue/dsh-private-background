@@ -313,6 +313,14 @@ async function main() {
   // 用户消息气泡画 --dsw-specific-bubble，同样不在重混列表里。它属于转写区内容，
   // 所以跟着文件卡/代码块一起常开，而不是跟输入框的开关。
   check('user bubble becomes a pane', base.css.includes('[data-chat-flow-kind="user"] [class*="_bubble"]'));
+  // 会话里只有第一条用户消息是 flow-kind="user"；中途追加的提示词是 `steering`，排队跟进的
+  // 是 `turn-trigger`。只认 user 就会得到「只有第一句有玻璃」。
+  check(
+    'follow-up prompts get the same bubble glass',
+    base.css.includes('[data-chat-flow-kind="steering"] [class*="_bubble"]') &&
+      base.css.includes('[data-chat-flow-kind="turn-trigger"] [class*="_bubble"]') &&
+      base.css.includes('[class*="_userRow"] [class*="_bubble"]'),
+  );
   check(
     'user bubble is frosted, not just tinted',
     /\[data-chat-flow-kind="user"\] \[class\*="_bubble"\][^{]*\{[^}]*backdrop-filter/.test(base.css),
@@ -928,6 +936,11 @@ async function main() {
   // 临时滑块。它们是要被拆掉的东西，但拆之前必须真的出现在页面上 —— 否则用户找不到。
   check('temporary glass blur slider is on the page', blob.includes('玻璃模糊（临时）'));
   check('temporary glass fill slider is on the page', blob.includes('玻璃填充（临时）'));
+  // 调参卡的总开关在插件页：数值定稿后从界面关掉即可，不用删代码。
+  check(
+    'the tuning card can be switched off from the plugin page',
+    blob.includes('显示左侧调参栏') && CODE.includes('showDock: true') && CODE.includes('settings.showDock === false'),
+  );
 
   console.log('\nsidebar tuning dock');
   // 侧栏那张卡：默认只渲染一行折叠头，展开后才滑杆。标签写错只会在应用里炸，所以真渲染一次。
