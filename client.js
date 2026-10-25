@@ -526,25 +526,27 @@ window.__ModuleLoader__.load({
      * the session list all float on the photograph with no column to belong to, and the
      * only thing separating them from the transcript is a border that is not there.
      *
-     * **The first version of this number was 40, and it was wrong twice over.** It was
-     * picked by compositing the veil over a screenshot at 0 / 20 / 30 / 40 / 55%, which
-     * answers "how dark does 40% look" - not "does the app show 40%". It does not: the
-     * column and the sidebar root both paint this token (see `columnPaintCss`), so 40%
-     * landed on screen as `1 - 0.6²` = **64%**. The user's verdict on that was
-     * "只有会话有背景啊，这怎么都黑了", which is exactly right.
+     * **40 is the readability floor, and 2.27.1 proved it the hard way.** That release
+     * dropped it to 28 in the same commit that fixed the double-paint (see
+     * `columnPaintCss`), so two things moved at once: the veil went from a real 64% to a
+     * real 28%. The complaint that came back was "侧边栏按钮没了" - the column had become
+     * light enough that the dark theme's near-white icons and labels washed out against the
+     * bright part of the wallpaper. Nothing was structurally broken; the number was simply
+     * below the legibility line.
      *
-     * 28 is measured against the real thing this time: `diag/window-replica.html` renders
-     * the whole window from the host's own CSS, the user's own wallpaper (recovered from
-     * IndexedDB) and the sheet emitted from their own settings, and
-     * `diag/floor-strip.png` lines up 0 / 16 / 24 / 32 / 40 / the old 64 side by side.
-     * At 28 the column still reads as a surface - the nav rows have something to sit on -
-     * while the wallpaper's haze is plainly there behind it. Below 24 the secondary-colour
-     * rows start to swim; above 32 the picture stops mattering.
+     * So the value goes back to what the original 0 / 20 / 30 / 40 / 55 comparison picked.
+     * What changes in 2.27.2 is not the number, it is that the number is now *real*: with a
+     * single painter, 40 means 40, not 64. Same target, 37% less veil, and the icons stay
+     * legible.
+     *
+     * The lesson worth keeping: **never move a calibrated number in the same release as a
+     * structural fix.** If both go in together and something looks wrong, there is no way
+     * to tell which one did it.
      *
      * This only applies when the sidebar is re-mixed at all (whole-window scope). In
      * work-area scope the token is not emitted, so the sidebar keeps the theme's own fill.
      */
-    const SIDEBAR_FLOOR = 28;
+    const SIDEBAR_FLOOR = 40;
 
     /**
      * Every token that paints a surface. `lift` keeps elevation legible: a raised panel
@@ -687,48 +689,53 @@ ${remixes}
     /**
      * One surface, one painter.
      *
-     * The frame's two content columns are grid cells, and each of them paints a surface
-     * token - `--dsw-specific-sidebar-fill` on the left, `--dsw-alias-bg-base` on the right.
-     * So does the root *inside* each one: `SidebarRoot` paints the sidebar fill, and
-     * `ConversationRoot` (`Dc7zOa_root`) paints the base. Two elements, one token,
-     * stacked.
+     * The frame's sidebar column is a grid cell, and it paints
+     * `--dsw-specific-sidebar-fill`. So does the root *inside* it: `SidebarRoot`
+     * (`_2H3hWW_root`) paints the same token. Two elements, one token, stacked.
      *
      * In the theme's own design that is invisible, because both layers are the same opaque
      * colour: `#1b1b1c` over `#1b1b1c` is still `#1b1b1c`. The moment the token goes
-     * translucent it stops being invisible, and the error is not subtle - the column's
-     * declared alpha `a` arrives on screen as `1 - (1 - a)²`. At `surface: 0` the sidebar's
-     * 40% floor rendered as **64%**, which is why the whole left half of the window read as
-     * black while the transcript beside it was still showing the photograph.
+     * translucent it stops being invisible, and the error is not subtle - the declared
+     * alpha `a` arrives on screen as `1 - (1 - a)²`. At `surface: 0` a 40% floor rendered as
+     * **64%**, which is why the whole left half of the window read as black while the
+     * transcript beside it was still showing the photograph.
      *
      * **The wrapper is the one that has to go, not the root.** A grid cell exists to place
      * things; the root is the surface that things sit on. Killing the root would need its
      * build-hashed class name, and `_root` is a local name shared by half the bundle
      * (`SettingsRoot`, `SidebarRoot`, `ConversationRoot` ...), so it is not addressable.
-     * The columns are addressable structurally - the same `div:nth-of-type` anchors that
+     * The column is addressable structurally - the same `div:nth-of-type` anchor that
      * `chatSurfaceCss` and `configPageCss` already rely on.
      *
-     * **The sidebar half is Windows-only, and that is not a shortcut.** On darwin the host
-     * sets `[data-platform=darwin] ._2H3hWW_root { background: 0 0 }` and moves the fill to
-     * the column (with a gradient on top). The column is the *only* painter there, so
-     * making it transparent would delete the sidebar outright. `[data-windows-titlebar]` is
-     * exactly the condition under which both layers paint.
+     * **Windows-only, and that is not a shortcut.** On darwin the host sets
+     * `[data-platform=darwin] ._2H3hWW_root { background: 0 0 }` and moves the fill to the
+     * column (with a gradient on top). The column is the *only* painter there, so making it
+     * transparent would delete the sidebar outright. `[data-windows-titlebar]` is exactly
+     * the condition under which both layers paint.
      *
-     * The centre column needs no such gate: `ConversationRoot` paints the base on both
-     * platforms. At the default `chatSurface: 0` this rule changes nothing at all - both
-     * layers are already transparent - it only stops the slider from over-delivering once
-     * it is moved.
+     * **The `:has()` guard is a safety interlock, not decoration.** If the sidebar root ever
+     * moves out from under the column - host refactor, a slot wrapper that renders
+     * somewhere else, a collapsed-rail variant - this rule must not fire, because a column
+     * with no painter at all is not "more glassy", it is an invisible sidebar with invisible
+     * buttons on top of it. With the guard, a broken assumption costs the *old* 64% (dark,
+     * but usable) instead of a hole in the UI. The guard matches the root's *local* name,
+     * which is stable across builds; the hash in front of it is not.
+     *
+     * **Why the centre column is not here any more.** `centerCol` and `ConversationRoot`
+     * have exactly the same double-paint shape, and v2.27.1 shipped a rule for it. It was
+     * pulled in 2.27.2 for one reason: at `chatSurface: 0` - the default and the user's
+     * setting - both layers are already transparent, so the rule changed *nothing*, which
+     * means it could not be verified. Shipping an unverifiable rule in the same release as
+     * a real fix is how you end up unable to tell which half broke. It goes back in only
+     * with a replica that shows the slider at a non-zero value before and after.
      *
      * Not applied in work-area scope: the sidebar token is not re-mixed there, so the
      * column and the root both keep the theme's opaque fill and there is nothing to fix.
      */
     function columnPaintCss(settings) {
       if (!settings.fullWindow) return '';
-      const frame = frameSelector();
       return `
-html[data-dshbg-on][data-windows-titlebar] ${frame} > div:nth-of-type(1) {
-  background: transparent !important;
-}
-html[data-dshbg-on] ${frame} > div:nth-of-type(2) {
+html[data-dshbg-on][data-windows-titlebar] ${frameSelector()} > div:nth-of-type(1):has([class*="_root"]) {
   background: transparent !important;
 }
 `;
@@ -742,8 +749,10 @@ html[data-dshbg-on] ${frame} > div:nth-of-type(2) {
      * transcript should stay legible. One shared slider forces a compromise, so this
      * column overrides `--dsw-alias-bg-base` locally instead of stacking a second layer
      * on top of the one the conversation root already paints - two translucent layers
-     * would compose to something neither number describes. `columnPaintCss` is what
-     * makes that sentence true rather than aspirational.
+     * would compose to something neither number describes. That is still aspirational for
+     * this column: `ConversationRoot` paints the same token, so the value over-delivers as
+     * `1-(1-a)²` once the slider leaves 0. See `columnPaintCss` for why the matching fix
+     * was not shipped here yet.
      *
      * `> div:nth-of-type(2)` is the center column (the same structural anchor the settings
      * page rule uses), so this survives the hashed class names inside the conversation.
