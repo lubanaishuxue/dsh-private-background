@@ -895,7 +895,25 @@ async function main() {
   console.log('\ncost-meter shim');
   check('panels retargeted', base.css.includes('html[data-dshbg-on] body .cm-section'));
   check('dialogs retargeted', base.css.includes('html[data-dshbg-on] body .cm-stat-dialog'));
-  check('dialog group is one rule', /\.cm-stat-dialog,\nhtml\[data-dshbg-on\] body \.cm-qguide/.test(base.css));
+  // 真正画底的是 `.cm-stat` 自己（它的规则里有 `rgb(from … / 1)`，alpha 被强制拉满），
+  // 所以它必须和 `.cm-stat-dialog` 一起被重定向，否则内层再玻璃、外层还是那块黑板。
+  check(
+    'the surface that actually paints the dialog is retargeted',
+    /html\[data-dshbg-on\] body \.cm-stat,/.test(base.css) &&
+      /html\[data-dshbg-on\] body \.cm-stat,[\s\S]{0,200}?\.cm-stat-dialog/.test(base.css),
+  );
+  check(
+    'dialog group is one rule',
+    /\.cm-stat-dialog,\nhtml\[data-dshbg-on\] body \.cm-fee-dialog,\nhtml\[data-dshbg-on\] body \.cm-qguide/.test(
+      base.css,
+    ),
+  );
+  check(
+    'a nested dialog card stands down instead of stacking a second layer',
+    /html\[data-dshbg-on\] body \.cm-stat \.cm-stat-dialog,[\s\S]{0,140}?\{\s*background: transparent !important;/.test(
+      base.css,
+    ),
+  );
   check('modal backdrop dimmed', base.css.includes('.cm-stat-dialog::backdrop'));
 
   console.log('\nlifecycle');

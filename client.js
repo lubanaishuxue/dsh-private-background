@@ -1754,6 +1754,12 @@ html[data-dshbg-on]:has(dialog[open]) ${frameSelector()}::before {
      * a black slab. They now follow the panel density and take the menu radius, which is the
      * same trade every other over-text surface makes.
      *
+     * **The painted element is `.cm-stat`, not `.cm-stat-dialog`.** Its own rule is the
+     * `rgb(from … / 1)` one above, and it sits *outside* the inner card - so retargeting only
+     * the inner one left an opaque sheet underneath, and the dialog looked black no matter
+     * what the inner rule said. Both are retargeted now, and a nested inner card is stood
+     * down so the two layers do not compose to `1-(1-a)²`.
+     *
      * The header entry is hidden outright. The plugin registers the same `费用明细` button
      * twice - once in `conversation.session.header.actions`, once in
      * `conversation.composer.dock` - and only the dock one is wanted. Its own config key
@@ -1763,7 +1769,14 @@ html[data-dshbg-on]:has(dialog[open]) ${frameSelector()}::before {
      * the statistics dialog are untouched.
      */
     const CM_PANELS = ['.cm-section', '.cm-footer-stack.simple', '.cm-simple-summary'];
-    const CM_DIALOGS = ['.cm-stat-dialog', '.cm-qguide', '.cm-peak-alert'];
+    // `.cm-stat` is the one that actually paints the dialog: its rule is
+    //   background: rgb(from var(--dsw-alias-bg-layer-2) r g b / 1)
+    // and the `/ 1` re-imposes full opacity, so any alpha we put into the token is thrown
+    // away before it reaches the screen. Retargeting the classes is the only thing that
+    // survives that - and retargeting only the *inner* `cm-stat-dialog` was not enough,
+    // because the outer `cm-stat` keeps painting its own opaque sheet behind it. That is
+    // exactly the "still black" report.
+    const CM_DIALOGS = ['.cm-stat', '.cm-stat-dialog', '.cm-fee-dialog', '.cm-qguide', '.cm-peak-alert'];
     const CM_HEADER_ENTRY = '[data-slot="conversation.session.header.actions"] .cm-btn';
 
     function costMeterCss(settings) {
@@ -1782,7 +1795,14 @@ ${prefixed('html[data-dshbg-on] body', CM_DIALOGS)} {
   --dsw-alias-bg-layer-1: color-mix(in srgb, var(--dshbg-raw-l1) ${cardFill}%, transparent) !important;
   --dsw-alias-bg-layer-2: color-mix(in srgb, var(--dshbg-raw-l2) ${cardFill}%, transparent) !important;
 }
-html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 46%); }
+html[data-dshbg-on] body .cm-stat .cm-stat-dialog,
+html[data-dshbg-on] body .cm-stat .cm-fee-dialog {
+  background: transparent !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+html[data-dshbg-on] .cm-stat-dialog::backdrop,
+html[data-dshbg-on] .cm-stat::backdrop { background: rgb(0 0 0 / 46%); }
 ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
   display: none !important;
 }
