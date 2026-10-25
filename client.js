@@ -597,6 +597,19 @@ html[data-dshbg-on]::after {
 `;
     }
 
+    /**
+     * Capture on `body`, remix on `body > *`.
+     *
+     * The host declares its palette on `body` (light) and `body[data-ds-dark-theme]` (dark),
+     * so the capture has to sit exactly there. The remix has to be one level below, or the
+     * capture reads the value it just wrote.
+     *
+     * The remix used to sit on the frame, and that is why every **portaled** surface stayed
+     * black: `#root` is not the whole document, and host dialogs (设置), the cost meter's
+     * dialogs and third-party popovers are its *siblings* under `body`. A frame-scoped remix
+     * never reached them, so they kept painting the theme's opaque surfaces. `body > *`
+     * covers `#root` and every sibling in one rule.
+     */
     function tokenCss(settings) {
       const captures = SURFACE_TOKENS.map((entry) => `  --dshbg-raw-${entry.raw}: var(${entry.token});`).join('\n');
       const labelCaptures = LABEL_TOKENS.map((token, index) => `  --dshbg-raw-label-${index}: var(${token});`).join('\n');
@@ -617,7 +630,7 @@ html[data-dshbg-on] body {
 ${captures}
 ${labelCaptures}
 }
-html[data-dshbg-on] ${frameSelector()} {
+html[data-dshbg-on] body > * {
 ${remixes}
 }
 `;
@@ -1015,9 +1028,20 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
       // Separate array entries, never one comma-joined string: `prefixed()` prefixes each
       // *item*, so a comma inside an item would leave its tail unprefixed.
       const deliverable = ['[data-presented-file]', `[class$="_file"]:has(> [class$="_fileBody"])`];
+      // The turn's changed-files card (`已编辑 N 个文件`). Its body paints
+      // `--dsw-alias-bg-layer-1`, which is in the remix list, but its **header** paints
+      // `--changes-fill`, which the host pins to `--dsw-static-neutral-850` in the dark
+      // theme - a static near-black no token can reach. So the card read as a black bar on a
+      // translucent body. Both halves are fixed together: the card gets the pane recipe, and
+      // those two custom properties are stood down (which also kills the static hover tint).
+      const changed = '[data-changed-files]';
       return `
-${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, block, bubble])} {
+${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, block, bubble, changed])} {
 ${glassPane(blur)}
+}
+${prefixed('html[data-dshbg-on]', [changed])} {
+  --changes-fill: transparent !important;
+  --changes-hover: color-mix(in srgb, var(--dshbg-raw-label-0) 8%, transparent) !important;
 }
 ${prefixed('html[data-dshbg-on]', [block])} {
   --dsl-code-block-background: transparent !important;
@@ -1457,7 +1481,17 @@ ${prefixed('html[data-dshbg-on]', [`${CRUMB}[data-dshbg-mq]`])} {
      * is the interlock: no inner root, no rule, and the column keeps its own fill.
      */
     function chromeCss(settings) {
-      const strip = settings.fullWindow ? 'transparent' : 'var(--dshbg-raw-sidebar)';
+      // In whole-window scope the strip must not be left transparent either: the columns
+      // below it are glass over the wallpaper, so a bare strip reads as a brighter band with
+      // a hard edge under the caption buttons - the "obvious dividing line" at the top. It
+      // gets the same recipe as the centre column instead, so the two surfaces continue one
+      // another. (The sidebar/centre boundary above the header is a second, finer seam; it
+      // follows from the two columns having different densities by design.)
+      const strip = settings.fullWindow
+        ? `background: color-mix(in srgb, var(--dshbg-raw-base) ${clamp(settings.surface, 0, 100)}%, transparent) !important;
+  -webkit-backdrop-filter: blur(${clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320)}px) saturate(150%) !important;
+  backdrop-filter: blur(${clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320)}px) saturate(150%) !important;`
+        : 'background: var(--dshbg-raw-sidebar) !important;';
       const column = settings.fullWindow
         ? `${prefixed('html[data-dshbg-on]', [
             `${frameSelector()} > div:nth-of-type(1):has([class*="_root"])`,
@@ -1467,7 +1501,7 @@ ${prefixed('html[data-dshbg-on]', [`${CRUMB}[data-dshbg-mq]`])} {
 `
         : '';
       return `
-html[data-dshbg-on][data-windows-titlebar] ${frameSelector()}::before { background: ${strip} !important; }
+html[data-dshbg-on][data-windows-titlebar] ${frameSelector()}::before { ${strip} }
 html[data-dshbg-on][data-windows-titlebar] ${frameSelector()} { --dsh-windows-content-radius: 0px; }
 ${column}`;
     }
@@ -1577,17 +1611,38 @@ ${prefixed('html[data-dshbg-on]', scope)} {
       const restores = LABEL_TOKENS.map(
         (token, index) => `  ${token}: var(--dshbg-raw-label-${index}) !important;`,
       ).join('\n');
-      // The page has to turn opaque in exactly the area the wallpaper covers. In work-area
-      // scope that is columns two and three, and the sidebar keeps its own fill; in
-      // whole-window scope the sidebar is glass too, so leaving it out would put a
-      // see-through strip beside a solid page - the same seam, rotated ninety degrees.
+      // The page must **not** paint an opaque sheet. Being the page where the background is
+      // configured, it is the one place that must show that background - pinning it to
+      // `--dshbg-raw-base` (a near-black neutral) is what made opening the plugin hide the
+      // wallpaper behind a black sheet. So the columns it lives in simply stop painting, in
+      // exactly the area the wallpaper covers.
       const scope = settings.fullWindow ? [frameSelector()] : workAreaColumns();
       return `
 ${prefixed('html[data-dshbg-on][data-dshbg-config]', scope)} {
-  background-color: var(--dshbg-raw-base) !important;
+  background-color: transparent !important;
   background-image: none !important;
   color: var(--dshbg-raw-label-0) !important;
 ${restores}
+}
+`;
+    }
+
+    /**
+     * Everything except an open dialog is pushed back.
+     *
+     * A dialog is the only thing that should be in focus; the app behind it is context, and
+     * over a wallpaper that context stays as bright as the dialog itself unless something
+     * pushes it down. The blur and the brightness go on `#root`, not on `body > *`: the
+     * dialogs are siblings of `#root`, so this de-emphasises the app *without* touching the
+     * dialog. `dialog[open]` catches native `<dialog>`s (the cost meter's), the attribute
+     * selector catches the host's own modals.
+     */
+    function modalCss(settings) {
+      const blur = Math.min(10, Math.max(4, Math.round(clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320) / 12)));
+      return `
+html[data-dshbg-on]:has([role="dialog"][aria-modal="true"]) #root,
+html[data-dshbg-on]:has(dialog[open]) #root {
+  filter: blur(${blur}px) brightness(0.52) saturate(0.85) !important;
 }
 `;
     }
@@ -1601,8 +1656,11 @@ ${restores}
      * Retargeting the classes is the only thing that survives that. If the plugin is not
      * installed the selectors simply match nothing.
      *
-     * Dialogs get a near-opaque fill on top: a statistics modal at panel opacity puts
-     * the wallpaper straight through the numbers.
+     * Dialogs used to get a near-opaque fill on top, on the grounds that a statistics modal
+     * at panel opacity puts the wallpaper straight through the numbers. That was the right
+     * call while the blur did not work; with a real frost it is what left the cost dialog as
+     * a black slab. They now follow the panel density and take the menu radius, which is the
+     * same trade every other over-text surface makes.
      *
      * The header entry is hidden outright. The plugin registers the same `费用明细` button
      * twice - once in `conversation.session.header.actions`, once in
@@ -1618,18 +1676,21 @@ ${restores}
 
     function costMeterCss(settings) {
       const alpha = clamp(settings.surface, 0, 100);
-      const dialogFill = Math.max(90, Math.min(97, alpha + 38));
-      const cardFill = Math.max(88, Math.min(96, alpha + 30));
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
+      const dialogFill = Math.max(58, Math.min(92, alpha + 16));
+      const cardFill = Math.max(52, Math.min(88, alpha + 10));
       return `
 ${prefixed('html[data-dshbg-on] body', CM_PANELS)} {
   background: color-mix(in srgb, var(--dshbg-raw-l2) ${alpha}%, transparent) !important;
 }
 ${prefixed('html[data-dshbg-on] body', CM_DIALOGS)} {
   background: color-mix(in srgb, var(--dshbg-raw-l2) ${dialogFill}%, transparent) !important;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
   --dsw-alias-bg-layer-1: color-mix(in srgb, var(--dshbg-raw-l1) ${cardFill}%, transparent) !important;
   --dsw-alias-bg-layer-2: color-mix(in srgb, var(--dshbg-raw-l2) ${cardFill}%, transparent) !important;
 }
-html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 58%); }
+html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 46%); }
 ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
   display: none !important;
 }
@@ -1661,6 +1722,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         sidebarGlassCss(settings),
         statusGlassCss(settings),
         menuGlassCss(settings),
+        modalCss(settings),
       ].join('');
     }
 

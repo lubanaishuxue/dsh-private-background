@@ -787,9 +787,45 @@ async function main() {
     'no strip geometry tied to the sidebar track width',
     !base.css.includes('--dsh-windows-sidebar-width'),
   );
-  check('whole-window scope clears the strip outright', wide.css.includes('::before { background: transparent !important; }'));
+  // 整窗模式下通栏不能留透明：它下面的栏是「壁纸 + 玻璃」，通栏要是裸露的壁纸，就会在
+  // 标题按钮下方出现一条更亮、带硬边的带子——「上面那条分界线」。所以它拿和中间栏同一套配方。
+  check(
+    'whole-window strip continues the centre column glass',
+    /::before \{ background: color-mix\(in srgb, var\(--dshbg-raw-base\) 20%, transparent\) !important;[\s\S]{0,200}?backdrop-filter: blur\(/.test(
+      wide.css,
+    ),
+  );
+  check(
+    'work-area strip is still never glass',
+    !/::before \{ background: color-mix/.test(base.css),
+  );
   check('no orphaned titlebar selector', !base.css.includes('] [data-windows-titlebar]'));
   check('content radius zeroed', base.css.includes('--dsh-windows-content-radius: 0px'));
+
+  console.log('\nportaled surfaces (the black boxes)');
+  // 重混必须落到 body 的直接子元素上：宿主设置弹窗、计费弹窗都是 #root 的**兄弟**，
+  // 挂在框架上的重混永远够不到它们，它们就一直按主题原色画成黑板。
+  check(
+    'remix reaches every portal, not just the frame',
+    /html\[data-dshbg-on\] body > \* \{[^}]*--dsw-alias-bg-base: color-mix/.test(base.css),
+  );
+  check('changed-files card becomes a pane', /\[data-changed-files\][^{]*\{[^}]*backdrop-filter/.test(base.css));
+  check('changed-files header stops painting black', /\[data-changed-files\] \{[^}]*--changes-fill: transparent/.test(base.css));
+  check(
+    'cost dialogs are glass instead of near-opaque',
+    /\.cm-stat-dialog[\s\S]{0,200}?var\(--dshbg-raw-l2\) 58%, transparent[\s\S]{0,300}?backdrop-filter: blur\(/.test(base.css),
+  );
+  check(
+    'an open dialog pushes the app back',
+    /:has\(\[role="dialog"\]\[aria-modal="true"\]\) #root[\s\S]{0,120}?filter: blur\(\d+px\) brightness\(0\.52\)/.test(
+      base.css,
+    ),
+  );
+  check(
+    'the plugin page never paints an opaque sheet',
+    !/\[data-dshbg-config\][^{]*\{[^}]*background-color: var\(--dshbg-raw-base\) !important/.test(base.css) &&
+      /\[data-dshbg-config\][^{]*\{[^}]*background-color: transparent !important/.test(base.css),
+  );
 
   console.log('\nsettings page');
   check('opaque rule is driven by the mount marker', base.css.includes('html[data-dshbg-on][data-dshbg-config]'));
