@@ -847,15 +847,11 @@ async function main() {
   );
   check('changed-files card becomes a pane', /\[data-changed-files\][^{]*\{[^}]*backdrop-filter/.test(base.css));
   check('changed-files header stops painting black', /\[data-changed-files\] \{[^}]*--changes-fill: transparent/.test(base.css));
-  check(
-    'cost dialogs are glass instead of near-opaque',
-    /\.cm-stat-dialog[\s\S]{0,200}?var\(--dshbg-raw-l2\) 38%, transparent[\s\S]{0,300}?backdrop-filter: blur\(/.test(base.css),
-  );
   // 「弹窗还是黑的」有一半算在遮罩身上：把背后压到 0.52 再叠深色玻璃，合成出来就是黑。
-  // 现在压到 0.74，玻璃才有东西可透。
+  // 现在几乎不再压暗（0.95），玻璃才有东西可透。
   check(
     'an open dialog pushes the app back without crushing it to black',
-    /:has\(\[role="dialog"\]\[aria-modal="true"\]\) #root[\s\S]{0,120}?filter: blur\(\d+px\) brightness\(0\.74\)/.test(
+    /:has\(\[role="dialog"\]\[aria-modal="true"\]\) #root[\s\S]{0,120}?filter: blur\(\d+px\) brightness\(0\.95\)/.test(
       base.css,
     ),
   );
@@ -905,47 +901,25 @@ async function main() {
 
   console.log('\ncost-meter shim');
   check('panels retargeted', base.css.includes('html[data-dshbg-on] body .cm-section'));
-  check('dialogs retargeted', base.css.includes('html[data-dshbg-on] body .cm-stat-dialog'));
-  // 真正画底的是 `.cm-stat` 自己（它的规则里有 `rgb(from … / 1)`，alpha 被强制拉满），
-  // 所以它必须和 `.cm-stat-dialog` 一起被重定向，否则内层再玻璃、外层还是那块黑板。
+  // 弹窗玻璃**不再由本插件负责**：费用明细自己的样式表在安装时已经打了补丁（README 里有
+  // 完整记录）。两边同时上色只会互相盖，而且它的规则永远更靠近宿主，所以这里断言本插件
+  // 的样式表**不再提** `.cm-stat-dialog` —— 谁改了这条，都会把弹窗重新推回互相覆盖。
+  check('the dialog itself is left to the plugin', !base.css.includes('.cm-stat-dialog'));
+  check('the probe can still read the dialog surface', CODE.includes('function costSurface'));
+  let installedCostMeter = null;
+  try {
+    installedCostMeter = fs.readFileSync(
+      `${process.env.USERPROFILE}/.dsh/profiles/desktop/node_modules/dsh-cost-meter/lib/client.js`,
+      'utf8',
+    );
+  } catch {
+    installedCostMeter = null;
+  }
   check(
-    'the surface that actually paints the dialog is retargeted',
-    /html\[data-dshbg-on\] body \.cm-stat,/.test(base.css) &&
-      /html\[data-dshbg-on\] body \.cm-stat,[\s\S]{0,200}?\.cm-stat-dialog/.test(base.css),
+    'the installed cost meter carries the glass patch',
+    installedCostMeter === null || installedCostMeter.includes('color-mix(in srgb,#ffffff 14%,transparent)'),
+    installedCostMeter === null ? 'not installed on this machine - skipped' : '',
   );
-  check(
-    'dialog group is one rule',
-    /\.cm-stat-dialog,\nhtml\[data-dshbg-on\] body \.cm-fee-dialog,\nhtml\[data-dshbg-on\] body \.cm-qguide/.test(
-      base.css,
-    ),
-  );
-  check(
-    'a nested dialog card stands down instead of stacking a second layer',
-    /html\[data-dshbg-on\] body \.cm-stat \.cm-stat-dialog,[\s\S]{0,140}?\{\s*background: transparent !important;/.test(
-      base.css,
-    ),
-  );
-  // CSS 层叠在这一处从没赢过（它那条 `background: var(--cm-opaque-base)` 就是深色主题的
-  // #151517），所以再加一层内联 !important 兜底，并且探针要能报出弹窗实际算出来的底色。
-  check(
-    'cost dialog panels get an inline last resort',
-    CODE.includes('function installCostDialogGlass') &&
-      CODE.includes("setProperty('background-color', paint, 'important')"),
-  );
-  check('the probe can report the cost dialog surface', CODE.includes('function costSurface'));
-  // 弹窗盖住侧栏，所以读数要在上色那一刻写进 localStorage，插件页事后显示 —— 否则这个信息
-  // 永远读不到（对话框活着的时候看不了侧栏）。
-  check(
-    'the cost reading survives the dialog covering the sidebar',
-    CODE.includes("'dshbg.cost.probe'") && CODE.includes('费用明细弹窗上次读数'),
-  );
-  // 插件自己的首个声明是 `background: var(--cm-opaque-base, #fff)`，把这个变量拿走，
-  // 它那条兜底就画不出颜色了。
-  check(
-    'the opaque-base variable is neutralised',
-    CODE.includes("setProperty('--cm-opaque-base', 'transparent')"),
-  );
-  check('modal backdrop dimmed', base.css.includes('.cm-stat-dialog::backdrop'));
 
   console.log('\nlifecycle');
   const off = await emit({ mode: 'none' });

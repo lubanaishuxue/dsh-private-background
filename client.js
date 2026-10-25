@@ -1730,7 +1730,7 @@ html[data-dshbg-on] dialog::backdrop {
       return `
 html[data-dshbg-on]:has([role="dialog"][aria-modal="true"]) #root,
 html[data-dshbg-on]:has(dialog[open]) #root {
-  filter: blur(${blur}px) brightness(0.74) saturate(0.9) !important;
+  filter: blur(${blur}px) brightness(0.95) saturate(1) !important;
 }
 html[data-dshbg-on]:has([role="dialog"][aria-modal="true"]) ${frameSelector()}::before,
 html[data-dshbg-on]:has(dialog[open]) ${frameSelector()}::before {
@@ -1769,40 +1769,14 @@ html[data-dshbg-on]:has(dialog[open]) ${frameSelector()}::before {
      * the statistics dialog are untouched.
      */
     const CM_PANELS = ['.cm-section', '.cm-footer-stack.simple', '.cm-simple-summary'];
-    // `.cm-stat` is the one that actually paints the dialog: its rule is
-    //   background: rgb(from var(--dsw-alias-bg-layer-2) r g b / 1)
-    // and the `/ 1` re-imposes full opacity, so any alpha we put into the token is thrown
-    // away before it reaches the screen. Retargeting the classes is the only thing that
-    // survives that - and retargeting only the *inner* `cm-stat-dialog` was not enough,
-    // because the outer `cm-stat` keeps painting its own opaque sheet behind it. That is
-    // exactly the "still black" report.
-    const CM_DIALOGS = ['.cm-stat', '.cm-stat-dialog', '.cm-fee-dialog', '.cm-qguide', '.cm-peak-alert'];
     const CM_HEADER_ENTRY = '[data-slot="conversation.session.header.actions"] .cm-btn';
 
     function costMeterCss(settings) {
       const alpha = clamp(settings.surface, 0, 100);
-      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
-      const dialogFill = Math.max(38, Math.min(84, alpha + 10));
-      const cardFill = Math.max(52, Math.min(88, alpha + 10));
       return `
 ${prefixed('html[data-dshbg-on] body', CM_PANELS)} {
   background: color-mix(in srgb, var(--dshbg-raw-l2) ${alpha}%, transparent) !important;
 }
-${prefixed('html[data-dshbg-on] body', CM_DIALOGS)} {
-  background: color-mix(in srgb, var(--dshbg-raw-l2) ${dialogFill}%, transparent) !important;
-  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
-  backdrop-filter: blur(${blur}px) saturate(150%) !important;
-  --dsw-alias-bg-layer-1: color-mix(in srgb, var(--dshbg-raw-l1) ${cardFill}%, transparent) !important;
-  --dsw-alias-bg-layer-2: color-mix(in srgb, var(--dshbg-raw-l2) ${cardFill}%, transparent) !important;
-}
-html[data-dshbg-on] body .cm-stat .cm-stat-dialog,
-html[data-dshbg-on] body .cm-stat .cm-fee-dialog {
-  background: transparent !important;
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
-}
-html[data-dshbg-on] .cm-stat::backdrop,
-html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 18%); }
 ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
   display: none !important;
 }
@@ -2252,110 +2226,6 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
      * open `<html>` carries `data-dshbg-menu` and the card drops its blur; the menu gets its
      * own back. Closing it restores the composer.
      */
-    /**
-     * Hard override for the cost-meter's dialog panels.
-     *
-     * Its dialog is a portaled `<dialog class="cm-stat-dialog">` whose own rule opens with
-     * `background: var(--cm-opaque-base, #fff)` - which is exactly `#151517` in the dark
-     * theme, i.e. the flat slab that survives every stylesheet fix so far. Whatever the
-     * cascade is doing there, an inline declaration with `!important` outranks it, so the
-     * panel is painted from JS instead: same two numbers the rest of the glass uses, derived
-     * from the raw layer colour the capture already exposes.
-     *
-     * Cheap and self-healing: it re-runs on every paint (settings change) and whenever the
-     * DOM changes, and it only touches elements that are actually present. If the plugin
-     * ever re-renders and wipes the inline style, the next mutation puts it back.
-     */
-    function installCostDialogGlass() {
-      if (typeof MutationObserver === 'undefined') return { sync() {}, dispose() {} };
-      // `cm-stat` is in the list on purpose: which of the two class names is the painted
-      // element depends on how the plugin nests them, and guessing wrong twice is enough.
-      // The rule below is symmetric - the outermost match paints, every match inside it
-      // stands down - so both nestings end with exactly one glass layer.
-      const SELECTOR = '.cm-stat, .cm-stat-dialog, .cm-qguide, .cm-peak-alert, .cm-fee-dialog';
-      let timer = 0;
-      let disposed = false;
-
-      const sync = () => {
-        timer = 0;
-        if (disposed) return;
-        if (!document.documentElement.hasAttribute('data-dshbg-on')) return;
-        try {
-          const settings = state.settings;
-          const fill = Math.max(38, Math.min(84, clamp(settings.surface, 0, 100) + 10));
-          const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
-          const readVar = (element, name) => {
-            const style = getComputedStyle(element);
-            // A CSSStyleDeclaration always has getPropertyValue; the guard is here because an
-            // exception in this pass would take the whole stylesheet install down with it.
-            return typeof style.getPropertyValue === 'function' ? style.getPropertyValue(name).trim() : '';
-          };
-          const fallback = readVar(document.body, '--dsw-alias-bg-layer-2');
-          for (const element of document.querySelectorAll(SELECTOR)) {
-            // The plugin's own rules start with `background: var(--cm-opaque-base, #fff)`,
-            // which is #151517 in the dark theme. Taking that variable away is what makes
-            // its *first* declaration stop painting even if the second one is invalid.
-            element.style.setProperty('--cm-opaque-base', 'transparent');
-            const outer = element.parentElement === null ? null : element.parentElement.closest(SELECTOR);
-            if (outer !== null) {
-              // An inner surface: it must not draw a second layer on top of the outside one.
-              element.style.setProperty('background-color', 'transparent', 'important');
-              element.style.setProperty('background-image', 'none', 'important');
-              element.style.removeProperty('backdrop-filter');
-              element.style.removeProperty('-webkit-backdrop-filter');
-              continue;
-            }
-            const raw = readVar(element, '--dshbg-raw-l2') || fallback;
-            if (raw === '') continue;
-            const paint = `color-mix(in srgb, ${raw} ${fill}%, transparent)`;
-            element.style.setProperty('background-color', paint, 'important');
-            element.style.setProperty('background-image', 'none', 'important');
-            element.style.setProperty('backdrop-filter', `blur(${blur}px) saturate(150%)`, 'important');
-            element.style.setProperty('-webkit-backdrop-filter', `blur(${blur}px) saturate(150%)`, 'important');
-          }
-          // Leave a breadcrumb. The dialog covers the sidebar, so the reader cannot look at
-          // the tuning card while it is open - the plugin page shows this reading instead.
-          const probeTarget = document.querySelector(SELECTOR);
-          if (probeTarget !== null) {
-            const style = getComputedStyle(probeTarget);
-            const parent = probeTarget.parentElement;
-            const record = {
-              when: Date.now(),
-              cls: String(probeTarget.className || '').slice(0, 60),
-              tag: probeTarget.tagName,
-              bg: style.backgroundColor,
-              bf: style.backdropFilter === undefined ? '' : style.backdropFilter,
-              parent: parent === null ? '-' : `${parent.tagName}.${String(parent.className || '').slice(0, 40)} ${getComputedStyle(parent).backgroundColor}`,
-            };
-            window.localStorage.setItem('dshbg.cost.probe', JSON.stringify(record));
-          }
-        } catch {
-          // Painting a third-party dialog may never break the stylesheet install.
-        }
-      };
-
-      const schedule = () => {
-        if (disposed || timer !== 0) return;
-        timer = setTimeout(sync, 140);
-      };
-
-      const observer = new MutationObserver(schedule);
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-      // A mutation observer only fires when the DOM changes. This dialog is re-rendered by a
-      // plugin that also updates its numbers on a timer, so a periodic pass is the belt to
-      // that braces - and it costs one querySelectorAll per second.
-      const tick = typeof setInterval === 'function' ? setInterval(schedule, 700) : 0;
-      return {
-        sync,
-        dispose() {
-          disposed = true;
-          if (timer !== 0) clearTimeout(timer);
-          if (tick !== 0) clearInterval(tick);
-          observer.disconnect();
-        },
-      };
-    }
-
     function installComposerMenuGuard() {
       if (typeof MutationObserver === 'undefined') return { sync() {}, dispose() {} };
       const root = document.documentElement;
@@ -2402,7 +2272,6 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
 
       const marquee = installTitleMarquee();
       const composerMenu = installComposerMenuGuard();
-      const costDialog = installCostDialogGlass();
 
       let disposed = false;
       let measureToken = 0;
@@ -2431,7 +2300,6 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         // Re-check the composer/menu trade whenever the sheet changes: a menu that stayed
         // open across a settings change still needs the card's blur dropped.
         composerMenu.sync();
-        costDialog.sync();
       };
 
       /**
@@ -2472,7 +2340,6 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
             unsubscribe();
             marquee.dispose();
             composerMenu.dispose();
-            costDialog.dispose();
             tag.remove();
             document.documentElement.removeAttribute('data-dshbg-on');
           },
