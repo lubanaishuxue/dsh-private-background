@@ -556,6 +556,21 @@ window.__ModuleLoader__.load({
       { token: '--dsw-alias-bg-layer-3', raw: 'l3', lift: 16 },
       { token: '--dsw-alias-bg-layer-4', raw: 'l4', lift: 16 },
       { token: '--dsw-alias-button-tool-bar-fill', raw: 'toolbar', lift: 16 },
+      // Added after auditing the host stylesheet for its most common background tokens.
+      // Each of these used to paint an opaque surface that no other rule reached - which is
+      // why they showed up as isolated black blocks over a wallpaper:
+      //   markdown-code-block : the output body of a command/tool card AND markdown code
+      //                         blocks - the "退出码 1" box in the transcript;
+      //   bg-module-platform  : settings-style module cards across the app;
+      //   settings-card-fill  : the preference cards inside those modules;
+      //   specific-menu       : menu/popover fills that are not the material primitive;
+      //   fill-l1 / fill-l2   : the generic "raised surface" pair used by panel chrome.
+      { token: '--dsw-alias-markdown-code-block', raw: 'code', lift: 6 },
+      { token: '--dsw-alias-bg-module-platform', raw: 'module', lift: 12 },
+      { token: '--dsw-alias-settings-card-fill', raw: 'card', lift: 10 },
+      { token: '--dsw-specific-menu', raw: 'menu', lift: 10 },
+      { token: '--dsw-alias-fill-l1', raw: 'fill1', lift: 8 },
+      { token: '--dsw-alias-fill-l2', raw: 'fill2', lift: 14 },
     ];
 
     const LABEL_TOKENS = [

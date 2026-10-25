@@ -227,6 +227,23 @@ async function main() {
   check('captures the sidebar fill', base.css.includes('--dshbg-raw-sidebar: var(--dsw-specific-sidebar-fill)'));
   check('captures label tokens for the settings page', base.css.includes('--dshbg-raw-label-0: var(--dsw-alias-label-primary)'));
   check('re-mixes the base surface', base.css.includes('--dsw-alias-bg-base: color-mix'));
+  // 宿主样式表里用得最多的那批背景 token，逐个都必须在重混列表里 —— 漏一个，那个面板就是
+  // 一块孤立黑板（命令卡的输出体就是这么来的：它画 --dsw-alias-markdown-code-block）。
+  check(
+    'the host surface tokens are all remixed',
+    [
+      '--dsw-alias-markdown-code-block',
+      '--dsw-alias-bg-module-platform',
+      '--dsw-alias-settings-card-fill',
+      '--dsw-specific-menu',
+      '--dsw-alias-fill-l1',
+      '--dsw-alias-fill-l2',
+    ].every(
+      (token) =>
+        base.css.includes(`--dshbg-raw-`) &&
+        new RegExp(`${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: color-mix`).test(base.css),
+    ),
+  );
   check('keeps elevation order', /--dsw-alias-bg-layer-2: color-mix\(in srgb, var\(--dshbg-raw-l2\) 36%/.test(base.css));
   check('targets the frame structurally', base.css.includes('#root div:has(> [data-shell-overlay])'));
 
