@@ -849,11 +849,13 @@ async function main() {
   check('changed-files header stops painting black', /\[data-changed-files\] \{[^}]*--changes-fill: transparent/.test(base.css));
   check(
     'cost dialogs are glass instead of near-opaque',
-    /\.cm-stat-dialog[\s\S]{0,200}?var\(--dshbg-raw-l2\) 58%, transparent[\s\S]{0,300}?backdrop-filter: blur\(/.test(base.css),
+    /\.cm-stat-dialog[\s\S]{0,200}?var\(--dshbg-raw-l2\) 46%, transparent[\s\S]{0,300}?backdrop-filter: blur\(/.test(base.css),
   );
+  // 「弹窗还是黑的」有一半算在遮罩身上：把背后压到 0.52 再叠深色玻璃，合成出来就是黑。
+  // 现在压到 0.74，玻璃才有东西可透。
   check(
-    'an open dialog pushes the app back',
-    /:has\(\[role="dialog"\]\[aria-modal="true"\]\) #root[\s\S]{0,120}?filter: blur\(\d+px\) brightness\(0\.52\)/.test(
+    'an open dialog pushes the app back without crushing it to black',
+    /:has\(\[role="dialog"\]\[aria-modal="true"\]\) #root[\s\S]{0,120}?filter: blur\(\d+px\) brightness\(0\.74\)/.test(
       base.css,
     ),
   );

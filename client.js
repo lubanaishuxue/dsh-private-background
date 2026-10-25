@@ -1730,7 +1730,7 @@ html[data-dshbg-on] dialog::backdrop {
       return `
 html[data-dshbg-on]:has([role="dialog"][aria-modal="true"]) #root,
 html[data-dshbg-on]:has(dialog[open]) #root {
-  filter: blur(${blur}px) brightness(0.52) saturate(0.85) !important;
+  filter: blur(${blur}px) brightness(0.74) saturate(0.9) !important;
 }
 html[data-dshbg-on]:has([role="dialog"][aria-modal="true"]) ${frameSelector()}::before,
 html[data-dshbg-on]:has(dialog[open]) ${frameSelector()}::before {
@@ -1782,7 +1782,7 @@ html[data-dshbg-on]:has(dialog[open]) ${frameSelector()}::before {
     function costMeterCss(settings) {
       const alpha = clamp(settings.surface, 0, 100);
       const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
-      const dialogFill = Math.max(58, Math.min(92, alpha + 16));
+      const dialogFill = Math.max(46, Math.min(88, alpha + 12));
       const cardFill = Math.max(52, Math.min(88, alpha + 10));
       return `
 ${prefixed('html[data-dshbg-on] body', CM_PANELS)} {
@@ -1801,8 +1801,8 @@ html[data-dshbg-on] body .cm-stat .cm-fee-dialog {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
-html[data-dshbg-on] .cm-stat-dialog::backdrop,
-html[data-dshbg-on] .cm-stat::backdrop { background: rgb(0 0 0 / 46%); }
+html[data-dshbg-on] .cm-stat::backdrop,
+html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 32%); }
 ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
   display: none !important;
 }
@@ -2282,7 +2282,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         if (!document.documentElement.hasAttribute('data-dshbg-on')) return;
         try {
           const settings = state.settings;
-          const fill = Math.max(58, Math.min(92, clamp(settings.surface, 0, 100) + 16));
+          const fill = Math.max(46, Math.min(88, clamp(settings.surface, 0, 100) + 12));
           const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
           const readVar = (element, name) => {
             const style = getComputedStyle(element);
