@@ -50,24 +50,25 @@ window.__ModuleLoader__.load({
       imageId: null,
       gradient: 0,
       color: '#1b2233',
-      blur: 14,
-      dim: 30,
-      surface: 55,
-      chatSurface: 78,
-      composerSurface: 85,
+      blur: 20,
+      dim: 15,
+      surface: 50,
+      chatSurface: 0,
+      composerSurface: 50,
       composerStyle: 'solid',
-      glassBlur: 14,
+      glassBlur: 40,
       // TEMPORARY. The menu glass fill is the one number that has to be judged by eye on
       // a real wallpaper, so it is exposed as a slider until the user picks a value.
       // Baking it in means: set this to the chosen number, then delete the slider block
       // in ConfigPage and the two TEXT entries. Nothing else reads it by name.
-      menuFill: 76,
-      // TEMPORARY, paired with menuFill. The host pins the menu backdrop to 40px, and at
-      // that radius the wallpaper collapses to a flat wash - which is why the fill had to
-      // go all the way up to 76% to stay legible, and why the result reads as "tinted
-      // panel" rather than glass. Blur and fill are a trade: more blur buys back fill.
-      // Exposed so the pair can be tuned against a real wallpaper.
-      menuBlur: 40,
+      menuFill: 40,
+      // TEMPORARY, paired with menuFill. Blur and fill are a trade: more blur buys back
+      // fill. Baking it in is the same procedure as menuFill above.
+      menuBlur: 50,
+      // The sidebar's own density when it is included in the scope. Measured separately
+      // from the panel slider because that column has two paint layers (host column plus
+      // its inner root) and therefore reads darker than the same alpha elsewhere.
+      sidebarFill: 40,
       fullWindow: false,
       font: 'theme',
       fontColor: '#f7f8fa',
@@ -145,6 +146,9 @@ window.__ModuleLoader__.load({
         menuBlur: '玻璃模糊（临时）',
         menuBlurHint: '临时调试用，同时管三处：弹出菜单、输入框、右侧侧边栏。宿主原本钉死在 40px。模糊越大，背后那层被磨得越平，字越好读、填充就可以越低；模糊越小，背景的形状越清楚、越像玻璃，但字也越容易被带花。0 就是完全不糊。',
         reset: '恢复默认',
+        dockTitle: '调参（临时）',
+        dockGlass: '液态玻璃',
+        dockFullWindow: '整窗铺满',
         autoSaved: '改动即时生效并自动保存',
         diagnostics: '样式 / 激活 / 框架 / 三栏',
         toneLight: '深色背景 → 浅色字',
@@ -195,6 +199,9 @@ window.__ModuleLoader__.load({
         menuBlurHint: 'Scratch control for all three at once: popup menus, the composer, and the right sidebar. The host pins this at 40px. More blur flattens the backdrop harder, so text stays readable at a lower fill; less blur keeps the wallpaper recognisable and looks more like glass, but the glyphs get dirtier. 0 is no blur at all.',
         glassBlur: 'Glass blur',
         reset: 'Reset',
+        dockTitle: 'Tuning (temp)',
+        dockGlass: 'Liquid glass',
+        dockFullWindow: 'Whole window',
         autoSaved: 'Changes apply and save immediately',
         diagnostics: 'style / active / frame / columns',
         toneLight: 'Dark background, light text',
@@ -255,7 +262,8 @@ window.__ModuleLoader__.load({
         composerStyle: parsed.composerStyle === 'glass' ? 'glass' : 'solid',
         glassBlur: clamp(parsed.glassBlur === undefined ? fallback.glassBlur : parsed.glassBlur, 0, 40),
         menuFill: clamp(parsed.menuFill === undefined ? fallback.menuFill : parsed.menuFill, 20, 100),
-        menuBlur: clamp(parsed.menuBlur === undefined ? fallback.menuBlur : parsed.menuBlur, 0, 64),
+        menuBlur: clamp(parsed.menuBlur === undefined ? fallback.menuBlur : parsed.menuBlur, 0, 320),
+        sidebarFill: clamp(parsed.sidebarFill === undefined ? fallback.sidebarFill : parsed.sidebarFill, 0, 100),
         fullWindow: parsed.fullWindow === true,
         font: fonts.includes(parsed.font) ? parsed.font : fallback.font,
         fontColor:
@@ -594,7 +602,13 @@ html[data-dshbg-on]::after {
       const labelCaptures = LABEL_TOKENS.map((token, index) => `  --dshbg-raw-label-${index}: var(${token});`).join('\n');
       const remixes = SURFACE_TOKENS.filter((entry) => settings.fullWindow || entry.sidebarOnly !== true)
         .map((entry) => {
-          const alpha = Math.min(100, clamp(settings.surface, 0, 100) + entry.lift);
+          // The sidebar has its own density: that column is painted by two layers (the host
+          // column and its inner root both read this one token), so the same alpha lands
+          // twice and `1-(1-a)²` is what reaches the screen - it always reads darker than
+          // the panels beside it. A separate number is the only way to tune it by eye.
+          const alpha = entry.sidebarOnly === true
+            ? clamp(settings.sidebarFill, 0, 100)
+            : Math.min(100, clamp(settings.surface, 0, 100) + entry.lift);
           return `  ${entry.token}: color-mix(in srgb, var(--dshbg-raw-${entry.raw}) ${alpha}%, transparent) !important;`;
         })
         .join('\n');
@@ -790,7 +804,7 @@ html[data-dshbg-on] [data-composer-card] {
      * preview, the file-diff hover card, the plan viewer).
      */
     function previewCardCss(settings) {
-      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
       const shared = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
       const fill = Math.max(shared, 50);
       return `
@@ -848,7 +862,7 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewRes
     function menuSurfaceCss(settings) {
       const menu = '[class*="_menu"]:has([class*="_itemDescription"])';
       const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
-      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
       // The glass goes on the *surface*, not on the `_material` child, and this is the whole
       // fix for "the menu blur does nothing".
       //
@@ -927,7 +941,7 @@ ${prefixed('html[data-dshbg-on]', [`${menu}[data-overflow-below]::after`])} {
      * fixed 244px, so a 1px border would eat into its own text box.
      */
     function tooltipGlassCss(settings) {
-      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
       const shared = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
       // Inverted surfaces: hard floors, see the note above.
       const cardFill = Math.max(shared, 50);
@@ -1023,56 +1037,41 @@ ${glassChip(blur)}
     }
 
     /**
-     * The message box, on its own switch - and it gets a *real* blur without breaking the
-     * menu's.
+     * The message box, on its own switch.
      *
-     * The naive version (`glassPane` straight onto `[data-composer-card]`) kills the menu:
-     * `backdrop-filter` creates a backdrop root, and the `/` command menu is a descendant
-     * of this card that hangs *outside* its box (`bottom: calc(100% + 4px)`), so its own
-     * blur samples an empty area. That is why the card used to be a flat tint.
+     * `backdrop-filter` makes an element a backdrop root, and the `/` command menu is a
+     * descendant of this card that hangs *outside* its box (`bottom: calc(100% + 4px)`), so
+     * a blur here would starve the menu's own blur. Two attempts at dodging that - a
+     * `::before` with `z-index: -1`, and the same with `isolation` swapped for `z-index` -
+     * both rendered the fill and never the blur. So the blur lives on the card itself, which
+     * is the pattern the transcript cards prove works, and the menu is handled by state:
+     * `installComposerMenuGuard` flips `data-dshbg-menu` on `<html>` while a menu is open and
+     * the second rule below drops this card's blur for that moment. The menu then gets its
+     * own blur back; the composer keeps its density throughout.
      *
-     * The way out is to keep the card itself free of `backdrop-filter` and put the blur on
-     * a `::before` instead. The card only needs to become a stacking context so the
-     * pseudo-element's `z-index: -1` lands above the card's background and below its
-     * content - and `isolation: isolate` does exactly that. Measured on a control page:
-     * `isolation` does **not** fence off backdrop sampling (the menu behind such a card
-     * still blurs), while a `backdrop-filter` on the card does. So one property is safe and
-     * the other is not.
-     *
-     * The pseudo-element is a leaf, so it can carry a backdrop-filter freely.
-     *
-     * Fill and radius are shared with the menu and the right sidebar (`menuFill` /
-     * `menuBlur`), because they are the same material and have to move together - tuning
-     * the menu until it looks right and leaving the composer at a different opacity is what
-     * makes a UI look assembled from parts.
+     * Density is the user's "输入框不透明度" (`composerSurface`), not the menu fill: this is
+     * the one surface with a caret on it, so how much wallpaper is acceptable under your own
+     * typing is its own dial - and it has to work in solid *and* glass mode, which is what
+     * the token route in `composerCss` and this rule now share.
      */
     function composerGlassCss(settings) {
       if (settings.composerStyle !== 'glass') return '';
-      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
-      const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
+      const fill = clamp(settings.composerSurface === undefined ? 85 : settings.composerSurface, 0, 100);
       return `
 ${prefixed('html[data-dshbg-on]', ['[data-composer-card]'])} {
   position: relative !important;
-  isolation: isolate !important;
-  background-color: transparent !important;
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
-  border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent) !important;
-}
-${prefixed('html[data-dshbg-on]', ['[data-composer-card]::before'])} {
-  content: "" !important;
-  position: absolute !important;
-  inset: 0 !important;
-  z-index: -1 !important;
-  pointer-events: none !important;
-  border-radius: inherit !important;
   background-color: color-mix(in srgb, var(--dshbg-raw-base) ${fill}%, transparent) !important;
   -webkit-backdrop-filter: blur(${blur}px) saturate(160%) !important;
   backdrop-filter: blur(${blur}px) saturate(160%) !important;
+  border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent) !important;
   box-shadow:
     inset 0 1px 0 0 rgb(255 255 255 / 0.10),
-    inset 0 -1px 0 0 rgb(0 0 0 / 0.10),
     0 10px 30px -14px rgb(0 0 0 / 0.55) !important;
+}
+${prefixed('html[data-dshbg-on][data-dshbg-menu]', ['[data-composer-card]'])} {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 `;
     }
@@ -1099,7 +1098,7 @@ ${prefixed('html[data-dshbg-on]', ['[data-composer-card]::before'])} {
      * out to `<body>` by the host's menu primitive.
      */
     function rightPanelGlassCss(settings) {
-      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
       const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
       const panel = '[data-sidebar-right-panel]';
       return `
@@ -1449,13 +1448,28 @@ ${prefixed('html[data-dshbg-on]', [`${CRUMB}[data-dshbg-mq]`])} {
      *
      * Both markers live on <html>, so they share one compound selector; a descendant
      * combinator between them never matches.
+     *
+     * **The sidebar column also stops painting in whole-window scope.** The host fills that
+     * column with `--dsw-specific-sidebar-fill` *and* its inner root fills itself with the
+     * same token, so a declared 40% lands as `1-(1-0.4)²` = 64% - the column is always
+     * darker than the panels beside it, which is the "left sidebar is black" report. Letting
+     * the inner root be the only painter makes the number mean what it says. The `:has()`
+     * is the interlock: no inner root, no rule, and the column keeps its own fill.
      */
     function chromeCss(settings) {
       const strip = settings.fullWindow ? 'transparent' : 'var(--dshbg-raw-sidebar)';
+      const column = settings.fullWindow
+        ? `${prefixed('html[data-dshbg-on]', [
+            `${frameSelector()} > div:nth-of-type(1):has([class*="_root"])`,
+          ])} {
+  background-color: transparent !important;
+}
+`
+        : '';
       return `
 html[data-dshbg-on][data-windows-titlebar] ${frameSelector()}::before { background: ${strip} !important; }
 html[data-dshbg-on][data-windows-titlebar] ${frameSelector()} { --dsh-windows-content-radius: 0px; }
-`;
+${column}`;
     }
 
     /**
@@ -2053,6 +2067,52 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       };
     }
 
+    /**
+     * Keeps the composer's frost and the `/` menu's frost from cancelling each other.
+     *
+     * The command menu is rendered inside `[data-composer-card]` and hangs outside its box.
+     * A `backdrop-filter` on the card makes the card a backdrop root, so the menu would only
+     * sample what is painted inside that root - nothing - and its own blur would silently
+     * die. The two cannot be blurred at once, so this picks by state: while such a menu is
+     * open `<html>` carries `data-dshbg-menu` and the card drops its blur; the menu gets its
+     * own back. Closing it restores the composer.
+     */
+    function installComposerMenuGuard() {
+      if (typeof MutationObserver === 'undefined') return { sync() {}, dispose() {} };
+      const root = document.documentElement;
+      let timer = 0;
+      let disposed = false;
+
+      const sync = () => {
+        timer = 0;
+        if (disposed) return;
+        if (!root.hasAttribute('data-dshbg-on')) {
+          root.removeAttribute('data-dshbg-menu');
+          return;
+        }
+        const open = document.querySelector('[data-composer-card] [data-menu-material]') !== null;
+        if (open) root.setAttribute('data-dshbg-menu', '');
+        else root.removeAttribute('data-dshbg-menu');
+      };
+
+      const schedule = () => {
+        if (disposed || timer !== 0) return;
+        timer = setTimeout(sync, 120);
+      };
+
+      const observer = new MutationObserver(schedule);
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      return {
+        sync,
+        dispose() {
+          disposed = true;
+          if (timer !== 0) clearTimeout(timer);
+          observer.disconnect();
+          root.removeAttribute('data-dshbg-menu');
+        },
+      };
+    }
+
     function installStyles(ctx) {
       const stale = document.querySelector(`style[data-dshbg-css="${PACKAGE}"]`);
       if (stale !== null) stale.remove();
@@ -2062,6 +2122,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       document.head.appendChild(tag);
 
       const marquee = installTitleMarquee();
+      const composerMenu = installComposerMenuGuard();
 
       let disposed = false;
       let measureToken = 0;
@@ -2087,6 +2148,9 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         // Turning the wallpaper off also drops the `text-overflow: clip` that the marquee
         // depends on, so the animations have to follow the stylesheet, not the setting.
         marquee.sync();
+        // Re-check the composer/menu trade whenever the sheet changes: a menu that stayed
+        // open across a settings change still needs the card's blur dropped.
+        composerMenu.sync();
       };
 
       /**
@@ -2126,6 +2190,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
             disposed = true;
             unsubscribe();
             marquee.dispose();
+            composerMenu.dispose();
             tag.remove();
             document.documentElement.removeAttribute('data-dshbg-on');
           },
@@ -2731,6 +2796,169 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       );
     }
 
+    // ------------------------------------------------------------- tuning dock
+
+    /**
+     * TEMPORARY tuning surface, parked in the left column.
+     *
+     * Every number in this plugin has to be judged against a real wallpaper, and the
+     * settings page is a separate full-page view - you cannot watch the composer or a menu
+     * while dragging a slider there. So the controls live in the sidebar's own foot seat
+     * while they are being tuned: the app stays on screen, every drag lands immediately in
+     * the stylesheet, and the probe below prints what the browser actually computed. That
+     * last part is what separates "the number is too small" from "the number never reached
+     * the screen" - a distinction this plugin has needed more than once.
+     *
+     * To remove it later: delete this block, the `sidebar.footer.action` registration in
+     * `apply`, and `TEXT.dockTitle`.
+     */
+    const DOCK_ROWS = [
+      { key: 'blur', zh: '背景模糊', en: 'Wallpaper blur', min: 0, max: 40, suffix: 'px' },
+      { key: 'dim', zh: '压暗', en: 'Dim', min: 0, max: 80, suffix: '%' },
+      { key: 'surface', zh: '面板不透明度', en: 'Panel opacity', min: 0, max: 100, suffix: '%' },
+      { key: 'sidebarFill', zh: '侧栏不透明度', en: 'Sidebar opacity', min: 0, max: 100, suffix: '%' },
+      { key: 'chatSurface', zh: '对话区不透明度', en: 'Conversation opacity', min: 0, max: 100, suffix: '%' },
+      { key: 'composerSurface', zh: '输入框不透明度', en: 'Composer opacity', min: 0, max: 100, suffix: '%' },
+      { key: 'glassBlur', zh: '玻璃模糊', en: 'Pane blur', min: 0, max: 40, suffix: 'px' },
+      { key: 'menuFill', zh: '菜单填充', en: 'Menu fill', min: 20, max: 100, suffix: '%' },
+      { key: 'menuBlur', zh: '菜单模糊', en: 'Menu blur', min: 0, max: 320, suffix: 'px' },
+    ];
+
+    const DOCK_CSS = `
+.dshbg-dock { display: flex; flex-direction: column; font-size: 11px; color: var(--dsw-alias-label-secondary, #4b5563); }
+.dshbg-dock-head { display: flex; align-items: center; gap: 6px; width: 100%; box-sizing: border-box; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; font: inherit; color: inherit; text-align: left; }
+.dshbg-dock-head:hover { background: var(--dsw-alias-interactive-bg-hover, rgb(0 0 0 / 6%)); }
+.dshbg-dock-head span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dshbg-dock-caret { flex: none; font-size: 9px; opacity: .7; }
+.dshbg-dock-body { display: flex; flex-direction: column; gap: 6px; padding: 2px 8px 8px; }
+.dshbg-dock-row { display: grid; grid-template-columns: 1fr 54px 42px; align-items: center; gap: 6px; }
+.dshbg-dock-row input { width: 100%; min-width: 0; accent-color: var(--dsw-alias-state-business-primary, #4176e6); }
+.dshbg-dock-value { font-size: 10px; text-align: right; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-caption, #8b9098); }
+.dshbg-dock-switch { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11px; }
+.dshbg-dock-switch input { margin: 0; accent-color: var(--dsw-alias-state-business-primary, #4176e6); }
+.dshbg-dock-foot { display: flex; gap: 8px; }
+.dshbg-dock-link { border: 0; background: transparent; padding: 0; cursor: pointer; font-size: 10px; color: var(--dsw-alias-state-business-primary, #4176e6); }
+.dshbg-dock-probe { display: flex; flex-direction: column; gap: 1px; margin-top: 2px; padding: 5px 6px; border-radius: 6px; background: rgb(128 128 128 / 12%); font-size: 10px; line-height: 14px; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-caption, #8b9098); word-break: break-all; }
+`;
+
+    /** What the browser actually computed. Read only, refreshed while the card is open. */
+    function probeSurface() {
+      try {
+        const card = document.querySelector('[data-composer-card]');
+        const cardStyle = card === null ? null : getComputedStyle(card);
+        // Read the token on the element that actually *receives* the remix - the frame. On
+        // `#root` it would still report the theme's own value, which looks like a failure
+        // that is not there.
+        const scope = document.querySelector(frameSelector()) || document.body;
+        const sheet = document.querySelector('style[data-dshbg-css]');
+        const settings = state.settings;
+        return {
+          mode: `${settings.mode} / ${settings.fullWindow ? '整窗' : '工作区'} / ${settings.composerStyle}`,
+          want: `fill ${settings.menuFill}% · blur ${settings.menuBlur}px · pane ${settings.glassBlur}px · side ${settings.sidebarFill}%`,
+          raw: getComputedStyle(document.body).getPropertyValue('--dshbg-raw-base').trim() || '(空)',
+          mixed: getComputedStyle(scope).getPropertyValue('--dsw-alias-bg-base').trim() || '(空)',
+          composer: cardStyle === null ? '(无输入框)' : `${cardStyle.backgroundColor} / ${cardStyle.backdropFilter || '-'}`,
+          sheet: sheet === null ? '(无样式表)' : `${Math.round(sheet.textContent.length / 1024)} KB`,
+        };
+      } catch (failure) {
+        return { error: String(failure && failure.message) };
+      }
+    }
+
+    function SliderDock() {
+      const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+      const { settings } = snapshot;
+      const [open, setOpen] = useState(false);
+      const [probe, setProbe] = useState(null);
+      const lang = currentLang();
+      const text = TEXT[lang];
+
+      useEffect(() => {
+        if (!open) {
+          setProbe(null);
+          return undefined;
+        }
+        setProbe(probeSurface());
+        if (typeof setInterval !== 'function') return undefined;
+        const timer = setInterval(() => setProbe(probeSurface()), 800);
+        return () => clearInterval(timer);
+      }, [open]);
+
+      return h(
+        'div',
+        { className: 'dshbg-dock' },
+        h('style', null, DOCK_CSS),
+        h(
+          'button',
+          { type: 'button', className: 'dshbg-dock-head', onClick: () => setOpen(!open) },
+          h('span', null, `${text.dockTitle}${open ? '' : ` · ${settings.menuFill}% / ${settings.menuBlur}px`}`),
+          h('span', { className: 'dshbg-dock-caret' }, open ? '\u25be' : '\u25b8'),
+        ),
+        open
+          ? h(
+              'div',
+              { className: 'dshbg-dock-body' },
+              ...DOCK_ROWS.map((row) =>
+                h(
+                  'label',
+                  { key: row.key, className: 'dshbg-dock-row' },
+                  h('span', null, lang === 'zh' ? row.zh : row.en),
+                  h('input', {
+                    type: 'range',
+                    min: row.min,
+                    max: row.max,
+                    step: 1,
+                    value: settings[row.key],
+                    onChange: (event) => patchSettings({ [row.key]: Number(event.target.value) }),
+                  }),
+                  h('span', { className: 'dshbg-dock-value' }, `${settings[row.key]}${row.suffix}`),
+                ),
+              ),
+              h(
+                'label',
+                { className: 'dshbg-dock-switch' },
+                h('input', {
+                  type: 'checkbox',
+                  checked: settings.composerStyle === 'glass',
+                  onChange: (event) => patchSettings({ composerStyle: event.target.checked ? 'glass' : 'solid' }),
+                }),
+                h('span', null, text.dockGlass),
+              ),
+              h(
+                'label',
+                { className: 'dshbg-dock-switch' },
+                h('input', {
+                  type: 'checkbox',
+                  checked: settings.fullWindow,
+                  onChange: (event) => patchSettings({ fullWindow: event.target.checked }),
+                }),
+                h('span', null, text.dockFullWindow),
+              ),
+              h(
+                'div',
+                { className: 'dshbg-dock-foot' },
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'dshbg-dock-link',
+                    onClick: () => patchSettings({ ...DEFAULTS, imageId: settings.imageId }),
+                  },
+                  text.reset,
+                ),
+              ),
+              probe === null
+                ? null
+                : h(
+                    'div',
+                    { className: 'dshbg-dock-probe' },
+                    ...Object.entries(probe).map(([key, value]) => h('div', { key }, `${key} = ${String(value)}`)),
+                  ),
+            )
+          : null,
+      );
+    }
+
     // --------------------------------------------------------------- registration
 
     return {
@@ -2753,6 +2981,19 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
           );
         } catch (failure) {
           console.error('[dsh-custom-background] config slot registration failed:', failure);
+        }
+
+        // TEMPORARY tuning seat in the sidebar foot. Its own failure path: a missing seat
+        // must never take the settings page down with it, and the other way round.
+        try {
+          ctx.slots.inject('sidebar.footer.action', () =>
+            ctx.slots.register(
+              { name: 'sidebar.footer.action', id: 'custom-background-tuner', order: 10 },
+              SliderDock,
+            ),
+          );
+        } catch (failure) {
+          console.error('[dsh-custom-background] tuner registration failed:', failure);
         }
       },
     };

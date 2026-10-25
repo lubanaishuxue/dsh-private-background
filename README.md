@@ -50,8 +50,9 @@
 
 | 位置 | 覆盖点 | 默认 |
 |---|---|---|
-| 对话区（中间那一栏） | `--dsw-alias-bg-base` | 78% |
-| 输入框（`[data-composer-card]`） | `--dsw-specific-input-major` | 85% |
+| 对话区（中间那一栏） | `--dsw-alias-bg-base` | 0% |
+| 输入框（`[data-composer-card]`） | `--dsw-specific-input-major`（实心）／玻璃浓度（液态玻璃） | 50% |
+| 左侧边栏（整窗模式下） | `--dsw-specific-sidebar-fill` | 40%（独立一档） |
 
 输入框给得更高，因为它是全屏唯一一处**壁纸正压在你要打的字下面**的地方：亮色斑块透过来，读起来像渲染故障，而不像设计。`[data-composer-card]` 正好打在画底色的那个元素上，所以只覆盖一个 token 就够——自定义属性声明在元素上，对该元素自己的声明同样生效，不需要再补一条 `background`。
 
@@ -160,29 +161,33 @@ html[data-windows-titlebar] .cm-footer-stack.summary:not(.rail) {
 
 `[data-overflow-below]::after` 那条渐隐遮罩也得跟着改：宿主拿不透明的 `--dsw-specific-menu` 渐到透明，压在玻璃上就是一道黑边。圆角和 `--dsw-elevation-prominent` 都留给宿主，仍然读得出浮在页面上。
 
-**输入框怎么既能模糊、又不弄死菜单？** 把模糊挂到 `::before` 上。
+**输入框的模糊画在卡片自己身上，菜单开着时卡片让出模糊。**
 
-卡片是 `/` 菜单的祖先，卡片**自己**一旦有 `backdrop-filter` 就成了 backdrop root，菜单的采样被切断（上一节）。但卡片想要玻璃感，就需要真模糊。解法是拆成两层：
+先前的两种写法都不行，而且失败方式一样：填充渲染了、**模糊从没上屏**。
+
+1. `::before` + `isolation: isolate`（伪元素 `z-index: -1`，卡片建 stacking context）；
+2. `::before` + `z-index: 0`（把 `isolation` 换成不在 backdrop root 清单上的属性）。
+
+现在用转录区卡片验证过的那条路——**元素自带 `backdrop-filter`**——然后按状态裁决唯一的冲突：
 
 ```css
-[data-composer-card] { isolation: isolate; background: transparent; backdrop-filter: none; }
-[data-composer-card]::before {
-  content: ""; position: absolute; inset: 0; z-index: -1;
-  border-radius: inherit; pointer-events: none;
-  background: color-mix(... fill%);
-  backdrop-filter: blur(Npx) saturate(160%);
-}
+[data-composer-card] { background: color-mix(... composerSurface%); backdrop-filter: blur(menuBlur) saturate(160%); }
+html[data-dshbg-menu] [data-composer-card] { backdrop-filter: none; }
 ```
 
-卡片只需要成为 stacking context，好让伪元素的 `z-index: -1` 落在卡片背景之上、内容之下 —— `isolation: isolate` 正好干这个，而**实测它不会隔离 backdrop 采样**。伪元素是叶子，带模糊没有任何副作用。
+`/` 命令菜单渲染在卡片**里面**、挂在卡片上方，而卡片一旦有 `backdrop-filter` 就成了 backdrop root，菜单只能采样 root 内部（空）。`installComposerMenuGuard` 每 120ms 最多查一次 `[data-composer-card] [data-menu-material]`：菜单开着就摘掉卡片的模糊、让菜单拿回自己的，关掉再还回来。代价写在明处——菜单开着的那几百毫秒，输入框没有模糊。
 
-对照页 `diag/card-pseudo.html` 把两种写法并排放：卡片自己带模糊 → 卡片糊了但**菜单背后清清楚楚**；模糊挂 `::before` → **卡片和菜单同时糊**。**两个属性一个安全、一个致命，别搞混。**
+**浓度用 `composerSurface`（「输入框不透明度」），不是 `menuFill`。** 这是唯一一处光标停在文字上的表面，所以它自己一档，而且实心/玻璃两种质感共用同一个数。之前玻璃模式读的是 `menuFill`，于是那条滑杆在玻璃下完全没反应——「输入框不透明度改动没反应」就是这么来的。
+
+对照页 `diag/card-pseudo.html` 记的是当年那次测量：卡片自己带模糊 → 卡片糊了但菜单背后清清楚楚。结论（祖先的 `backdrop-filter` 会切断后代采样）依然成立，所以现在才需要那个状态裁决。
 
 **右侧侧边栏**（dockkit）结构是反的：`[data-sidebar-right-panel]` 这个根是个裸的 `position: absolute` 盒子，**自己一点底色都没有**，可见的面画在更下层的 `[data-dockkit-host]` / `[data-dockkit-pane]` 上。所以玻璃铺在**根**上，然后把下面几层的 `background-color` 设成 `transparent` —— 否则宿主的填充会盖在玻璃上，什么都透不出来。
 
 **而且必须用 `[data-sidebar-right-open]` 把它门住。** 这个根是**常驻**的：侧栏收起时它照样占着那一列的宽度，只是把内容 `transform: translateX(var(--dsh-sidebar-width))` 推走 + `visibility: hidden` 藏起来 —— `visibility` 不影响布局。所以无条件给根铺底色，就会在侧栏根本没打开的时候糊一大块玻璃盖在对话上（实测就是这样翻的车）。`data-sidebar-right-open` 是宿主在打开期间挂的布尔属性，门住它。
 
-填充和模糊这两个数字现在由菜单、输入框、右侧栏**共用**（`menuFill` / `menuBlur`）。它们是同一种材料，必须一起动；只把菜单调好看、让输入框停在另一个不透明度上，正是「一眼看出是拼起来的」那种效果。
+菜单和右侧栏共用 `menuFill` / `menuBlur` 这一对（同一种材料，必须一起动）；输入框的浓度走自己那条，理由见上。
+
+**左侧边栏为什么是黑的。** 那一列被画了**两次**：宿主先用 `--dsw-specific-sidebar-fill` 给列铺一遍，它的内层根又用**同一个 token** 给自己铺一遍。声明 40% 落到屏幕上就是 `1-(1-0.4)²` = 64%，于是左栏永远比旁边的面板暗一档，看上去就是一块黑板。整窗模式下现在让**内层根**当唯一的画师（列停止画底色，用 `:has([class*="_root"])` 做联锁），并且给侧栏单独一条 `sidebarFill`——它和面板不透明度分开，正是因为这一列的历史就是这个数字对不上屏幕。要整块关掉侧栏玻璃，把「整窗铺满」关掉即可（那时壁纸根本不进侧栏，左栏回到主题原色）。
 
 **填充量到多少合适？** 下面这张表是在**模糊还死着**的前提下量的（壁纸亮部 + 13.5px 正文）——所以它量的是「没有模糊时，多厚的色板才能压住字」，不是玻璃的参数：
 
@@ -454,7 +459,15 @@ client.js
 node tools/smoke-test.cjs
 ```
 
-206 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、液态玻璃五档归属与四套配方（面板 / 芯片 / 悬浮控件 / 深色玻璃）、底部状态栏、头部胶囊、用户气泡、费用明细胶囊与头部那颗的隐藏、回到最下面圆钮、侧栏历史块（随内容收缩、行一条规则都没有、三处边缘对齐、关掉宿主 `_fade`、**和计费器共用同一个 `paneFill()`**）、计费器宽度与 Windows 下的按钮内缩、悬停预览卡的玻璃与 50% 填充下限（外加「别再钉回不透明」）、菜单的玻璃画在表面而非材料层、材料层让位、**输入框卡片放弃 backdrop-filter 并把模糊挂到 `::before`**（模糊失效的真凶 + 卡片和菜单同时糊）、右侧侧边栏的玻璃（**只在打开时**）与下层停止画底色、悬停卡的填充下限、两条临时滑块是否真的驱动样式表及其上下限、悬停卡与 tooltip 的深色玻璃（描边不用 border）、团队面板（portal 与内层 token 重混）、代码块三处底色与标题栏、标题的「放得下就不滚」与 `max-width` 还原时机、选择器 / 测量方式 / 无缝循环 / 自激防护 / 声明式动效与关键帧、配置页实际渲染、五种字体模式、cost-meter 兼容层、生命周期、CSS 语法与选择器前缀。
+217 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、液态玻璃五档归属与四套配方（面板 / 芯片 / 悬浮控件 / 深色玻璃）、底部状态栏、头部胶囊、用户气泡、费用明细胶囊与头部那颗的隐藏、回到最下面圆钮、侧栏历史块（随内容收缩、行一条规则都没有、三处边缘对齐、关掉宿主 `_fade`、**和计费器共用同一个 `paneFill()`**）、计费器宽度与 Windows 下的按钮内缩、悬停预览卡的玻璃与 50% 填充下限（外加「别再钉回不透明」）、菜单的玻璃画在表面而非材料层、材料层让位、**输入框的玻璃画在卡片自己身上、菜单开着时由 `installComposerMenuGuard` 让出模糊、浓度走 `composerSurface`**（伪元素那条路试过两次，填充上屏、模糊从未上屏）、右侧侧边栏的玻璃（**只在打开时**）与下层停止画底色、悬停卡的填充下限、两条临时滑块是否真的驱动样式表及其上下限、**菜单模糊能一路进到样式表、上限 320**、**侧栏自己的浓度档与「列不再重复画底」**、悬停卡与 tooltip 的深色玻璃（描边不用 border）、团队面板（portal 与内层 token 重混）、代码块三处底色与标题栏、标题的「放得下就不滚」与 `max-width` 还原时机、选择器 / 测量方式 / 无缝循环 / 自激防护 / 声明式动效与关键帧、配置页实际渲染、五种字体模式、cost-meter 兼容层、**侧栏调参卡（两个座位互不依赖、折叠头、九条滑杆、探针）**、生命周期、CSS 语法与选择器前缀。
+
+### 调参卡（临时）
+
+每一条数字都得对着真壁纸判，而设置页是整页视图——在那一页拖滑杆看不到输入框和菜单。所以调参期间注册进 `sidebar.footer.action`（Settings 旁边那个列表座位，计费器也在那儿）：折叠一行挂在侧栏底部，展开是九条滑杆（含**侧栏不透明度**）+ 液态玻璃 / 整窗两个开关 + 恢复默认，改完立刻生效。
+
+展开后底部有一块**只读探针**，把浏览器实际算出来的东西摊开：`mode`（作用域与质感）、`want`（你设的值）、`raw`（捕获到的 token）、`mixed`（重混后落到 `#root` 的值）、`composer`（输入框算出来的底色与模糊）、`sheet`（样式表大小）。拖了没反应时，它能直接把「数字太小」和「数字根本没进 CSS」分开——这个区分救过一次 64 与 320 对不上的事故。
+
+拆掉它：删 `SliderDock` / `DOCK_ROWS` / `DOCK_CSS` / `probeSurface` / `TEXT.dockTitle|dockGlass|dockFullWindow`，以及 `apply` 里那段 `sidebar.footer.action` 注册。
 
 `--dump` 可打印实际产出的 CSS：
 

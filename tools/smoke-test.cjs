@@ -32,8 +32,12 @@ const BASE_SETTINGS = {
   blur: 16,
   dim: 0,
   surface: 20,
+  sidebarFill: 30,
   chatSurface: 78,
   composerSurface: 85,
+  glassBlur: 14,
+  menuFill: 30,
+  menuBlur: 12,
   fullWindow: false,
   font: 'theme',
   fontColor: '#f7f8fa',
@@ -377,30 +381,37 @@ async function main() {
       base.css,
     ),
   );
-  // 输入框卡片：模糊必须挂在 ::before 上，卡片自己不能有 backdrop-filter。
+  // 输入框卡片：模糊画在卡片**自己身上**，菜单的冲突交给状态裁决。
   //
-  // 卡片是 `/` 菜单的祖先，卡片一旦有 backdrop-filter 就成了 backdrop root，菜单（挂在
-  // 卡片上方 100% + 4px，整个在 root 之外）的模糊就被采样成空白。实测对照页
-  // （diag/card-pseudo.html）：卡片自己带模糊时，卡片糊了但**菜单背后清清楚楚**；
-  // 模糊挂到 ::before 上时，**卡片和菜单同时糊**。**模糊失效时先查祖先链，别调填充。**
-  //
-  // 卡片只需要成为 stacking context，让伪元素的 z-index:-1 落在背景之上、内容之下 ——
-  // `isolation: isolate` 正好干这个，而且实测**不会**隔离 backdrop 采样。所以这两个属性
-  // 一个安全、一个致命，别搞混。
+  // 历史：先是「模糊挂 ::before + isolation」（填充渲染、模糊从没上屏），再是「::before +
+  // z-index: 0」（同样没上屏）。现在用转录区卡片验证过的那条路——元素自带 backdrop-filter——
+  // 并用 installComposerMenuGuard 在 `/` 菜单打开期间把卡片的模糊让出去，菜单才拿回自己的。
   //
   // 这条必须在「质感 = 液态玻璃」下测：实心模式压根不给卡片套玻璃配方。
   const glassy = await emit({ composerStyle: 'glass' });
   check(
-    'composer card carries no backdrop-filter of its own',
-    /\[data-composer-card\] \{[^}]*isolation: isolate[\s\S]{0,220}?backdrop-filter: none/.test(
+    'composer card paints its own frost',
+    /\[data-composer-card\] \{[^}]*var\(--dshbg-raw-base\) 85%[\s\S]{0,400}?backdrop-filter: blur\(12px\) saturate\(160%\)/.test(
       glassy.css,
     ),
   );
   check(
-    'composer card puts the blur on its ::before',
-    /\[data-composer-card\]::before \{[^}]*z-index: -1[\s\S]{0,420}?backdrop-filter: blur\((\d{1,2})px\) saturate\(160%\)/.test(
+    'composer density comes from its own slider',
+    (await emit({ composerStyle: 'glass', composerSurface: 40 })).css.includes('var(--dshbg-raw-base) 40%, transparent'),
+  );
+  check(
+    'composer hands its blur to the menu while a menu is open',
+    /html\[data-dshbg-on\]\[data-dshbg-menu\] \[data-composer-card\] \{[^}]*backdrop-filter: none/.test(
       glassy.css,
     ),
+  );
+  check(
+    'the menu guard watches for a menu inside the composer',
+    CODE.includes("document.querySelector('[data-composer-card] [data-menu-material]')"),
+  );
+  check(
+    'composer no longer depends on a pseudo-element',
+    !/\[data-composer-card\]::before/.test(glassy.css),
   );
   // 右侧侧边栏：玻璃铺在 panel 根上（它自己本来一点底色都没有，可见的面在更下层），
   // 下面几层 dockkit 必须停止画底色，否则盖住玻璃。
@@ -445,10 +456,14 @@ async function main() {
     menu12.css.includes('backdrop-filter: blur(12px) saturate(150%)') &&
       !menu12.css.includes('blur(40px)'),
   );
-  // 上限 64px：再往上 CSS 也不会更糊，只是白白多算一遍。
+  // 上限 320px：半径超过表面自身尺寸之后结果就是背景的平均色，再往上只花 GPU 不换观感。
   check(
     'menu blur clamps to its ceiling',
-    (await emit({ menuBlur: 200 })).css.includes('backdrop-filter: blur(64px) saturate(150%)'),
+    (await emit({ menuBlur: 500 })).css.includes('backdrop-filter: blur(320px) saturate(150%)'),
+  );
+  check(
+    'menu blur reaches the sheet without a local cap',
+    (await emit({ menuBlur: 300 })).css.includes('backdrop-filter: blur(300px) saturate(150%)'),
   );
   // 悬停卡和 tooltip 是「反色表面」：宿主的 --dsw-hovercard-bg 写死 #2C2C2E，字色写死
   // #fff / #cfd3d6，两套主题都是深的。所以不能转浅色玻璃（白字会糊掉），只能做
@@ -812,7 +827,8 @@ async function main() {
   // off has to take it with it - otherwise a scrolling title keeps its ellipsis pinned.
   check('title clip goes away with the stylesheet', !off.css.includes('_crumb'));
   check('mode none leaves <html> unmarked', !off.documentElement.hasAttribute('data-dshbg-on'));
-  check('mode none still registers the slot', off.registered.length === 1);
+  // 第二个座位是侧栏的临时调参卡。它和设置页互不依赖：任何一边缺失都不能把另一边带崩。
+  check('mode none still registers both seats', off.registered.length === 2, `got ${off.registered.length}`);
 
   // Nothing else in this file calls the page component, so a typo in the JSX would only
   // surface in the app. Render it once and look for the controls by their label text.
@@ -860,12 +876,39 @@ async function main() {
   check('temporary glass blur slider is on the page', blob.includes('玻璃模糊（临时）'));
   check('temporary glass fill slider is on the page', blob.includes('玻璃填充（临时）'));
 
+  console.log('\nsidebar tuning dock');
+  // 侧栏那张卡：默认只渲染一行折叠头，展开后才滑杆。标签写错只会在应用里炸，所以真渲染一次。
+  let dock = null;
+  try {
+    dock = base.registered[1].component({});
+  } catch (failure) {
+    dock = null;
+  }
+  check('dock renders without throwing', dock !== null);
+  const beforeDock = strings.length;
+  walk(dock);
+  const dockBlob = strings.slice(beforeDock).join('\n');
+  check('dock shows a collapsed header', dockBlob.includes('调参（临时）'), dockBlob.slice(0, 60));
+  check(
+    'dock carries every dial',
+    ['blur', 'dim', 'surface', 'chatSurface', 'composerSurface', 'glassBlur', 'menuFill', 'menuBlur'].every((key) =>
+      CODE.includes(`key: '${key}'`),
+    ),
+  );
+  check('dock can read back computed values', CODE.includes('function probeSurface') && CODE.includes('getComputedStyle'));
+
   console.log('\nslot registration');
-  check('one slot registration', base.registered.length === 1, `got ${base.registered.length}`);
+  check('two slot registrations', base.registered.length === 2, `got ${base.registered.length}`);
   if (base.registered.length > 0) {
     const { options } = base.registered[0];
     check('registers into plugins.bundle.config', options.name === 'plugins.bundle.config');
     check('keyed by the package name', options.key === '@local/dsh-custom-background', options.key);
+  }
+  if (base.registered.length > 1) {
+    const { options } = base.registered[1];
+    check('tuner docks into the sidebar foot', options.name === 'sidebar.footer.action', options.name);
+    check('tuner has its own id', options.id === 'custom-background-tuner', options.id);
+    check('config page is registered first', base.registered[0].options.name === 'plugins.bundle.config');
   }
 
   console.log('\ncss syntax sanity');
