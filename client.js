@@ -518,37 +518,6 @@ window.__ModuleLoader__.load({
     // --------------------------------------------------------------------- tokens
 
     /**
-     * How opaque the sidebar column is allowed to get, at minimum.
-     *
-     * `--dsw-specific-sidebar-fill` used to be `lift: 0`, so its alpha *was* the panel
-     * slider. At `surface: 0` that means the sidebar paints nothing at all - and a sidebar
-     * with no fill is not "more glassy", it is gone: the nav items, the workspace group and
-     * the session list all float on the photograph with no column to belong to, and the
-     * only thing separating them from the transcript is a border that is not there.
-     *
-     * **40 is the readability floor, and 2.27.1 proved it the hard way.** That release
-     * dropped it to 28 in the same commit that fixed the double-paint (see
-     * `columnPaintCss`), so two things moved at once: the veil went from a real 64% to a
-     * real 28%. The complaint that came back was "侧边栏按钮没了" - the column had become
-     * light enough that the dark theme's near-white icons and labels washed out against the
-     * bright part of the wallpaper. Nothing was structurally broken; the number was simply
-     * below the legibility line.
-     *
-     * So the value goes back to what the original 0 / 20 / 30 / 40 / 55 comparison picked.
-     * What changes in 2.27.2 is not the number, it is that the number is now *real*: with a
-     * single painter, 40 means 40, not 64. Same target, 37% less veil, and the icons stay
-     * legible.
-     *
-     * The lesson worth keeping: **never move a calibrated number in the same release as a
-     * structural fix.** If both go in together and something looks wrong, there is no way
-     * to tell which one did it.
-     *
-     * This only applies when the sidebar is re-mixed at all (whole-window scope). In
-     * work-area scope the token is not emitted, so the sidebar keeps the theme's own fill.
-     */
-    const SIDEBAR_FLOOR = 40;
-
-    /**
      * Every token that paints a surface. `lift` keeps elevation legible: a raised panel
      * is re-mixed slightly more opaque than the surface under it, so stacked panels
      * still read as stacked instead of dissolving into one sheet.
@@ -562,6 +531,25 @@ window.__ModuleLoader__.load({
      * wallpaper entirely behind it; the history list carries its own block instead - see
      * `historyBlockCss`.
      */
+    /**
+     * How opaque the sidebar column is allowed to get, at minimum.
+     *
+     * `--dsw-specific-sidebar-fill` used to be `lift: 0`, so its alpha *was* the panel
+     * slider. At `surface: 0` that means the sidebar paints nothing at all - and a sidebar
+     * with no fill is not "more glassy", it is gone: the nav items, the workspace group and
+     * the session list all float on the photograph with no column to belong to, and the
+     * only thing separating them from the transcript is a border that is not there.
+     *
+     * The number is measured, not guessed: `diag/sidebar-floor.png` composites the veil over
+     * the user's own screenshot at 0 / 20 / 30 / 40 / 55%, and 40% is where the column reads
+     * as a surface while the picture still comes through. Below that the grouping is lost;
+     * above it the wallpaper starts to disappear.
+     *
+     * This only applies when the sidebar is re-mixed at all (whole-window scope). In
+     * work-area scope the token is not emitted, so the sidebar keeps the theme's own fill.
+     */
+    const SIDEBAR_FLOOR = 40;
+
     const SURFACE_TOKENS = [
       { token: '--dsw-alias-bg-base', raw: 'base', lift: 0 },
       { token: '--dsw-specific-sidebar-fill', raw: 'sidebar', lift: 0, floor: SIDEBAR_FLOOR, sidebarOnly: true },
@@ -687,61 +675,6 @@ ${remixes}
     }
 
     /**
-     * One surface, one painter.
-     *
-     * The frame's sidebar column is a grid cell, and it paints
-     * `--dsw-specific-sidebar-fill`. So does the root *inside* it: `SidebarRoot`
-     * (`_2H3hWW_root`) paints the same token. Two elements, one token, stacked.
-     *
-     * In the theme's own design that is invisible, because both layers are the same opaque
-     * colour: `#1b1b1c` over `#1b1b1c` is still `#1b1b1c`. The moment the token goes
-     * translucent it stops being invisible, and the error is not subtle - the declared
-     * alpha `a` arrives on screen as `1 - (1 - a)²`. At `surface: 0` a 40% floor rendered as
-     * **64%**, which is why the whole left half of the window read as black while the
-     * transcript beside it was still showing the photograph.
-     *
-     * **The wrapper is the one that has to go, not the root.** A grid cell exists to place
-     * things; the root is the surface that things sit on. Killing the root would need its
-     * build-hashed class name, and `_root` is a local name shared by half the bundle
-     * (`SettingsRoot`, `SidebarRoot`, `ConversationRoot` ...), so it is not addressable.
-     * The column is addressable structurally - the same `div:nth-of-type` anchor that
-     * `chatSurfaceCss` and `configPageCss` already rely on.
-     *
-     * **Windows-only, and that is not a shortcut.** On darwin the host sets
-     * `[data-platform=darwin] ._2H3hWW_root { background: 0 0 }` and moves the fill to the
-     * column (with a gradient on top). The column is the *only* painter there, so making it
-     * transparent would delete the sidebar outright. `[data-windows-titlebar]` is exactly
-     * the condition under which both layers paint.
-     *
-     * **The `:has()` guard is a safety interlock, not decoration.** If the sidebar root ever
-     * moves out from under the column - host refactor, a slot wrapper that renders
-     * somewhere else, a collapsed-rail variant - this rule must not fire, because a column
-     * with no painter at all is not "more glassy", it is an invisible sidebar with invisible
-     * buttons on top of it. With the guard, a broken assumption costs the *old* 64% (dark,
-     * but usable) instead of a hole in the UI. The guard matches the root's *local* name,
-     * which is stable across builds; the hash in front of it is not.
-     *
-     * **Why the centre column is not here any more.** `centerCol` and `ConversationRoot`
-     * have exactly the same double-paint shape, and v2.27.1 shipped a rule for it. It was
-     * pulled in 2.27.2 for one reason: at `chatSurface: 0` - the default and the user's
-     * setting - both layers are already transparent, so the rule changed *nothing*, which
-     * means it could not be verified. Shipping an unverifiable rule in the same release as
-     * a real fix is how you end up unable to tell which half broke. It goes back in only
-     * with a replica that shows the slider at a non-zero value before and after.
-     *
-     * Not applied in work-area scope: the sidebar token is not re-mixed there, so the
-     * column and the root both keep the theme's opaque fill and there is nothing to fix.
-     */
-    function columnPaintCss(settings) {
-      if (!settings.fullWindow) return '';
-      return `
-html[data-dshbg-on][data-windows-titlebar] ${frameSelector()} > div:nth-of-type(1):has([class*="_root"]) {
-  background: transparent !important;
-}
-`;
-    }
-
-    /**
      * The conversation column gets its own opacity.
      *
      * Reading long text over artwork needs a steadier backdrop than the panels do, and
@@ -749,10 +682,7 @@ html[data-dshbg-on][data-windows-titlebar] ${frameSelector()} > div:nth-of-type(
      * transcript should stay legible. One shared slider forces a compromise, so this
      * column overrides `--dsw-alias-bg-base` locally instead of stacking a second layer
      * on top of the one the conversation root already paints - two translucent layers
-     * would compose to something neither number describes. That is still aspirational for
-     * this column: `ConversationRoot` paints the same token, so the value over-delivers as
-     * `1-(1-a)²` once the slider leaves 0. See `columnPaintCss` for why the matching fix
-     * was not shipped here yet.
+     * would compose to something neither number describes.
      *
      * `> div:nth-of-type(2)` is the center column (the same structural anchor the settings
      * page rule uses), so this survives the hashed class names inside the conversation.
@@ -1957,9 +1887,6 @@ ${prefixed('html[data-dshbg-on]', ['dialog::backdrop'])} {
       return [
         wallpaperCss(settings, value),
         tokenCss(settings),
-        // Right after the re-mix, because it is the rule that decides how many times that
-        // re-mix lands. Everything below is tuned on the assumption that it lands once.
-        columnPaintCss(settings),
         chatSurfaceCss(settings),
         composerCss(settings),
         chromeCss(settings),
