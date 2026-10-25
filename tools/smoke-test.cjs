@@ -787,17 +787,19 @@ async function main() {
     'no strip geometry tied to the sidebar track width',
     !base.css.includes('--dsh-windows-sidebar-width'),
   );
-  // 整窗模式下通栏不能留透明：它下面的栏是「壁纸 + 玻璃」，通栏要是裸露的壁纸，就会在
-  // 标题按钮下方出现一条更亮、带硬边的带子——「上面那条分界线」。所以它拿和中间栏同一套配方。
+  // 整窗模式的通栏只承担「同样的色」，不加模糊：它下面的栏是 token 重混（只有颜色、没有
+  // 模糊），通栏一片糊、下面一片清，边界反而更跳。左半按侧栏浓度、右半按对话区浓度，
+  // 在 --dsh-windows-sidebar-width 处硬断；侧栏收起时该变量为 0，整条自然变成工作区色。
   check(
-    'whole-window strip continues the centre column glass',
-    /::before \{ background: color-mix\(in srgb, var\(--dshbg-raw-base\) 20%, transparent\) !important;[\s\S]{0,200}?backdrop-filter: blur\(/.test(
+    'whole-window strip tints like the columns it continues',
+    /::before \{ background: linear-gradient\(to right,[\s\S]{0,260}?var\(--dshbg-raw-sidebar\) 30%, transparent\) 0,[\s\S]{0,260}?var\(--dshbg-raw-sidebar\) 30%, transparent\) var\(--dsh-windows-sidebar-width, 0px\),[\s\S]{0,260}?var\(--dshbg-raw-base\) 78%, transparent\) var\(--dsh-windows-sidebar-width, 0px\)\) !important; \}/.test(
       wide.css,
     ),
   );
+  check('whole-window strip does not blur what it covers', !/::before \{[\s\S]{0,400}?backdrop-filter/.test(wide.css));
   check(
     'work-area strip is still never glass',
-    !/::before \{ background: color-mix/.test(base.css),
+    !/::before \{ background: linear-gradient/.test(base.css),
   );
   check('no orphaned titlebar selector', !base.css.includes('] [data-windows-titlebar]'));
   check('content radius zeroed', base.css.includes('--dsh-windows-content-radius: 0px'));

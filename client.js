@@ -1481,20 +1481,30 @@ ${prefixed('html[data-dshbg-on]', [`${CRUMB}[data-dshbg-mq]`])} {
      * column with `--dsw-specific-sidebar-fill` *and* its inner root fills itself with the
      * same token, so a declared 40% lands as `1-(1-0.4)²` = 64% - the column is always
      * darker than the panels beside it, which is the "left sidebar is black" report. Letting
-     * the inner root be the only painter makes the number mean what it says. The `:has()`
-     * is the interlock: no inner root, no rule, and the column keeps its own fill.
+     * **The top strip: tint, not frost.** The strip sits *above* the columns rather than
+     * inside one, so it has to fake the surface that continues below it. Two things went
+     * wrong when it tried:
+     *
+     * - leaving it transparent made it brighter than the frosted columns (a band);
+     * - giving it a `backdrop-filter` made it *sharper or blurrier* than the columns, whose
+     *   glass is a token remix - colour only, no blur. Blur cannot match a surface that has
+     *   none, so the strip still stood out.
+     *
+     * So it only carries the same colour: a hard-stop gradient that uses the sidebar density
+     * over the sidebar column and the conversation density over the work area, sampled at
+     * `--dsh-windows-sidebar-width`. With the sidebar collapsed that variable is 0px and the
+     * whole strip correctly takes the work-area colour. If the variable is missing the
+     * gradient is invalid, the rule drops out, and the strip falls back to the theme colour -
+     * a quiet failure rather than a bright bar.
      */
     function chromeCss(settings) {
-      // In whole-window scope the strip must not be left transparent either: the columns
-      // below it are glass over the wallpaper, so a bare strip reads as a brighter band with
-      // a hard edge under the caption buttons - the "obvious dividing line" at the top. It
-      // gets the same recipe as the centre column instead, so the two surfaces continue one
-      // another. (The sidebar/centre boundary above the header is a second, finer seam; it
-      // follows from the two columns having different densities by design.)
+      const sidebar = clamp(settings.sidebarFill, 0, 100);
+      const chat = clamp(settings.chatSurface, 0, 100);
       const strip = settings.fullWindow
-        ? `background: color-mix(in srgb, var(--dshbg-raw-base) ${clamp(settings.surface, 0, 100)}%, transparent) !important;
-  -webkit-backdrop-filter: blur(${clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320)}px) saturate(150%) !important;
-  backdrop-filter: blur(${clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320)}px) saturate(150%) !important;`
+        ? `background: linear-gradient(to right,
+    color-mix(in srgb, var(--dshbg-raw-sidebar) ${sidebar}%, transparent) 0,
+    color-mix(in srgb, var(--dshbg-raw-sidebar) ${sidebar}%, transparent) var(--dsh-windows-sidebar-width, 0px),
+    color-mix(in srgb, var(--dshbg-raw-base) ${chat}%, transparent) var(--dsh-windows-sidebar-width, 0px)) !important;`
         : 'background: var(--dshbg-raw-sidebar) !important;';
       const column = settings.fullWindow
         ? `${prefixed('html[data-dshbg-on]', [
