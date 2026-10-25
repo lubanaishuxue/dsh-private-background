@@ -823,6 +823,21 @@ async function main() {
       base.css,
     ),
   );
+  // 宿主的遮罩故意不盖 Windows 顶栏（免得压暗原生按钮），所以弹窗一开，顶栏还是亮的、
+  // 下面已经暗了 —— 那道横线就又出现。顶栏要单独补同一层压暗。
+  check(
+    'the title strip is pushed back with the app while a dialog is open',
+    /:has\(\[role="dialog"\]\[aria-modal="true"\]\)[^{]*::before[\s\S]{0,160}?inset 0 0 0 100vmax var\(--dsw-alias-bg-mask-1/.test(
+      base.css,
+    ),
+  );
+  // 设置弹窗要和菜单/输入框同一个材料，否则它就是满窗唯一一块黑板。
+  check(
+    'host dialogs use the menu material',
+    /\[role="dialog"\]\[aria-modal="true"\] \{[\s\S]{0,220}?var\(--dshbg-raw-base\) \d{2}%[\s\S]{0,300}?backdrop-filter: blur\(/.test(
+      base.css,
+    ),
+  );
   check(
     'the plugin page never paints an opaque sheet',
     !/\[data-dshbg-config\][^{]*\{[^}]*background-color: var\(--dshbg-raw-base\) !important/.test(base.css) &&

@@ -1642,6 +1642,37 @@ ${restores}
     }
 
     /**
+     * Host dialogs and everything else popup-shaped.
+     *
+     * The settings modal is the one surface that had no recipe here, so it stayed a nearly
+     * opaque dark slab while the composer and the menus became glass - the "make every popup
+     * consistent with the dialog" complaint. It now uses the same pair as the menus
+     * (`menuFill` / `menuBlur`), with a floor so a dialog full of 13px text never goes too
+     * clear on its own.
+     *
+     * It is keyed on `role="dialog"` + `aria-modal` because those are semantics the host's
+     * JSX owns: a hashed class would break on the next build and the rule would fail
+     * silently.
+     */
+    function dialogCss(settings) {
+      const fill = Math.max(clamp(settings.menuFill === undefined ? 30 : settings.menuFill, 20, 100), 58);
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
+      return `
+${prefixed('html[data-dshbg-on]', ['[role="dialog"][aria-modal="true"]'])} {
+  background-color: color-mix(in srgb, var(--dshbg-raw-base) ${fill}%, transparent) !important;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 14%, transparent) !important;
+}
+html[data-dshbg-on] dialog::backdrop {
+  background: rgb(0 0 0 / 46%) !important;
+  -webkit-backdrop-filter: blur(6px) !important;
+  backdrop-filter: blur(6px) !important;
+}
+`;
+    }
+
+    /**
      * Everything except an open dialog is pushed back.
      *
      * A dialog is the only thing that should be in focus; the app behind it is context, and
@@ -1650,6 +1681,12 @@ ${restores}
      * dialogs are siblings of `#root`, so this de-emphasises the app *without* touching the
      * dialog. `dialog[open]` catches native `<dialog>`s (the cost meter's), the attribute
      * selector catches the host's own modals.
+     *
+     * **The title strip has to be pushed back too, and separately.** The host's scrim is
+     * positioned `inset: var(--dsh-frame-chrome-top) 0 0` on purpose - it must not dim the
+     * Windows caption buttons - so the strip sits *outside* it. Without the second rule the
+     * strip keeps full brightness while everything under it dims, and that step is exactly
+     * the "dividing line" that reappears the moment a dialog opens.
      */
     function modalCss(settings) {
       const blur = Math.min(10, Math.max(4, Math.round(clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320) / 12)));
@@ -1657,6 +1694,10 @@ ${restores}
 html[data-dshbg-on]:has([role="dialog"][aria-modal="true"]) #root,
 html[data-dshbg-on]:has(dialog[open]) #root {
   filter: blur(${blur}px) brightness(0.52) saturate(0.85) !important;
+}
+html[data-dshbg-on]:has([role="dialog"][aria-modal="true"]) ${frameSelector()}::before,
+html[data-dshbg-on]:has(dialog[open]) ${frameSelector()}::before {
+  box-shadow: inset 0 0 0 100vmax var(--dsw-alias-bg-mask-1, rgb(0 0 0 / 46%)) !important;
 }
 `;
     }
@@ -1736,6 +1777,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         sidebarGlassCss(settings),
         statusGlassCss(settings),
         menuGlassCss(settings),
+        dialogCss(settings),
         modalCss(settings),
       ].join('');
     }
