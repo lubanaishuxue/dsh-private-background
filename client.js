@@ -149,6 +149,8 @@ window.__ModuleLoader__.load({
         dockTitle: '调参（临时）',
         dockGlass: '液态玻璃',
         dockFullWindow: '整窗铺满',
+        dockFont: '字体自动反色',
+        dockPreset: '推荐初值',
         autoSaved: '改动即时生效并自动保存',
         diagnostics: '样式 / 激活 / 框架 / 三栏',
         toneLight: '深色背景 → 浅色字',
@@ -202,6 +204,8 @@ window.__ModuleLoader__.load({
         dockTitle: 'Tuning (temp)',
         dockGlass: 'Liquid glass',
         dockFullWindow: 'Whole window',
+        dockFont: 'Auto-invert text',
+        dockPreset: 'Suggested',
         autoSaved: 'Changes apply and save immediately',
         diagnostics: 'style / active / frame / columns',
         toneLight: 'Dark background, light text',
@@ -2886,6 +2890,26 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       { key: 'menuBlur', zh: '菜单模糊', en: 'Menu blur', min: 0, max: 320, suffix: 'px' },
     ];
 
+    /**
+     * A readable starting point for a photographic wallpaper.
+     *
+     * The failure mode on a bright photo is not "the glass is wrong", it is "every surface is
+     * a wash and the text is white": the transcript needs a floor to read on, the sidebar even
+     * more (two paint layers), and the polarity has to follow the picture. This is one click so
+     * tuning starts from something legible instead of from zero.
+     */
+    const RECOMMENDED = {
+      dim: 30,
+      surface: 55,
+      chatSurface: 55,
+      sidebarFill: 60,
+      composerSurface: 70,
+      glassBlur: 30,
+      menuFill: 45,
+      menuBlur: 50,
+      font: 'auto',
+    };
+
     const DOCK_CSS = `
 .dshbg-dock { display: flex; flex-direction: column; font-size: 11px; color: var(--dsw-alias-label-secondary, #4b5563); }
 .dshbg-dock-head { display: flex; align-items: center; gap: 6px; width: 100%; box-sizing: border-box; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; font: inherit; color: inherit; text-align: left; }
@@ -2996,9 +3020,31 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
                 }),
                 h('span', null, text.dockFullWindow),
               ),
+              // Text polarity is the one control that decides whether the whole window is
+              // readable over a photograph: the theme ships one palette, and a light
+              // wallpaper with white text is unreadable no matter how the glass is tuned.
+              h(
+                'label',
+                { className: 'dshbg-dock-switch' },
+                h('input', {
+                  type: 'checkbox',
+                  checked: settings.font === 'auto',
+                  onChange: (event) => patchSettings({ font: event.target.checked ? 'auto' : 'theme' }),
+                }),
+                h('span', null, text.dockFont),
+              ),
               h(
                 'div',
                 { className: 'dshbg-dock-foot' },
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'dshbg-dock-link',
+                    onClick: () => patchSettings({ ...RECOMMENDED }),
+                  },
+                  text.dockPreset,
+                ),
                 h(
                   'button',
                   {

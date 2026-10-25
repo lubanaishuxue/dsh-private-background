@@ -927,11 +927,14 @@ async function main() {
   check('dock shows a collapsed header', dockBlob.includes('调参（临时）'), dockBlob.slice(0, 60));
   check(
     'dock carries every dial',
-    ['blur', 'dim', 'surface', 'chatSurface', 'composerSurface', 'glassBlur', 'menuFill', 'menuBlur'].every((key) =>
-      CODE.includes(`key: '${key}'`),
+    ['blur', 'dim', 'surface', 'chatSurface', 'composerSurface', 'glassBlur', 'menuFill', 'menuBlur', 'sidebarFill'].every(
+      (key) => CODE.includes(`key: '${key}'`),
     ),
   );
   check('dock can read back computed values', CODE.includes('function probeSurface') && CODE.includes('getComputedStyle'));
+  // 亮壁纸上最容易翻车的不是玻璃参数，是「白字压亮图」：极性开关必须从侧栏就能切。
+  check('dock can flip text polarity', CODE.includes("settings.font === 'auto'") && CODE.includes("font: 'auto'"));
+  check('dock can restore a legible baseline', CODE.includes('const RECOMMENDED') && CODE.includes('...RECOMMENDED'));
 
   console.log('\nslot registration');
   check('two slot registrations', base.registered.length === 2, `got ${base.registered.length}`);
