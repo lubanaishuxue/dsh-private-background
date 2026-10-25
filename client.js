@@ -2268,7 +2268,11 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
      */
     function installCostDialogGlass() {
       if (typeof MutationObserver === 'undefined') return { sync() {}, dispose() {} };
-      const SELECTOR = '.cm-stat-dialog, .cm-qguide, .cm-peak-alert, .cm-fee-dialog';
+      // `cm-stat` is in the list on purpose: which of the two class names is the painted
+      // element depends on how the plugin nests them, and guessing wrong twice is enough.
+      // The rule below is symmetric - the outermost match paints, every match inside it
+      // stands down - so both nestings end with exactly one glass layer.
+      const SELECTOR = '.cm-stat, .cm-stat-dialog, .cm-qguide, .cm-peak-alert, .cm-fee-dialog';
       let timer = 0;
       let disposed = false;
 
@@ -2288,6 +2292,19 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
           };
           const fallback = readVar(document.body, '--dsw-alias-bg-layer-2');
           for (const element of document.querySelectorAll(SELECTOR)) {
+            // The plugin's own rules start with `background: var(--cm-opaque-base, #fff)`,
+            // which is #151517 in the dark theme. Taking that variable away is what makes
+            // its *first* declaration stop painting even if the second one is invalid.
+            element.style.setProperty('--cm-opaque-base', 'transparent');
+            const outer = element.parentElement === null ? null : element.parentElement.closest(SELECTOR);
+            if (outer !== null) {
+              // An inner surface: it must not draw a second layer on top of the outside one.
+              element.style.setProperty('background-color', 'transparent', 'important');
+              element.style.setProperty('background-image', 'none', 'important');
+              element.style.removeProperty('backdrop-filter');
+              element.style.removeProperty('-webkit-backdrop-filter');
+              continue;
+            }
             const raw = readVar(element, '--dshbg-raw-l2') || fallback;
             if (raw === '') continue;
             const paint = `color-mix(in srgb, ${raw} ${fill}%, transparent)`;
@@ -2295,6 +2312,22 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
             element.style.setProperty('background-image', 'none', 'important');
             element.style.setProperty('backdrop-filter', `blur(${blur}px) saturate(150%)`, 'important');
             element.style.setProperty('-webkit-backdrop-filter', `blur(${blur}px) saturate(150%)`, 'important');
+          }
+          // Leave a breadcrumb. The dialog covers the sidebar, so the reader cannot look at
+          // the tuning card while it is open - the plugin page shows this reading instead.
+          const probeTarget = document.querySelector(SELECTOR);
+          if (probeTarget !== null) {
+            const style = getComputedStyle(probeTarget);
+            const parent = probeTarget.parentElement;
+            const record = {
+              when: Date.now(),
+              cls: String(probeTarget.className || '').slice(0, 60),
+              tag: probeTarget.tagName,
+              bg: style.backgroundColor,
+              bf: style.backdropFilter === undefined ? '' : style.backdropFilter,
+              parent: parent === null ? '-' : `${parent.tagName}.${String(parent.className || '').slice(0, 40)} ${getComputedStyle(parent).backgroundColor}`,
+            };
+            window.localStorage.setItem('dshbg.cost.probe', JSON.stringify(record));
           }
         } catch {
           // Painting a third-party dialog may never break the stylesheet install.
@@ -2446,11 +2479,22 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
     }
 
     function readDiagnostics() {
+      // The last reading the cost-dialog painter left behind. It matters because that dialog
+      // covers the sidebar: you cannot read a live probe while it is open, so the reading is
+      // taken at paint time and shown here afterwards.
+      let cost = null;
+      try {
+        const raw = window.localStorage.getItem('dshbg.cost.probe');
+        cost = raw === null ? null : JSON.parse(raw);
+      } catch {
+        cost = null;
+      }
       return {
         style: document.querySelector(`style[data-dshbg-css="${PACKAGE}"]`) !== null,
         active: document.documentElement.hasAttribute('data-dshbg-on'),
         frame: document.querySelector(frameSelector()) !== null,
         columns: document.querySelectorAll(workAreaColumns().join(',')).length,
+        cost,
       };
     }
 
@@ -3043,6 +3087,15 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
             } / ${diag.columns}`,
           ),
         ),
+        diag.cost === null
+          ? null
+          : h(
+              'p',
+              { className: 'dshbg-hint' },
+              `费用明细弹窗上次读数：${diag.cost.tag}.${diag.cost.cls} · 底色 ${diag.cost.bg} · 模糊 ${
+                diag.cost.bf === '' ? '-' : diag.cost.bf
+              } · 父 ${diag.cost.parent}`,
+            ),
       );
     }
 

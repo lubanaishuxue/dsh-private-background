@@ -931,6 +931,18 @@ async function main() {
       CODE.includes("setProperty('background-color', paint, 'important')"),
   );
   check('the probe can report the cost dialog surface', CODE.includes('function costSurface'));
+  // 弹窗盖住侧栏，所以读数要在上色那一刻写进 localStorage，插件页事后显示 —— 否则这个信息
+  // 永远读不到（对话框活着的时候看不了侧栏）。
+  check(
+    'the cost reading survives the dialog covering the sidebar',
+    CODE.includes("'dshbg.cost.probe'") && CODE.includes('费用明细弹窗上次读数'),
+  );
+  // 插件自己的首个声明是 `background: var(--cm-opaque-base, #fff)`，把这个变量拿走，
+  // 它那条兜底就画不出颜色了。
+  check(
+    'the opaque-base variable is neutralised',
+    CODE.includes("setProperty('--cm-opaque-base', 'transparent')"),
+  );
   check('modal backdrop dimmed', base.css.includes('.cm-stat-dialog::backdrop'));
 
   console.log('\nlifecycle');
