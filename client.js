@@ -1692,7 +1692,7 @@ ${restores}
      * silently.
      */
     function dialogCss(settings) {
-      const fill = Math.max(clamp(settings.menuFill === undefined ? 30 : settings.menuFill, 20, 100), 58);
+      const fill = Math.max(clamp(settings.menuFill === undefined ? 30 : settings.menuFill, 20, 100), 46);
       const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
       return `
 ${prefixed('html[data-dshbg-on]', ['[role="dialog"][aria-modal="true"]'])} {
@@ -1702,7 +1702,7 @@ ${prefixed('html[data-dshbg-on]', ['[role="dialog"][aria-modal="true"]'])} {
   border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 14%, transparent) !important;
 }
 html[data-dshbg-on] dialog::backdrop {
-  background: rgb(0 0 0 / 46%) !important;
+  background: rgb(0 0 0 / 26%) !important;
   -webkit-backdrop-filter: blur(6px) !important;
   backdrop-filter: blur(6px) !important;
 }
@@ -1782,7 +1782,7 @@ html[data-dshbg-on]:has(dialog[open]) ${frameSelector()}::before {
     function costMeterCss(settings) {
       const alpha = clamp(settings.surface, 0, 100);
       const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
-      const dialogFill = Math.max(46, Math.min(88, alpha + 12));
+      const dialogFill = Math.max(38, Math.min(84, alpha + 10));
       const cardFill = Math.max(52, Math.min(88, alpha + 10));
       return `
 ${prefixed('html[data-dshbg-on] body', CM_PANELS)} {
@@ -1802,7 +1802,7 @@ html[data-dshbg-on] body .cm-stat .cm-fee-dialog {
   backdrop-filter: none !important;
 }
 html[data-dshbg-on] .cm-stat::backdrop,
-html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 32%); }
+html[data-dshbg-on] .cm-stat-dialog::backdrop { background: rgb(0 0 0 / 18%); }
 ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
   display: none !important;
 }
@@ -2282,7 +2282,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         if (!document.documentElement.hasAttribute('data-dshbg-on')) return;
         try {
           const settings = state.settings;
-          const fill = Math.max(46, Math.min(88, clamp(settings.surface, 0, 100) + 12));
+          const fill = Math.max(38, Math.min(84, clamp(settings.surface, 0, 100) + 10));
           const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
           const readVar = (element, name) => {
             const style = getComputedStyle(element);
@@ -2341,11 +2341,16 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
 
       const observer = new MutationObserver(schedule);
       observer.observe(document.documentElement, { childList: true, subtree: true });
+      // A mutation observer only fires when the DOM changes. This dialog is re-rendered by a
+      // plugin that also updates its numbers on a timer, so a periodic pass is the belt to
+      // that braces - and it costs one querySelectorAll per second.
+      const tick = typeof setInterval === 'function' ? setInterval(schedule, 700) : 0;
       return {
         sync,
         dispose() {
           disposed = true;
           if (timer !== 0) clearTimeout(timer);
+          if (tick !== 0) clearInterval(tick);
           observer.disconnect();
         },
       };
@@ -3209,6 +3214,18 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       // A tool, not part of the product: once the numbers are settled it is switched off
       // from the plugin page and stops rendering entirely.
       if (settings.showDock === false) return null;
+      // The last thing the cost-dialog painter saw, so the header can carry it without the
+      // card being expanded (the dialog covers the sidebar while it is open).
+      let lastCost = '';
+      try {
+        const raw = window.localStorage.getItem('dshbg.cost.probe');
+        if (raw !== null) {
+          const record = JSON.parse(raw);
+          lastCost = ` · 弹窗 ${record.bg}${record.bf ? ` / ${record.bf}` : ''}`;
+        }
+      } catch {
+        lastCost = '';
+      }
 
       useEffect(() => {
         if (!open) {
@@ -3228,7 +3245,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         h(
           'button',
           { type: 'button', className: 'dshbg-dock-head', onClick: () => setOpen(!open) },
-          h('span', null, `${text.dockTitle}${open ? '' : ` · ${settings.menuFill}% / ${settings.menuBlur}px`}`),
+          h('span', null, `${text.dockTitle}${open ? '' : ` · ${settings.menuFill}% / ${settings.menuBlur}px`}${lastCost}`),
           h('span', { className: 'dshbg-dock-caret' }, open ? '\u25be' : '\u25b8'),
         ),
         open
