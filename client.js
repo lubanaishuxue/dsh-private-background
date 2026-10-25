@@ -57,32 +57,21 @@ window.__ModuleLoader__.load({
       composerSurface: 85,
       composerStyle: 'solid',
       glassBlur: 14,
-      autoGlass: true,
+      // TEMPORARY. The menu glass fill is the one number that has to be judged by eye on
+      // a real wallpaper, so it is exposed as a slider until the user picks a value.
+      // Baking it in means: set this to the chosen number, then delete the slider block
+      // in ConfigPage and the two TEXT entries. Nothing else reads it by name.
+      menuFill: 76,
+      // TEMPORARY, paired with menuFill. The host pins the menu backdrop to 40px, and at
+      // that radius the wallpaper collapses to a flat wash - which is why the fill had to
+      // go all the way up to 76% to stay legible, and why the result reads as "tinted
+      // panel" rather than glass. Blur and fill are a trade: more blur buys back fill.
+      // Exposed so the pair can be tuned against a real wallpaper.
+      menuBlur: 40,
       fullWindow: false,
       font: 'theme',
       fontColor: '#f7f8fa',
     };
-
-    /**
-     * The glass recipe, shared by every surface that is *not* a token.
-     *
-     * These were two sliders for a while, because the right pair can only be judged by eye
-     * against a real wallpaper. The user tuned them on their own photograph and landed on
-     * 30% / 13px - far glassier than the 76% / 40px the code shipped with, and the sliders
-     * are gone now that the number is known.
-     *
-     * They are constants rather than settings on purpose: this is one material, so it is
-     * one pair of numbers. Anything that reads them separately and drifts is the bug, not
-     * the feature. `AUTO_FILL` / `AUTO_BLUR` below are the *conservative* variant for
-     * surfaces the code has never seen (see `autoGlassCss`).
-     *
-     * Note the trade they encode: the host pins the menu backdrop at `blur(40px)`, which
-     * flattens the wallpaper to a wash and is why the fill had to sit at 76%. Once the
-     * blur was actually fixed (`composerGlassCss` - the composer card was a backdrop root
-     * and was starving the menu's blur) a much lower fill became readable.
-     */
-    const MENU_FILL = 30;
-    const MENU_BLUR = 13;
 
     const GRADIENTS = [
       { zh: '极光', en: 'Aurora', css: 'linear-gradient(135deg, #0f2027 0%, #203a43 46%, #2c5364 100%)' },
@@ -151,8 +140,10 @@ window.__ModuleLoader__.load({
         glassHint: '液态玻璃让输入框、底部状态栏、头部胶囊、代码块、文件卡片、消息气泡一起变磨砂半透明，边缘带一道高光。字压在图上更容易读，因为背景被磨平了。',
         glassHintSolid: '实心：各自按上面的不透明度铺底色，没有模糊和高光。',
         glassBlur: '玻璃模糊',
-        autoGlass: '自动玻璃（兜底）',
-        autoGlassHint: '有些面板不跟随主题色，是插件自己写死的颜色——设置页、计费弹窗、第三方面板都属于这类，光靠变量改不到它们。打开后会自动找出「不透明且面积够大」的面板，把它的原色降下来加上磨砂，一处一处地兜住。遇到被误伤的地方就关掉这一项，其它玻璃效果不受影响。',
+        menuFill: '玻璃填充（临时）',
+        menuFillHint: '临时调试用，同时管三处：弹出菜单、输入框、右侧侧边栏。填充越低越透、玻璃感越强，但背后的正文和壁纸大字也会越来越抢字。和上面那条「玻璃模糊」是一对——模糊越大，填充就可以压得越低还看得清。试到满意告诉我这两个数字，我固化成默认值并把两条滑块都删掉。',
+        menuBlur: '玻璃模糊（临时）',
+        menuBlurHint: '临时调试用，同时管三处：弹出菜单、输入框、右侧侧边栏。宿主原本钉死在 40px。模糊越大，背后那层被磨得越平，字越好读、填充就可以越低；模糊越小，背景的形状越清楚、越像玻璃，但字也越容易被带花。0 就是完全不糊。',
         reset: '恢复默认',
         autoSaved: '改动即时生效并自动保存',
         diagnostics: '样式 / 激活 / 框架 / 三栏',
@@ -198,8 +189,10 @@ window.__ModuleLoader__.load({
         glassLiquid: 'Liquid glass',
         glassHint: 'Liquid glass turns the message box, the status row, the header chips, code blocks, file cards and message bubbles into frosted panes with a lit edge. Text stays readable because the backdrop is flattened, not just dimmed.',
         glassHintSolid: 'Solid: each surface just fills with its own opacity - no blur, no highlight.',
-        autoGlass: 'Auto glass (catch-all)',
-        autoGlassHint: 'Some panels do not follow the theme - a plugin hardcodes its own colour, and the settings page and the cost popups are built that way too, so no token can reach them. Switched on, this finds panels that are opaque and big enough to notice, keeps their own colour and lowers its alpha. If something gets caught that should not be, switch it off; the rest of the glass is unaffected.',
+        menuFill: 'Glass fill (temporary)',
+        menuFillHint: 'Scratch control for all three at once: popup menus, the composer, and the right sidebar. Lower is more transparent and reads more like glass, but the transcript and any large wallpaper type start competing with the text. It pairs with the blur control above: more blur buys back fill. Tell me both numbers when you are happy and I will bake them in and delete both sliders.',
+        menuBlur: 'Glass blur (temporary)',
+        menuBlurHint: 'Scratch control for all three at once: popup menus, the composer, and the right sidebar. The host pins this at 40px. More blur flattens the backdrop harder, so text stays readable at a lower fill; less blur keeps the wallpaper recognisable and looks more like glass, but the glyphs get dirtier. 0 is no blur at all.',
         glassBlur: 'Glass blur',
         reset: 'Reset',
         autoSaved: 'Changes apply and save immediately',
@@ -261,7 +254,8 @@ window.__ModuleLoader__.load({
         ),
         composerStyle: parsed.composerStyle === 'glass' ? 'glass' : 'solid',
         glassBlur: clamp(parsed.glassBlur === undefined ? fallback.glassBlur : parsed.glassBlur, 0, 40),
-        autoGlass: parsed.autoGlass !== false,
+        menuFill: clamp(parsed.menuFill === undefined ? fallback.menuFill : parsed.menuFill, 20, 100),
+        menuBlur: clamp(parsed.menuBlur === undefined ? fallback.menuBlur : parsed.menuBlur, 0, 64),
         fullWindow: parsed.fullWindow === true,
         font: fonts.includes(parsed.font) ? parsed.font : fallback.font,
         fontColor:
@@ -531,28 +525,9 @@ window.__ModuleLoader__.load({
      * wallpaper entirely behind it; the history list carries its own block instead - see
      * `historyBlockCss`.
      */
-    /**
-     * How opaque the sidebar column is allowed to get, at minimum.
-     *
-     * `--dsw-specific-sidebar-fill` used to be `lift: 0`, so its alpha *was* the panel
-     * slider. At `surface: 0` that means the sidebar paints nothing at all - and a sidebar
-     * with no fill is not "more glassy", it is gone: the nav items, the workspace group and
-     * the session list all float on the photograph with no column to belong to, and the
-     * only thing separating them from the transcript is a border that is not there.
-     *
-     * The number is measured, not guessed: `diag/sidebar-floor.png` composites the veil over
-     * the user's own screenshot at 0 / 20 / 30 / 40 / 55%, and 40% is where the column reads
-     * as a surface while the picture still comes through. Below that the grouping is lost;
-     * above it the wallpaper starts to disappear.
-     *
-     * This only applies when the sidebar is re-mixed at all (whole-window scope). In
-     * work-area scope the token is not emitted, so the sidebar keeps the theme's own fill.
-     */
-    const SIDEBAR_FLOOR = 40;
-
     const SURFACE_TOKENS = [
       { token: '--dsw-alias-bg-base', raw: 'base', lift: 0 },
-      { token: '--dsw-specific-sidebar-fill', raw: 'sidebar', lift: 0, floor: SIDEBAR_FLOOR, sidebarOnly: true },
+      { token: '--dsw-specific-sidebar-fill', raw: 'sidebar', lift: 0, sidebarOnly: true },
       { token: '--dsw-alias-bg-layer-1', raw: 'l1', lift: 8 },
       { token: '--dsw-specific-input-major', raw: 'input', lift: 8 },
       { token: '--dsw-specific-selector', raw: 'selector', lift: 8 },
@@ -614,52 +589,12 @@ html[data-dshbg-on]::after {
 `;
     }
 
-    /**
-     * Token capture and remix - the "one global variable" everything else hangs off.
-     *
-     * **Capture goes on `<body>`, remix goes on `body > *`, and both halves of that are
-     * load-bearing.**
-     *
-     * `--dshbg-raw-x: var(--dsw-alias-x)` is a *computed-value-time* substitution, so it
-     * resolves against whatever `--dsw-alias-x` is on the element that declares it. If the
-     * capture and the remix sat on the same element, the capture would read the already
-     * re-mixed value and the whole recipe would collapse.
-     *
-     * **And the capture has to sit on `body`, because that is where the host declares the
-     * tokens.** DSH's palettes are `body { --dsw-alias-* }` for the light theme and
-     * `body[data-ds-dark-theme] { --dsw-alias-* }` for the dark one - not `:root`. Custom
-     * properties only inherit *downwards*, so capturing on `<html>` read the guaranteed-
-     * invalid value for every single token: `color-mix(in srgb, <nothing> 16%, transparent)`
-     * is invalid at computed-value time, the re-mixed property becomes invalid too, and
-     * `background: var(--dsw-alias-bg-layer-2)` then falls back to `transparent`.
-     *
-     * **That was a live bug, not a theory.** Every panel the plugin claimed to be "16%
-     * opaque" was in fact fully transparent; the only thing making any of them look like
-     * glass was the `backdrop-filter` blur, which is why the whole UI read as washed out and
-     * why the sidebar lost its grey base at `surface: 0` and the settings dialog had nothing
-     * behind its text. Capturing on `body` and re-mixing one level below fixes all of it at
-     * once. `diag/eval.cjs` is how it was found: `getComputedStyle(panel).backgroundColor`
-     * was `rgba(0, 0, 0, 0)` when the host's own rule said otherwise.
-     *
-     * The remix lives on `body > *` rather than on the app frame, because **`#root` is not
-     * the whole document**. Every portal - the cost-meter dialogs, the hover card, the team
-     * panel, any third-party popover - is a *sibling* of `#root` under `body`, so a
-     * frame-scoped remix never reached them. That was the single largest source of "black
-     * boxes": everything inside the frame went glass, and everything portaled outside it
-     * kept painting the theme's opaque surface tokens. One level below `body` covers `#root`
-     * and every portal at once, and stops exactly where it has to: `body` itself keeps the
-     * theme's values, so the capture above it stays a capture.
-     *
-     * Work-area scope still works: the sidebar token is simply *not emitted* into the
-     * remix, so it keeps whatever the theme painted.
-     */
     function tokenCss(settings) {
       const captures = SURFACE_TOKENS.map((entry) => `  --dshbg-raw-${entry.raw}: var(${entry.token});`).join('\n');
       const labelCaptures = LABEL_TOKENS.map((token, index) => `  --dshbg-raw-label-${index}: var(${token});`).join('\n');
       const remixes = SURFACE_TOKENS.filter((entry) => settings.fullWindow || entry.sidebarOnly !== true)
         .map((entry) => {
-          const floor = entry.floor === undefined ? 0 : entry.floor;
-          const alpha = Math.min(100, Math.max(floor, clamp(settings.surface, 0, 100) + entry.lift));
+          const alpha = Math.min(100, clamp(settings.surface, 0, 100) + entry.lift);
           return `  ${entry.token}: color-mix(in srgb, var(--dshbg-raw-${entry.raw}) ${alpha}%, transparent) !important;`;
         })
         .join('\n');
@@ -668,7 +603,7 @@ html[data-dshbg-on] body {
 ${captures}
 ${labelCaptures}
 }
-html[data-dshbg-on] body > * {
+html[data-dshbg-on] ${frameSelector()} {
 ${remixes}
 }
 `;
@@ -836,8 +771,8 @@ html[data-dshbg-on] [data-composer-card] {
      * fully opaque. That fixed the reading and left the one flat black rectangle in an
      * otherwise frosted window - which is what the user spotted.
      *
-     * So it becomes glass like everything else: the shared `MENU_FILL` / `MENU_BLUR`
-     * recipe, over the captured layer colour. Two things make it work here:
+     * So it becomes glass like everything else: the shared fill and blur from the two
+     * trial sliders, over the captured layer colour. Two things make it work here:
      *
      * - **No ancestor of it carries a `backdrop-filter`.** The card is a sibling of
      *   `_scroller`, not a child (`<nav> > [scroller][marks] + [preview]`), and neither
@@ -845,22 +780,24 @@ html[data-dshbg-on] [data-composer-card] {
      *   create a containing block, not a backdrop root. If the blur ever stops working
      *   again, check that chain first (see the note on `menuSurfaceCss`).
      * - **A hard fill floor.** This is a card lying on top of body text, not a pane beside
-     *   it: at the material's low end the 12px caption would be fighting blurred glyphs
-     *   for the same pixels. It never goes below 50%, the same floor the workspace hover
-     *   card uses, because both are the same kind of surface. At the baked 30% the floor
-     *   is what actually decides the value; the blur is shared outright.
+     *   it: at the slider's low end the 12px caption would be fighting blurred glyphs for
+     *   the same pixels. It never goes below 50%, the same floor the workspace hover card
+     *   uses, because both are the same kind of surface. The slider moves it only in its
+     *   upper half; that is deliberate, and the blur is still shared outright.
      *
      * Matched on the response line rather than the bare `_preview` class, which several
      * other modules also use for things that are not popovers (`QueueDock`'s inline
      * preview, the file-diff hover card, the plan viewer).
      */
     function previewCardCss(settings) {
-      const fill = Math.max(MENU_FILL, 50);
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
+      const shared = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
+      const fill = Math.max(shared, 50);
       return `
 ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewResponse"])'])} {
   background: color-mix(in srgb, var(--dshbg-raw-l1) ${fill}%, transparent) !important;
-  -webkit-backdrop-filter: blur(${MENU_BLUR}px) saturate(150%) !important;
-  backdrop-filter: blur(${MENU_BLUR}px) saturate(150%) !important;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
 }
 `;
     }
@@ -899,10 +836,10 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewRes
      * own - its rule is `max-height:400px; box-shadow; padding:4px; position:absolute;
      * overflow:hidden` - so it needs both given to it explicitly.
      *
-     * Fill and blur are a *pair*, not two independent knobs: more blur flattens the
+     * Fill and radius are a *pair*, not two independent knobs: more radius flattens the
      * backdrop harder, so less fill is needed to hold the text up - and less fill is what
-     * makes it look like glass rather than a tinted panel. The pair is baked at 30% / 13px;
-     * see `MENU_FILL`.
+     * makes it look like glass rather than a tinted panel. Both are on trial together; see
+     * the note on `settings.menuFill` / `menuBlur`.
      *
      * The `[data-overflow-below]` fade is re-stated because the host paints it with the
      * *opaque* `--dsw-specific-menu`; over a translucent panel that gradient shows up as a
@@ -910,8 +847,8 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewRes
      */
     function menuSurfaceCss(settings) {
       const menu = '[class*="_menu"]:has([class*="_itemDescription"])';
-      const fill = MENU_FILL;
-      const blur = MENU_BLUR;
+      const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
       // The glass goes on the *surface*, not on the `_material` child, and this is the whole
       // fix for "the menu blur does nothing".
       //
@@ -972,13 +909,13 @@ ${prefixed('html[data-dshbg-on]', [`${menu}[data-overflow-below]::after`])} {
      * `color-mix(<host var> N%, transparent)` rather than as a literal, so the surface
      * keeps tracking the host's palette in both themes instead of pinning a hex here.
      *
-     * The fill follows the shared `MENU_FILL` so the hover card moves with the rest of
-     * the glass - but with a hard floor, because this surface is *inverted*: the host
-     * paints white text on it and the wallpaper behind can be bright. At the material's
-     * low end (30%) white glyphs would disappear into the backdrop entirely, so the card
-     * never goes below 50% and the bubble never below 58% (it is a single line of 13px
-     * text). In practice the floors, not the shared number, decide these two; that is
-     * deliberate. The blur, on the other hand, is shared outright.
+     * The fill follows the shared `menuFill` slider so the hover card moves with the rest
+     * of the glass - but with a hard floor, because this surface is *inverted*: the host
+     * paints white text on it and the wallpaper behind can be bright. At the slider's low
+     * end (20%) white glyphs would disappear into the backdrop entirely, so the card never
+     * goes below 50% and the bubble never below 58% (it is a single line of 13px text).
+     * In practice the slider moves these two only in its upper half; that is deliberate.
+     * The blur, on the other hand, is shared outright: more radius buys back fill here too.
      *
      * The hover card is matched as `body > [class*="_card_"]` because the `HoverCard`
      * primitive portals it straight onto `<body>`; `_card_` on its own would also catch
@@ -990,10 +927,11 @@ ${prefixed('html[data-dshbg-on]', [`${menu}[data-overflow-below]::after`])} {
      * fixed 244px, so a 1px border would eat into its own text box.
      */
     function tooltipGlassCss(settings) {
-      const blur = MENU_BLUR;
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
+      const shared = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
       // Inverted surfaces: hard floors, see the note above.
-      const cardFill = Math.max(MENU_FILL, 50);
-      const bubbleFill = Math.max(MENU_FILL, 58);
+      const cardFill = Math.max(shared, 50);
+      const bubbleFill = Math.max(shared, 58);
       return `
 ${prefixed('html[data-dshbg-on]', ['body > [class*="_card_"]'])} {
   background: color-mix(in srgb, var(--dsw-hovercard-bg) ${cardFill}%, transparent) !important;
@@ -1103,15 +1041,15 @@ ${glassChip(blur)}
      *
      * The pseudo-element is a leaf, so it can carry a backdrop-filter freely.
      *
-     * Fill and blur are shared with the menu and the right sidebar (`MENU_FILL` /
-     * `MENU_BLUR`), because they are the same material and have to move together - tuning
+     * Fill and radius are shared with the menu and the right sidebar (`menuFill` /
+     * `menuBlur`), because they are the same material and have to move together - tuning
      * the menu until it looks right and leaving the composer at a different opacity is what
      * makes a UI look assembled from parts.
      */
     function composerGlassCss(settings) {
       if (settings.composerStyle !== 'glass') return '';
-      const blur = MENU_BLUR;
-      const fill = MENU_FILL;
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
+      const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
       return `
 ${prefixed('html[data-dshbg-on]', ['[data-composer-card]'])} {
   position: relative !important;
@@ -1161,8 +1099,8 @@ ${prefixed('html[data-dshbg-on]', ['[data-composer-card]::before'])} {
      * out to `<body>` by the host's menu primitive.
      */
     function rightPanelGlassCss(settings) {
-      const blur = MENU_BLUR;
-      const fill = MENU_FILL;
+      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 64);
+      const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
       const panel = '[data-sidebar-right-panel]';
       return `
 ${prefixed('html[data-dshbg-on]', [`${panel}[data-sidebar-right-open]`])} {
@@ -1609,175 +1547,33 @@ ${prefixed('html[data-dshbg-on]', scope)} {
     }
 
     /**
-     * The settings page, as glass.
+     * The settings page stays opaque while it is mounted.
      *
      * `data-dshbg-config` is set by the config component itself, so the stylesheet is
      * told rather than guessing from DOM shape. The fill goes on the *columns*, not on
      * a centred block: the page wrapper centres a 960px column inside a glass track, so
      * filling only the block would leave a bright wallpaper margin down each side.
      *
-     * **This used to pin `--dshbg-raw-base` at full opacity, and that was the wrong
-     * answer.** The reasoning was legibility: a page of 12px controls over a photograph is
-     * a worse read than a page over a flat colour, so the page was simply made solid. But
-     * at `surface: 0` - where every other panel is down to a few percent - that one solid
-     * sheet is the single most conspicuous black rectangle in the window, and the user
-     * named it. "Opaque" and "readable" are not the same requirement: a heavy frost keeps
-     * the wallpaper's *shape* behind the page (so the page still reads as a pane in the
-     * same window) while flattening it enough for text.
-     *
-     * Hence a much higher fill than the rest of the material and a wider blur. This is the
-     * "sitting on the wallpaper" tier, not the menu tier: `SETTINGS_FILL` is deliberately
-     * not `MENU_FILL`, because a menu is glanced at and a settings page is read.
-     *
-     * Restoring the label tokens still matters, and matters *more* now: the auto palette
-     * was chosen for the wallpaper, so over a frosted pane those colours can land close to
-     * the backdrop's tone. They land on the same element `fontCss` writes to, hence both
-     * `!important` and the extra attribute selector to outrank it.
+     * Restoring the label tokens matters because the auto palette was chosen for the
+     * wallpaper; dark text on a dark base would be unreadable. They land on the same
+     * element `fontCss` writes to, hence both `!important` and the extra attribute
+     * selector to outrank it.
      */
-    const SETTINGS_FILL = 82;
-    const SETTINGS_BLUR = 26;
-
     function configPageCss(settings) {
       const restores = LABEL_TOKENS.map(
         (token, index) => `  ${token}: var(--dshbg-raw-label-${index}) !important;`,
       ).join('\n');
-      // The page has to frost exactly the area the wallpaper covers. In work-area scope
-      // that is columns two and three, and the sidebar keeps its own fill; in whole-window
-      // scope the sidebar is glass too, so leaving it out would put a see-through strip
-      // beside a frosted page - the same seam, rotated ninety degrees.
+      // The page has to turn opaque in exactly the area the wallpaper covers. In work-area
+      // scope that is columns two and three, and the sidebar keeps its own fill; in
+      // whole-window scope the sidebar is glass too, so leaving it out would put a
+      // see-through strip beside a solid page - the same seam, rotated ninety degrees.
       const scope = settings.fullWindow ? [frameSelector()] : workAreaColumns();
       return `
 ${prefixed('html[data-dshbg-on][data-dshbg-config]', scope)} {
-  background-color: color-mix(in srgb, var(--dshbg-raw-base) ${SETTINGS_FILL}%, transparent) !important;
+  background-color: var(--dshbg-raw-base) !important;
   background-image: none !important;
   color: var(--dshbg-raw-label-0) !important;
-  -webkit-backdrop-filter: blur(${SETTINGS_BLUR}px) saturate(150%) !important;
-  backdrop-filter: blur(${SETTINGS_BLUR}px) saturate(150%) !important;
 ${restores}
-}
-`;
-    }
-
-    /**
-     * Host modals - and the seam directly above them.
-     *
-     * **A modal is not a panel, and the difference is not cosmetic.** Everything else in
-     * this file treats a surface as "the wallpaper, seen through N% of a colour". A modal
-     * is the one place where that is wrong: it exists to be *read*, and the thing behind it
-     * is the transcript. Two separate failures came out of ignoring that, and both are
-     * visible in one screenshot of DSH's own settings dialog.
-     *
-     * **1. The panel lost its fill and never had a blur.**
-     *
-     * `ui-settings-general`'s panel paints `background: var(--dsw-alias-bg-layer-2)`
-     * (`SettingsRoot.module.css`). That token is in `SURFACE_TOKENS`, so the re-mix pushes
-     * it to `surface + 16` - **16%** at `surface: 0`. The panel was designed as an opaque
-     * dialog, so it carries no `backdrop-filter` of its own, and the scrim behind it cannot
-     * help either: `--dsw-mask-blur` is **`none`** in both themes. The scrim only dims.
-     * Net result: 16% of a layer colour over a dimmed-but-sharp transcript. The text reads
-     * straight through the dialog.
-     *
-     * So the modal gets a real recipe - fill *and* blur - because the blur is what actually
-     * makes 13px text legible over a photograph, not the fill.
-     *
-     * **2. The scrim deliberately skips the Windows title bar, which draws a hard line.**
-     *
-     * The scrim is `inset: var(--dsh-frame-chrome-top, 0px) 0 0`, and on Windows
-     * `--dsh-frame-chrome-top` is exactly `--dsh-windows-titlebar-height`. The host does
-     * that on purpose ("让模态遮罩不绘制 Windows 顶栏区域") so the native caption buttons are
-     * not dimmed. Over a flat theme colour nobody notices. Over a wallpaper it is a hard
-     * horizontal boundary right under the minimise / maximise / close row: the strip above
-     * is the raw artwork, everything below is dimmed 50%.
-     *
-     * The strip is `frame::before` - the drag region, `position: absolute; inset: 0 0 auto;
-     * height: titlebar`. So the missing band is a known, addressable box: while a modal is
-     * up, it gets the same treatment the scrim gives everything else.
-     *
-     * The scrim is extended to `inset: 0` instead? No: the scrim is a real element with an
-     * `onClick` that closes the dialog, and it would cover the drag region - the window
-     * would stop being draggable by its title bar whenever a dialog was open. Painting the
-     * strip is purely visual and costs nothing.
-     *
-     * **The scrim is left as a pure dim, on purpose.** Frosting it too was the first
-     * attempt, and the replica page (`diag/settings-modal.html`) shows why it is wrong: a
-     * 28px blur on a full-viewport scrim turns the *entire* window - sidebar, transcript,
-     * everything - into unreadable mush. The dialog is the one thing that has to be
-     * readable, so the frost belongs on the dialog. The scrim keeps doing the job the host
-     * gave it, and the strip is dimmed to match it.
-     *
-     * **`role="dialog"` + `aria-modal="true"` is the hook, not a class name.** The hashed
-     * class changes every build (that is how v2.24.0 shipped a rule that matched nothing);
-     * `role` and `aria-modal` are semantics the component has to keep for accessibility, so
-     * they survive restyling. It also means this covers *every* host modal - sign-in, the
-     * release prompt, the shortcut sheet - not just the one in the screenshot.
-     *
-     * **`:where()` keeps this rule at the bottom of the cascade on purpose.** It carries
-     * zero specificity, so any hand-written recipe in this file outranks it: `costMeterCss`
-     * keeps its own 93% dialogs, and a future rule for a specific modal can simply be more
-     * specific. A catch-all should be the thing that loses, not the thing that wins.
-     *
-     * The strip copies `--dsw-alias-bg-mask-1` rather than a literal, so it tracks the
-     * scrim in both themes by construction - if the host ever changes what a mask looks
-     * like, both move together. (`:has()` cannot be nested, so the strip is gated on the
-     * panel rather than on the scrim; in practice the scrim only exists alongside it.)
-     *
-     * **The fill follows the panel slider, with a floor.** A modal that stayed at one fixed
-     * number regardless of `surface` would be a hole in an otherwise opaque window at
-     * `surface: 100`, and would refuse to get glassier when the user asks for glass. So it
-     * tracks the slider with `MODAL_LIFT`, and `MODAL_FLOOR` is the point below which it
-     * stops - not for looks, but because past it the dialog stops being readable, and being
-     * readable is the entire reason a modal is allowed to be opaque in the first place.
-     *
-     * **The controls inside the panel are the other half, and they need the opposite fix.**
-     * `--dsw-alias-bg-module-platform` (selectors, steppers, the selected theme cube) and
-     * `--dsw-specific-sidebar-nav-item-active` (the selected nav row) are *opaque neutrals*
-     * - `#353638` and `#43454a` - so on a frosted panel they are the last solid boxes in
-     * the dialog, and they read as holes punched in the glass.
-     *
-     * They cannot simply be made translucent versions of themselves. The host picks them
-     * *lighter than the panel* on purpose (that is what makes a control look raised); with
-     * both layers translucent over a bright photograph, a lighter-but-opaque neutral turns
-     * into the darkest thing on screen. Raising their alpha makes them solid again, lowering
-     * it makes them vanish - there is no alpha that fixes the polarity.
-     *
-     * So inside the panel they are replaced by a **veil of the label colour**: 14% white in
-     * the dark theme, 14% black in the light one, because `--dsw-alias-label-primary` already
-     * flips polarity with the theme. That is the same device the host itself uses for every
-     * interactive state it owns (`--dsw-alias-interactive-bg-hover` is `rgba(255,255,255,.08)`,
-     * `-active` is `.14`), so the controls stay inside the design language instead of
-     * inventing a new one.
-     *
-     * The override is declared **on the panel**, so it inherits down into the dialog and
-     * stops there: the app's own sidebar keeps its opaque selected row, and tables, code
-     * blocks and badges elsewhere - which read the same token - are untouched.
-     */
-    const MODAL_LIFT = 16;
-    const MODAL_FLOOR = 58;
-    const MODAL_CEILING = 96;
-    const MODAL_BLUR = 42;
-    const MODAL_CONTROL_FILL = 24;
-    const MODAL_NAV_FILL = 32;
-
-    function modalFill(settings) {
-      return Math.min(MODAL_CEILING, Math.max(MODAL_FLOOR, clamp(settings.surface, 0, 100) + MODAL_LIFT));
-    }
-
-    function modalCss(settings) {
-      const panel = '[role="dialog"][aria-modal="true"]';
-      const fill = modalFill(settings);
-      return `
-${prefixed('html[data-dshbg-on] body', [`:where(${panel})`])} {
-  background-color: color-mix(in srgb, var(--dshbg-raw-l2) ${fill}%, transparent) !important;
-  -webkit-backdrop-filter: blur(${MODAL_BLUR}px) saturate(165%) !important;
-  backdrop-filter: blur(${MODAL_BLUR}px) saturate(165%) !important;
-  --dsw-alias-bg-module-platform: color-mix(in srgb, var(--dshbg-raw-label-0) ${MODAL_CONTROL_FILL}%, transparent) !important;
-  --dsw-specific-sidebar-nav-item-active: color-mix(in srgb, var(--dshbg-raw-label-0) ${MODAL_NAV_FILL}%, transparent) !important;
-}
-html[data-dshbg-on]:has(${panel}) ${frameSelector()}::before {
-  background-image: linear-gradient(
-    var(--dsw-alias-bg-mask-1),
-    var(--dsw-alias-bg-mask-1)
-  ) !important;
 }
 `;
     }
@@ -1826,61 +1622,6 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
 `;
     }
 
-    /**
-     * The fallback that catches surfaces the token system cannot reach.
-     *
-     * Everything above assumes a surface paints one of the `--dsw-alias-*` tokens. Most do.
-     * The ones that do not are exactly the ones that show up as black rectangles over a
-     * wallpaper:
-     *
-     * - third-party plugins that hardcode a colour (`background: #1c1c1e`), so no token
-     *   remix can ever move them;
-     * - plugins that re-pin the alpha the tokens were supposed to carry
-     *   (`rgb(from var(--x) r g b / 1)`, or `max(alpha, .9)`) - `dsh-cost-meter` does both;
-     * - host surfaces built from `--dsw-*` variables that are not in `SURFACE_TOKENS`
-     *   (`--dsw-hovercard-bg`, `--dsw-alias-tooltip-bg`, `--dsw-menu-surface-fill`), and
-     *   static neutrals like `#43454a`.
-     *
-     * Chasing them one by one does not converge - the list is whatever plugins the user
-     * installs next. So the rule is stated once, structurally: **any element that computes
-     * to an opaque background and is big enough to notice gets turned into glass, and it
-     * keeps its own colour while doing it.** The colour is copied onto the element as
-     * `--dshbg-auto-fill` by the detector below, so a warm panel stays warm and a neutral
-     * one stays neutral; only the alpha moves.
-     *
-     * The fill is not `MENU_FILL`. A menu is a surface the code knows and can argue about;
-     * an auto-detected panel is one it has never seen, possibly full of 13px text, so it
-     * gets the conservative number. `AUTO_BLUR` is correspondingly wider - frost, not
-     * refraction, is what makes an unknown panel readable.
-     *
-     * `--dshbg-auto-fill` is *unset* on anything the detector has not marked, and an
-     * invalid `color-mix()` makes the declaration invalid at computed-value time, which
-     * falls back to `transparent` - never to a black box. That failure mode is the reason
-     * the fill is read from a variable rather than written inline by JS: a half-applied
-     * rule degrades to "invisible", not to "black".
-     *
-     * The `dialog::backdrop` rule is the other half of the same complaint. A panel can be
-     * glass and still sit in a black hole, because the scrim behind it is painted
-     * separately and `::backdrop` is not an element - no detector can reach it. The host's
-     * own default is lighter than what the plugins paint, so this is a ceiling rather than
-     * a floor, and the explicit `costMeterCss` rule outranks it and keeps its own number.
-     */
-    const AUTO_FILL = 78;
-    const AUTO_BLUR = 20;
-
-    function autoGlassCss(settings) {
-      return `
-${prefixed('html[data-dshbg-on]', ['[data-dshbg-auto]'])} {
-  background-color: color-mix(in srgb, var(--dshbg-auto-fill) ${AUTO_FILL}%, transparent) !important;
-  -webkit-backdrop-filter: blur(${AUTO_BLUR}px) saturate(150%) !important;
-  backdrop-filter: blur(${AUTO_BLUR}px) saturate(150%) !important;
-}
-${prefixed('html[data-dshbg-on]', ['dialog::backdrop'])} {
-  background: rgb(0 0 0 / 42%) !important;
-}
-`;
-    }
-
     function buildCss(settings, activeImage, tone) {
       const value = backgroundValue(settings, activeImage);
       if (value === null) return '';
@@ -1894,9 +1635,6 @@ ${prefixed('html[data-dshbg-on]', ['dialog::backdrop'])} {
         bottomRowCss(settings),
         configPageCss(settings),
         fontCss(settings, tone),
-        // Before `costMeterCss` on purpose: `modalCss` is a catch-all with zero specificity,
-        // and a hand-written recipe for a specific modal has to be able to outrank it.
-        modalCss(settings),
         costMeterCss(settings),
         titleCss(),
         // Last, so the frosted panes are not re-painted by anything above.
@@ -1909,9 +1647,6 @@ ${prefixed('html[data-dshbg-on]', ['dialog::backdrop'])} {
         sidebarGlassCss(settings),
         statusGlassCss(settings),
         menuGlassCss(settings),
-        // After everything else: this one has to win against rules written by plugins that
-        // this file has never seen, and `!important` only decides between equal specificity.
-        autoGlassCss(settings),
       ].join('');
     }
 
@@ -2318,190 +2053,6 @@ ${prefixed('html[data-dshbg-on]', ['dialog::backdrop'])} {
       };
     }
 
-    /**
-     * Finds the surfaces `autoGlassCss` should frost.
-     *
-     * **Why a detector and not a selector list.** The rule is "anything opaque and large",
-     * which is not expressible in CSS: there is no selector for "computes to an alpha of
-     * 1". So the elements are found here, marked with `data-dshbg-auto`, and their own
-     * background colour is copied onto them as `--dshbg-auto-fill` for the rule to consume.
-     * That is the whole contract between this function and the stylesheet - one attribute
-     * and one custom property, both removable.
-     *
-     * **The scan is budgeted, not complete.** `getComputedStyle` and `getBoundingClientRect`
-     * are per-element costs, and a long session holds thousands of nodes; a full pass on
-     * every mutation burst would be a visible stutter while a reply streams in. So the pass
-     * runs in fixed-size batches with a cursor that wraps, spreading the work over several
-     * frames. Every node still gets examined, just not all in one tick.
-     *
-     * **`childList` only, no attribute watching.** Marking an element writes `style` and an
-     * attribute, which an attribute observer would see and re-trigger - a self-feeding loop
-     * that only stops because the second pass finds the mark already there. Not watching
-     * attributes costs nothing real: what appears and disappears in this app appears and
-     * disappears as nodes.
-     *
-     * The filters are all "do not touch", never "fix up":
-     *
-     * - opaque *and* large - a 40x40 icon tile is not a black box, and frosting every one
-     *   of them would turn the chrome into confetti;
-     * - no `background-image` - the computed colour of an element that also paints a
-     *   gradient or a texture is not what the user sees, so recolouring it would be wrong;
-     * - not inside the settings page - that page has its own explicit recipe, and running
-     *   the detector over its own controls would frost the controls themselves;
-     * - not `<img>` / `<video>` / `<canvas>` / form controls - the first three are pictures,
-     *   the last three are small and have their own focus and caret behaviour.
-     */
-    const AUTO_MIN_AREA = 7000;
-    const AUTO_BATCH = 1200;
-    const AUTO_OPAQUE = 0.97;
-    const AUTO_SKIP = new Set([
-      'IMG', 'VIDEO', 'CANVAS', 'PICTURE', 'SVG', 'IFRAME', 'OBJECT',
-      'INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'OPTGROUP',
-      'SCRIPT', 'STYLE', 'LINK', 'META', 'HEAD', 'TITLE',
-    ]);
-
-    /**
-     * `getComputedStyle` reports a colour in one of three shapes depending on how it was
-     * written and which colour space it resolved in, and only the last one needs parsing to
-     * decide "is this opaque".
-     */
-    function colourAlpha(value) {
-      if (typeof value !== 'string' || value === '' || value === 'transparent') return 0;
-      const slash = /\/([\d.]+%?)\s*\)$/.exec(value);
-      if (slash !== null) {
-        const tail = slash[1];
-        const ratio = tail.endsWith('%') ? Number.parseFloat(tail) / 100 : Number.parseFloat(tail);
-        return Number.isFinite(ratio) ? ratio : 0;
-      }
-      const legacy = /^rgba?\(([^)]+)\)$/.exec(value);
-      if (legacy !== null) {
-        const parts = legacy[1].split(/[,/\s]+/).filter((part) => part !== '');
-        return parts.length >= 4 ? Number.parseFloat(parts[3]) : 1;
-      }
-      // `color(srgb ...)`, `oklch(...)`, hex - all opaque unless they carry a `/ alpha`.
-      return 1;
-    }
-
-    function installAutoGlass() {
-      // Element -> the colour it painted before it was marked. A Map rather than a Set
-      // because the colour has to outlive the inline property that carries it: see the
-      // re-render note in `consider`.
-      const marked = new Map();
-      let cursor = 0;
-      let timer = 0;
-      let disposed = false;
-
-      const clear = (element) => {
-        element.removeAttribute('data-dshbg-auto');
-        element.style.removeProperty('--dshbg-auto-fill');
-        marked.delete(element);
-      };
-
-      const clearAll = () => {
-        for (const element of Array.from(marked.keys())) clear(element);
-        marked.clear();
-      };
-
-      const consider = (element, frame) => {
-        // Duck-typed, not `instanceof HTMLElement`: the check has to survive the element
-        // coming from another realm, and it has to be a *bail*, not a throw, in any
-        // environment where the constructor is not on the global.
-        if (element === null || typeof element !== 'object') return;
-        if (typeof element.getBoundingClientRect !== 'function') return;
-        if (AUTO_SKIP.has(element.tagName)) return;
-        // `data-dshbg-config` sits on `<html>`, so this is not "skip the settings page's
-        // own controls" - it is "pause the detector while that page is mounted". Which is
-        // the right call: the page is a full-window view, nothing else is on screen to
-        // catch, and re-frosting the DOM under a page the user is reading is pure risk.
-        if (element.closest('[data-dshbg-config]') !== null) return;
-        // Work-area scope: the wallpaper covers columns two and three and *nothing else*,
-        // so everything else in the window is deliberately left exactly as the theme paints
-        // it - the sidebar being the obvious one. Frosting it would quietly undo the whole
-        // point of the scope switch. The portals that do need catching (dialogs, popovers)
-        // all live outside `#root`, so "outside the frame" is the right dividing line.
-        if (!state.settings.fullWindow && frame !== null && frame.contains(element)) return;
-
-        if (marked.has(element)) {
-          // A framework that rewrites `style` wholesale (React does, on some props) wipes
-          // the inline custom property and leaves the attribute - the mark survives, the
-          // colour does not. Reading the colour back off the element at that point is
-          // useless: our own rule has already taken effect and its `color-mix` is invalid,
-          // so it reports `transparent`. The stored colour is the only honest source.
-          if (element.style.getPropertyValue('--dshbg-auto-fill') === '') {
-            element.style.setProperty('--dshbg-auto-fill', marked.get(element));
-          }
-          return;
-        }
-        if (element.hasAttribute('data-dshbg-auto')) return;
-
-        const box = element.getBoundingClientRect();
-        if (box.width * box.height < AUTO_MIN_AREA) return;
-
-        const style = getComputedStyle(element);
-        if (style.display === 'none' || style.visibility === 'hidden') return;
-        if (style.backgroundImage !== 'none') return;
-        if (colourAlpha(style.backgroundColor) < AUTO_OPAQUE) return;
-
-        element.style.setProperty('--dshbg-auto-fill', style.backgroundColor);
-        element.setAttribute('data-dshbg-auto', '');
-        marked.set(element, style.backgroundColor);
-      };
-
-      const step = () => {
-        timer = 0;
-        if (disposed) return;
-        if (!document.documentElement.hasAttribute('data-dshbg-on')) {
-          clearAll();
-          return;
-        }
-        // Drop marks whose node has left the document; a re-rendered panel comes back as a
-        // new element and gets re-marked on the next pass.
-        for (const element of Array.from(marked.keys())) {
-          if (!element.isConnected) clear(element);
-        }
-
-        const all = document.body === null ? null : document.body.getElementsByTagName('*');
-        if (all === null || all.length === 0) {
-          cursor = 0;
-          return;
-        }
-        // One lookup per pass rather than one per node.
-        const frame = state.settings.fullWindow ? null : document.querySelector('#root');
-        if (cursor >= all.length) cursor = 0;
-        const end = Math.min(all.length, cursor + AUTO_BATCH);
-        for (let index = cursor; index < end; index += 1) consider(all[index], frame);
-        cursor = end;
-        if (end < all.length) schedule(0);
-      };
-
-      const schedule = (delay) => {
-        if (disposed || timer !== 0) return;
-        timer = setTimeout(step, delay);
-      };
-
-      const mutations = new MutationObserver(() => schedule(220));
-      mutations.observe(document.body === null ? document.documentElement : document.body, {
-        childList: true,
-        subtree: true,
-      });
-
-      return {
-        scan: () => schedule(0),
-        clear: clearAll,
-        count: () => marked.size,
-        dispose() {
-          disposed = true;
-          if (timer !== 0) clearTimeout(timer);
-          mutations.disconnect();
-          clearAll();
-        },
-      };
-    }
-
-    // Read by `readDiagnostics`. The detector lives inside `installStyles` because it has
-    // to follow that lifecycle; this is the one handle the settings page needs.
-    let autoGlassHandle = null;
-
     function installStyles(ctx) {
       const stale = document.querySelector(`style[data-dshbg-css="${PACKAGE}"]`);
       if (stale !== null) stale.remove();
@@ -2511,8 +2062,6 @@ ${prefixed('html[data-dshbg-on]', ['dialog::backdrop'])} {
       document.head.appendChild(tag);
 
       const marquee = installTitleMarquee();
-      const auto = installAutoGlass();
-      autoGlassHandle = auto;
 
       let disposed = false;
       let measureToken = 0;
@@ -2538,11 +2087,6 @@ ${prefixed('html[data-dshbg-on]', ['dialog::backdrop'])} {
         // Turning the wallpaper off also drops the `text-overflow: clip` that the marquee
         // depends on, so the animations have to follow the stylesheet, not the setting.
         marquee.sync();
-        // The detector re-reads computed styles, so it has to run *after* the sheet lands -
-        // and it has to run again when the sheet changes, because a token that just moved
-        // can take an element from opaque to translucent (or the other way round).
-        if (auto !== null && state.settings.autoGlass) auto.scan();
-        else if (auto !== null) auto.clear();
       };
 
       /**
@@ -2582,8 +2126,6 @@ ${prefixed('html[data-dshbg-on]', ['dialog::backdrop'])} {
             disposed = true;
             unsubscribe();
             marquee.dispose();
-            auto.dispose();
-            autoGlassHandle = null;
             tag.remove();
             document.documentElement.removeAttribute('data-dshbg-on');
           },
@@ -2600,7 +2142,6 @@ ${prefixed('html[data-dshbg-on]', ['dialog::backdrop'])} {
         active: document.documentElement.hasAttribute('data-dshbg-on'),
         frame: document.querySelector(frameSelector()) !== null,
         columns: document.querySelectorAll(workAreaColumns().join(',')).length,
-        auto: autoGlassHandle === null ? 0 : autoGlassHandle.count(),
       };
     }
 
@@ -3081,6 +2622,37 @@ ${prefixed('html[data-dshbg-on]', ['dialog::backdrop'])} {
             settings.composerStyle === 'glass'
               ? null
               : h('p', { className: 'dshbg-hint' }, text.composerSurfaceHint),
+            // TEMPORARY scratch controls, a pair. The menu's blur and its fill trade against
+            // each other, so tuning one without the other only moves the problem around:
+            // the host's 40px flattens the wallpaper into a wash, which forced the fill up
+            // to 76% to keep the text readable, and 76% is what stopped it looking like
+            // glass. Exposed together so the pair can be judged on a real wallpaper.
+            //
+            // To bake them in: copy the chosen values into `DEFAULTS.menuBlur` /
+            // `DEFAULTS.menuFill`, then delete this block and the four `menuFill*` /
+            // `menuBlur*` TEXT entries. `menuSurfaceCss` keeps reading the two settings, so
+            // nothing else has to change - and `readSettings` keeps clamping, which is what
+            // makes an old saved value survive the sliders' removal harmlessly.
+            h(Slider, {
+              label: text.menuBlur,
+              value: settings.menuBlur,
+              min: 0,
+              max: 64,
+              step: 1,
+              suffix: 'px',
+              onChange: (value) => patchSettings({ menuBlur: value }),
+            }),
+            h('p', { className: 'dshbg-hint' }, text.menuBlurHint),
+            h(Slider, {
+              label: text.menuFill,
+              value: settings.menuFill,
+              min: 20,
+              max: 100,
+              step: 1,
+              suffix: '%',
+              onChange: (value) => patchSettings({ menuFill: value }),
+            }),
+            h('p', { className: 'dshbg-hint' }, text.menuFillHint),
           ),
         );
       }
@@ -3103,12 +2675,6 @@ ${prefixed('html[data-dshbg-on]', ['dialog::backdrop'])} {
             { className: 'dshbg-hint' },
             settings.composerStyle === 'glass' ? text.glassHint : text.glassHintSolid,
           ),
-          h(Switch, {
-            checked: settings.autoGlass,
-            label: text.autoGlass,
-            hint: text.autoGlassHint,
-            onChange: (value) => patchSettings({ autoGlass: value }),
-          }),
         ),
       );
 

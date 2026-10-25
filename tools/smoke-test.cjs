@@ -23,23 +23,6 @@ const CLIENT = path.resolve(
     : 'D:/dsh-plugins/custom-background/client.js',
 );
 const DUMP = process.argv.includes('--dump');
-
-function flag(name) {
-  const hit = process.argv.find((arg) => arg.startsWith(`--${name}=`));
-  return hit === undefined ? null : hit.slice(name.length + 3);
-}
-
-const CSS_OUT = flag('css-out');
-const OVERRIDES = (() => {
-  const raw = flag('settings');
-  if (raw === null) return {};
-  try {
-    return JSON.parse(raw);
-  } catch (failure) {
-    console.error(`--settings is not valid JSON: ${failure.message}`);
-    process.exit(1);
-  }
-})();
 const CODE = fs.readFileSync(CLIENT, 'utf8');
 
 const BASE_SETTINGS = {
@@ -56,32 +39,14 @@ const BASE_SETTINGS = {
   fontColor: '#f7f8fa',
 };
 
-function makeElement(tag, computed) {
-  const vars = {};
+function makeElement(tag) {
   const el = {
     tagName: tag,
     dataset: {},
     attributes: {},
-    style: {
-      setProperty(name, value) { vars[name] = String(value); },
-      getPropertyValue(name) { return vars[name] === undefined ? '' : vars[name]; },
-      removeProperty(name) { delete vars[name]; },
-    },
+    style: {},
     textContent: '',
     children: [],
-    isConnected: true,
-    // The detector reads computed styles off whatever it is handed, so a fake node has to
-    // be able to answer. `_computed` is the per-node answer; the default is "invisible,
-    // nothing painted", which is what keeps the detector out of every other scenario.
-    _computed: computed || {
-      display: 'block',
-      visibility: 'visible',
-      backgroundImage: 'none',
-      backgroundColor: 'rgba(0, 0, 0, 0)',
-    },
-    _box: { width: 0, height: 0 },
-    getBoundingClientRect() { return { ...el._box, x: 0, y: 0, top: 0, left: 0 }; },
-    getElementsByTagName() { return []; },
     setAttribute(name, value) { el.attributes[name] = String(value); },
     getAttribute(name) { return name in el.attributes ? el.attributes[name] : null; },
     hasAttribute(name) { return name in el.attributes; },
@@ -111,16 +76,12 @@ const ReactStub = {
 };
 
 /** One isolated plugin instance. Returns the CSS it emitted plus the DOM it touched. */
-function harness(settingsOverride, options) {
+function harness(settingsOverride) {
   const settings = { ...BASE_SETTINGS, ...settingsOverride };
   const head = makeElement('head');
   const documentElement = makeElement('html');
   const body = makeElement('body');
   body._parent = documentElement;
-  // The detector walks `body.getElementsByTagName('*')`; a scenario that wants it to find
-  // anything hands its fake panels in here.
-  const nodes = options && options.nodes ? options.nodes : [];
-  body.getElementsByTagName = () => nodes;
 
   const store = new Map();
   store.set('dsh.custom-background.settings.v3', JSON.stringify(settings));
@@ -137,8 +98,6 @@ function harness(settingsOverride, options) {
       if (match) {
         return head.children.find((el) => el.attributes['data-dshbg-css'] === match[1]) || null;
       }
-      // 探测器在 work-area 作用域下用它划界线：`#root` 里面是主题自己的地盘。
-      if (selector === '#root') return (options && options.root) || null;
       return null;
     },
     querySelectorAll() { return []; },
@@ -150,10 +109,7 @@ function harness(settingsOverride, options) {
       setItem(key, value) { store.set(key, String(value)); },
       removeItem(key) { store.delete(key); },
     },
-    getComputedStyle(el) {
-      if (el && el._computed) return el._computed;
-      return { backgroundImage: 'none' };
-    },
+    getComputedStyle() { return { backgroundImage: 'none' }; },
     // A never-resolving open() keeps boot() pending, which is what the host looks like
     // before the first image read lands.
     indexedDB: { open() { return {}; } },
@@ -181,8 +137,6 @@ function harness(settingsOverride, options) {
   let definition = null;
   window.__ModuleLoader__ = { load(def) { definition = def; } };
 
-  const observers = [];
-
   const sandbox = {
     window,
     document,
@@ -197,14 +151,7 @@ function harness(settingsOverride, options) {
     // The title marquee wires observers up on mount. It never sees a crumb in this DOM
     // (querySelectorAll returns nothing), but constructing them exercises the real path.
     ResizeObserver: class { observe() {} disconnect() {} },
-    // 探测器靠 MutationObserver 驱动。桩把它记下来，测试才能主动触发一次扫描 ——
-    // 「框架重渲染抹掉内联变量」这种场景没法靠等，只能自己拍一下。
-    MutationObserver: class {
-      constructor(callback) { this._callback = callback; observers.push(this); }
-      observe() {}
-      disconnect() {}
-      fire() { if (this._callback) this._callback([]); }
-    },
+    MutationObserver: class { observe() {} disconnect() {} },
     // 跑马灯在 measure() 里读内边距，用的是裸 getComputedStyle（渲染进程里就是 window 上那个）。
     getComputedStyle: window.getComputedStyle,
   };
@@ -212,7 +159,7 @@ function harness(settingsOverride, options) {
   vm.createContext(sandbox);
   vm.runInContext(CODE, sandbox, { filename: 'client.js' });
 
-  return { definition, ctx, registered, documentElement, head, observers };
+  return { definition, ctx, registered, documentElement, head };
 }
 
 const failures = [];
@@ -225,21 +172,9 @@ function check(name, condition, detail) {
   }
 }
 
-/**
- * Pull one number out of a matched CSS block, defensively.
- *
- * Assertions should not be able to crash the suite: when the rule is missing entirely this
- * returns NaN, and `NaN < x` / `NaN === x` are both false, so the assertion reports FAIL the
- * normal way instead of throwing on a null match halfway through the run.
- */
-function pick(block, pattern) {
-  const found = block === null ? null : pattern.exec(block);
-  return found === null ? Number.NaN : Number(found[1]);
-}
-
 /** Apply the plugin with the given settings and return the emitted stylesheet. */
-async function emit(settingsOverride, options) {
-  const run = harness(settingsOverride, options);
+async function emit(settingsOverride) {
+  const run = harness(settingsOverride);
   const { definition, ctx, registered, documentElement, head } = run;
 
   const exported = definition.factory((name) => {
@@ -258,7 +193,6 @@ async function emit(settingsOverride, options) {
     registered,
     documentElement,
     tags,
-    observers: run.observers,
     css: tags.length > 0 ? tags[0].textContent : '',
   };
 }
@@ -290,42 +224,7 @@ async function main() {
   check('captures label tokens for the settings page', base.css.includes('--dshbg-raw-label-0: var(--dsw-alias-label-primary)'));
   check('re-mixes the base surface', base.css.includes('--dsw-alias-bg-base: color-mix'));
   check('keeps elevation order', /--dsw-alias-bg-layer-2: color-mix\(in srgb, var\(--dshbg-raw-l2\) 36%/.test(base.css));
-  // **捕获在 <body>，重混在 `body > *`，两半都是承重的。**
-  //
-  // `--dshbg-raw-x: var(--dsw-alias-x)` 是「计算值时刻」的替换：它读的是**声明它的那个
-  // 元素**上的 `--dsw-alias-x`。捕获和重混放在同一元素上，捕获就会读到已经被重混过的值，
-  // 整条配方塌成透明。
-  //
-  // 而捕获必须在 `body` 上，因为**主题就是声明在 `body` 上的**：DSH 的调色板是
-  // `body { --dsw-alias-* }`（浅色）和 `body[data-ds-dark-theme] { --dsw-alias-* }`（深色），
-  // 不是 `:root`。自定义属性只向下继承，所以捕获挂在 `<html>` 上时每一个 token 读到的都是
-  // guaranteed-invalid：`color-mix(in srgb, <空> 16%, transparent)` 在计算值时刻非法 →
-  // 重混出来的属性也非法 → `background: var(--dsw-alias-bg-layer-2)` 退回 `transparent`。
-  //
-  // **这是一个真实的线上 bug**：所有「16% 不透明」的面板其实全透明，看起来像玻璃全靠
-  // backdrop-filter。这三条断言钉住的就是这个结构。
-  check(
-    'capture sits on <body>, where the theme declares its tokens',
-    /html\[data-dshbg-on\] body \{[^}]*--dshbg-raw-base: var\(--dsw-alias-bg-base\)/.test(base.css),
-  );
-  check(
-    'the capture is not on <html>, where the tokens do not exist',
-    !/html\[data-dshbg-on\] \{[^}]*--dshbg-raw-base:/.test(base.css),
-  );
-  check(
-    're-mix sits one level below the capture, so it cannot read itself',
-    /html\[data-dshbg-on\] body > \* \{[^}]*--dsw-alias-bg-base: color-mix/.test(base.css),
-  );
-  check(
-    'the re-mix covers #root and every portal, but not body itself',
-    !/html\[data-dshbg-on\] body \{[^}]*--dsw-alias-bg-base: color-mix/.test(base.css),
-  );
-  check(
-    'the re-mix is NOT fenced into the app frame',
-    !/html\[data-dshbg-on\] #root div:has\(> \[data-shell-overlay\]\) \{[^}]*--dsw-alias-bg-base: color-mix/.test(
-      base.css,
-    ),
-  );
+  check('targets the frame structurally', base.css.includes('#root div:has(> [data-shell-overlay])'));
 
   // The core requirement: by default the conversation sidebar must be left alone. That
   // is expressed by *not* re-mixing its token - no override rule needed.
@@ -338,19 +237,6 @@ async function main() {
   console.log('\nscope: whole window');
   check('sidebar token IS re-mixed', wide.css.includes('--dsw-specific-sidebar-fill: color-mix'));
   check('bottom bar left glassy', !wide.css.includes('[data-shell-bottom] {'));
-
-  // The sidebar has a floor. Without one, `surface: 0` - the setting that makes everything
-  // else maximally glassy - leaves the column with no fill at all, and a sidebar with no
-  // fill is not "more glassy", it is gone: nav items and the workspace group float on the
-  // photograph with nothing to belong to. See `SIDEBAR_FLOOR`.
-  const sidebarAlpha = (css) =>
-    pick(
-      /--dsw-specific-sidebar-fill: color-mix\(in srgb, var\(--dshbg-raw-sidebar\) (\d{1,3})%, transparent\)/.exec(css),
-      /(\d{1,3})%/,
-    );  check('the sidebar keeps a base at surface 0', sidebarAlpha((await emit({ fullWindow: true, surface: 0 })).css) === 40);
-  check('the floor is a floor, not a lift', sidebarAlpha((await emit({ fullWindow: true, surface: 25 })).css) === 40);
-  check('above the floor the slider still wins', sidebarAlpha((await emit({ fullWindow: true, surface: 70 })).css) === 70);
-  check('the floor never makes the sidebar solid', sidebarAlpha((await emit({ fullWindow: true, surface: 100 })).css) === 100);
 
   console.log('\nconversation opacity');
   // The transcript needs a steadier backdrop than the chrome. It overrides the base token
@@ -537,29 +423,32 @@ async function main() {
     ),
   );
 
-  // 这个比例曾经是设置页上的两条**临时滑块**（settings.menuFill / menuBlur），用户在自己
-  // 的照片上试出来的结论是 30% / 13px，现在固化成了常量。断言因此翻转：不再是「滑块能改
-  // 它」，而是「谁都改不动它」—— 传一个残留的旧设置进去，样式表必须还是常量值。
-  const menuStale = await emit({ menuFill: 88, menuBlur: 44, composerStyle: 'glass' });
+  // 这个比例目前是设置页上的**临时滑块**（settings.menuFill），所以上面几条只校验
+  // 「有填充、带百分号」。这条单独校验滑块真的驱动了样式表 —— 它的意义在于：滑块拆掉、
+  // 数字固化之后，如果谁把 menuSurfaceCss 改回写死字面量，上面几条照样会过（因为
+  // DEFAULTS.menuFill 恰好等于那个数），只有这条会炸。
+  const menu88 = await emit({ menuFill: 88 });
   check(
-    'menu fill is baked, not a setting',
-    /\[data-menu-material\][\s\S]{0,120}?\{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l1\) 30%, transparent\)/.test(
-      menuStale.css,
-    ) && !menuStale.css.includes('var(--dshbg-raw-l1) 76%, transparent'),
+    'menu fill follows the slider',
+    menu88.css.includes('var(--dshbg-raw-l1) 88%, transparent') &&
+      !menu88.css.includes('var(--dshbg-raw-l1) 76%, transparent'),
   );
-  // 模糊半径是同一个故事的第二半：填充和模糊是一对，只调一边等于把问题挪个位置。
+  // 滑块拖到最左也不能把菜单拖成一张透明胶片：readSettings 有下限，落在 20%。
   check(
-    'menu blur is baked, not a setting',
-    menuStale.css.includes('backdrop-filter: blur(13px) saturate(150%)') &&
-      !menuStale.css.includes('blur(44px)'),
+    'menu fill clamps to its floor',
+    (await emit({ menuFill: 5 })).css.includes('var(--dshbg-raw-l1) 20%, transparent'),
   );
-  // 一处材料一个数字。菜单的 surface、命令菜单、右侧栏三处都读同一个填充，输入框的
-  // ::before 也读同一个数——这正是「看着像同一块玻璃」的全部依据，所以数出现次数。
-  // 注意 `--dshbg-raw-base 30%` 只有输入框选了液态玻璃才存在，所以这一条要单独 emit。
+  // 模糊半径是同一个故事的第二条滑块：填充和模糊是一对，只调一边等于把问题挪个位置。
+  const menu12 = await emit({ menuBlur: 12 });
   check(
-    'the whole material shares one fill',
-    (menuStale.css.split('var(--dshbg-raw-l1) 30%, transparent').length - 1) >= 3 &&
-      menuStale.css.includes('var(--dshbg-raw-base) 30%, transparent'),
+    'menu blur follows the slider',
+    menu12.css.includes('backdrop-filter: blur(12px) saturate(150%)') &&
+      !menu12.css.includes('blur(40px)'),
+  );
+  // 上限 64px：再往上 CSS 也不会更糊，只是白白多算一遍。
+  check(
+    'menu blur clamps to its ceiling',
+    (await emit({ menuBlur: 200 })).css.includes('backdrop-filter: blur(64px) saturate(150%)'),
   );
   // 悬停卡和 tooltip 是「反色表面」：宿主的 --dsw-hovercard-bg 写死 #2C2C2E，字色写死
   // #fff / #cfd3d6，两套主题都是深的。所以不能转浅色玻璃（白字会糊掉），只能做
@@ -888,257 +777,15 @@ async function main() {
   check('content radius zeroed', base.css.includes('--dsh-windows-content-radius: 0px'));
 
   console.log('\nsettings page');
-  check('the page recipe is driven by the mount marker', base.css.includes('html[data-dshbg-on][data-dshbg-config]'));
+  check('opaque rule is driven by the mount marker', base.css.includes('html[data-dshbg-on][data-dshbg-config]'));
   check('both work-area columns are scoped', (base.css.match(/html\[data-dshbg-on\]\[data-dshbg-config\][^{},]*nth-of-type\([23]\)/g) || []).length === 2);
   check('restores theme text on the page', base.css.includes('--dsw-alias-label-primary: var(--dshbg-raw-label-0) !important'));
   check('does not target the centred detail block', !base.css.includes('[data-plugin-detail]'));
-  // 设置页从「钉成不透明」翻成「重度磨砂」。这条是用户点名的那个黑框：surface 拉到 0 时，
-  // 整窗唯一一张实心黑板就是它。断言必须同时钉住两头 —— 有玻璃配方，且没有退回不透明。
-  check(
-    'settings page is frosted, not pinned opaque',
-    /html\[data-dshbg-on\]\[data-dshbg-config\][^{}]*\{[^}]*color-mix\(in srgb, var\(--dshbg-raw-base\) 82%, transparent\)[^}]*backdrop-filter: blur\(26px\)/.test(
-      base.css,
-    ),
-  );
-  check(
-    'settings page never falls back to a solid sheet',
-    !/html\[data-dshbg-on\]\[data-dshbg-config\][^{}]*\{[^}]*background-color: var\(--dshbg-raw-base\) !important/.test(
-      base.css,
-    ),
-  );
-  // Whole-window scope: the sidebar is glass there, so the page must cover it too
+  // Whole-window scope: the sidebar is glass there, so the opaque page must cover it too
   // or the page sits beside a see-through strip.
   const wideConfig = /html\[data-dshbg-on\]\[data-dshbg-config\][^{},]*div:has\(> \[data-shell-overlay\]\)\s*\{/.test(wide.css);
   const wideConfigStillColumnar = /html\[data-dshbg-on\]\[data-dshbg-config\][^{}]*nth-of-type/.test(wide.css);
   check('whole-window scope covers the sidebar as well', wideConfig && !wideConfigStillColumnar);
-
-  console.log('\nauto glass catch-all');
-  // 兜底规则：任何被探测器打上标记的元素都按它自己的原色降 alpha 加磨砂。这条规则本身
-  // 只是接收方，真正决定打不打标记的是下面那节「detector」。
-  check(
-    'marked surfaces are frosted from their own colour',
-    /\[data-dshbg-auto\] \{[^}]*background-color: color-mix\(in srgb, var\(--dshbg-auto-fill\) 78%, transparent\)[^}]*backdrop-filter: blur\(20px\)/.test(
-      base.css,
-    ),
-  );
-  check(
-    'the catch-all is conservative, not as clear as a menu',
-    /var\(--dshbg-auto-fill\) (\d{1,3})%/.exec(base.css) !== null &&
-      Number(/var\(--dshbg-auto-fill\) (\d{1,3})%/.exec(base.css)[1]) > 30,
-  );
-  // ::backdrop 不是元素，探测器够不到它 —— 所以它只能是 CSS。弹窗本体是玻璃、外面套一圈
-  // 死黑，看起来还是黑框。
-  check('dialog scrim is lightened globally', base.css.includes('html[data-dshbg-on] dialog::backdrop'));
-  check('dialog scrim stays a scrim', /dialog::backdrop \{\s*background: rgb\(0 0 0 \/ \d{1,2}%\)/.test(base.css));
-
-  console.log('\nhost modals');
-  // DSH 自带的设置弹窗（ui-settings-general）挂在 `#root` **外面**，面板画的是
-  // --dsw-alias-bg-layer-2 —— 在重混列表里，surface=0 时只剩 16%。它背后那个遮罩的
-  // --dsw-mask-blur 主题值是 none，也就是**只压暗、完全不磨**。于是正文原样穿过面板。
-  // 这一节钉住的是「模态必须有填充 + 模糊」，而不是某个类名。
-  // `BASE_SETTINGS.surface` is 20, which is below the modal's floor, so this is the floor
-  // value. The three regimes are pinned separately, further down.
-  check(
-    'a modal panel gets fill and blur',
-    /:where\(\[role="dialog"\]\[aria-modal="true"\]\) \{[^}]*color-mix\(in srgb, var\(--dshbg-raw-l2\) 58%, transparent\)[^}]*backdrop-filter: blur\(42px\)/.test(
-      base.css,
-    ),
-  );
-  // 模态是浮在「已经压暗过」的背景上的一张卡，所以可以比整页设置更透一点。
-  // 这条断言守的是那个关系，不是两个数：谁把模态调到比 SETTINGS_FILL 还实，
-  // 就等于把「卡片」当成了「页面」。
-  //
-  // 取值走上面那个防御式的 `pick()`：规则整条缺失时拿到 NaN，
-  // `NaN < x` 为假，于是断言正常报 FAIL 而不是抛异常中断整个 suite。
-  const modalBlock = /:where\(\[role="dialog"\]\[aria-modal="true"\]\) \{([^}]*)\}/.exec(base.css);
-  const pageBlock = /\[data-dshbg-config\][^{]*\{([^}]*)\}/.exec(base.css);
-  const modalFill = pick(modalBlock, /--dshbg-raw-l2\) (\d{1,3})%/);
-  const pageFill = pick(pageBlock, /--dshbg-raw-base\) (\d{1,3})%/);
-  check(
-    'a modal card stays glassier than a full settings page',
-    modalFill < pageFill,
-    `modal=${modalFill} page=${pageFill}`,
-  );
-  // 遮罩只压暗不磨，是「字透出来」的另一半 —— 但**不要**顺手把遮罩也磨了：
-  // diag/settings-modal.html 上试过，全视口 28px 模糊会把侧栏和正文一起糊成一片，
-  // 那是在损失信息，不是在修 bug。磨砂只属于「必须能读」的那个面板。
-  check(
-    'the scrim is left as a pure dim',
-    !/\[aria-hidden="true"\]:has\(\+ \[role="dialog"\]/.test(base.css),
-  );
-  check(
-    'the scrim is still the host\'s own dim',
-    !/\[role="dialog"\]\[aria-modal="true"\]\) \{\s*-webkit-backdrop-filter/.test(base.css),
-  );
-  // 遮罩的 inset 是 `var(--dsh-frame-chrome-top,0px) 0 0`，Windows 下那个值正好等于标题栏
-  // 高度 —— 宿主是**故意**不画顶栏的（为了不压暗原生按钮）。压上壁纸之后，那就是一条
-  // 横穿窗口的硬边。所以模态打开期间，顶栏那条 ::before 要跟上同样的压暗。
-  check(
-    'the title bar strip joins the scrim while a modal is open',
-    /html\[data-dshbg-on\]:has\(\[role="dialog"\]\[aria-modal="true"\]\) #root div:has\(> \[data-shell-overlay\]\)::before \{[^}]*var\(--dsw-alias-bg-mask-1\)/.test(
-      base.css,
-    ),
-  );
-  // 顶栏补的那一层必须是**同一个变量**，不是写死的黑色：遮罩换主题时两边要一起动。
-  check(
-    'the strip copies the mask token, not a literal',
-    !/::before \{[^}]*background-image: linear-gradient\(\s*rgba?\(/.test(base.css),
-  );
-  // **兜底规则必须输给手写规则。** hook 包在 `:where()` 里，特异性归零，于是这条规则的
-  // 特异性只有 `html[data-dshbg-on] body` —— 任何 `.class` 规则都能压过它。
-  // cost-meter 的 93% 弹窗就是靠这一点保住自己的数字的。谁把 `:where()` 去掉，这条会炸。
-  check(
-    'the catch-all carries a zero-specificity hook',
-    (base.css.match(/:where\(\[role="dialog"\]\[aria-modal="true"\]\)/g) || []).length === 1,
-  );
-  check(
-    'a hand-written modal recipe still outranks it',
-    base.css.includes('body .cm-stat-dialog') && !/cm-stat-dialog[^{]*:where/.test(base.css),
-  );
-  check(
-    'the catch-all is emitted before the specific recipes',
-    base.css.indexOf('[aria-modal="true"]') < base.css.indexOf('.cm-stat-dialog'),
-  );
-  // v2.24.0 的死因：规则指向了一个构建期哈希类名，真机上早就换了，测试还全绿。
-  // 这条全局断言把那种写法从根上堵掉 —— 引宿主类名只能引**稳定的一半**（[class*="_menu"]）。
-  check(
-    'no build-hashed class name anywhere in the sheet',
-    !/\.[A-Za-z0-9]{6}_/.test(base.css),
-    (/\.[A-Za-z0-9]{6}_/.exec(base.css) || [''])[0],
-  );
-
-  // The modal fill is not a fixed number: it tracks the panel slider, with a floor it will
-  // not go under and a ceiling it will not pass. Three points are enough to pin all three
-  // regimes - below the floor, in the linear band, above the ceiling.
-  const modalFillOf = async (surface) => pick(
-    /:where\(\[role="dialog"\]\[aria-modal="true"\]\) \{([^}]*)\}/.exec((await emit({ surface })).css),
-    /--dshbg-raw-l2\) (\d{1,3})%/,
-  );
-  check('the modal has a readability floor', (await modalFillOf(0)) === 58, `fill=${await modalFillOf(0)}`);
-  check('above the floor the panel slider wins', (await modalFillOf(60)) === 76, `fill=${await modalFillOf(60)}`);
-  check('the modal never goes fully solid', (await modalFillOf(100)) === 96, `fill=${await modalFillOf(100)}`);
-
-  // The controls inside the dialog are the other half of "the buttons are not adapted".
-  // `--dsw-alias-bg-module-platform` and `--dsw-specific-sidebar-nav-item-active` are opaque
-  // neutrals, so on a frosted panel they are the last solid boxes in the dialog. They cannot
-  // just be made translucent versions of themselves (see the comment on `modalCss`), so
-  // inside the panel they become a veil of the label colour - white in the dark theme,
-  // black in the light one, because that token already flips polarity.
-  check(
-    'selectors and steppers become a veil, not a solid chip',
-    /--dsw-alias-bg-module-platform: color-mix\(in srgb, var\(--dshbg-raw-label-0\) 24%, transparent\)/.test(
-      base.css,
-    ),
-  );
-  check(
-    'the selected nav row gets a slightly stronger veil',
-    /--dsw-specific-sidebar-nav-item-active: color-mix\(in srgb, var\(--dshbg-raw-label-0\) 32%, transparent\)/.test(
-      base.css,
-    ),
-  );
-  check(
-    'the veil is derived from the theme, not from a literal colour',
-    !/--dsw-alias-bg-module-platform: (rgb|#)/.test(base.css) && !/--dsw-specific-sidebar-nav-item-active: (rgb|#)/.test(base.css),
-  );
-  // Scoped on the panel, so it inherits into the dialog and stops there. The app's own
-  // sidebar keeps its opaque selected row, and tables / code blocks / badges - which read
-  // the same token - are untouched.
-  check(
-    'the control override exists exactly once, on the panel',
-    (base.css.match(/--dsw-alias-bg-module-platform:/g) || []).length === 1 &&
-      modalBlock !== null &&
-      modalBlock[1].includes('--dsw-alias-bg-module-platform:'),
-  );
-  check(
-    'the nav override does not leak into the app sidebar',
-    (base.css.match(/--dsw-specific-sidebar-nav-item-active:/g) || []).length === 1 &&
-      modalBlock !== null &&
-      modalBlock[1].includes('--dsw-specific-sidebar-nav-item-active:'),
-  );
-
-  console.log('\ndetector');
-  // 这一节测的是**行为**，不是自己生成的 CSS 字符串。
-  //
-  // 上一版最贵的教训正在这里：断言测的是我自己吐出来的那串 CSS，选择器早就在新版本里
-  // 换掉了，规则一条都没生效，测试却全绿。所以探测器必须在假 DOM 上真的跑一遍，看它
-  // 到底给谁打了标记、放过了谁。
-  const opaque = { display: 'block', visibility: 'visible', backgroundImage: 'none', backgroundColor: 'rgb(28, 28, 30)' };
-  const clearBox = { display: 'block', visibility: 'visible', backgroundImage: 'none', backgroundColor: 'rgba(28, 28, 30, 0.3)' };
-
-  const panel = makeElement('DIV', opaque); // 不透明 + 够大 -> 应该被打标记
-  panel._box = { width: 400, height: 300 };
-  const smallChip = makeElement('DIV', opaque); // 不透明但太小
-  smallChip._box = { width: 40, height: 30 };
-  const glassPane = makeElement('DIV', clearBox); // 够大但本来就半透明
-  glassPane._box = { width: 400, height: 300 };
-  const photo = makeElement('DIV', { ...opaque, backgroundImage: 'linear-gradient(red, blue)' });
-  photo._box = { width: 400, height: 300 };
-  const picture = makeElement('IMG', opaque); // 图片元素，不是面板
-  picture._box = { width: 400, height: 300 };
-  const hidden = makeElement('DIV', { ...opaque, visibility: 'hidden' });
-  hidden._box = { width: 400, height: 300 };
-  const inSettings = makeElement('DIV', opaque); // 设置页内部，有自己的配方
-  inSettings._box = { width: 400, height: 300 };
-  inSettings.closest = () => ({});
-
-  const nodes = [panel, smallChip, glassPane, photo, picture, hidden, inSettings];
-  const probed = await emit({}, { nodes });
-  await new Promise((resolve) => setTimeout(resolve, 40));
-
-  check('an opaque panel gets marked', panel.hasAttribute('data-dshbg-auto'));
-  check(
-    'the mark carries the panel\'s own colour',
-    panel.style.getPropertyValue('--dshbg-auto-fill') === 'rgb(28, 28, 30)',
-    panel.style.getPropertyValue('--dshbg-auto-fill'),
-  );
-  check('a small opaque chip is left alone', !smallChip.hasAttribute('data-dshbg-auto'));
-  check('an already translucent pane is left alone', !glassPane.hasAttribute('data-dshbg-auto'));
-  check('a gradient or photo backdrop is left alone', !photo.hasAttribute('data-dshbg-auto'));
-  check('an <img> is left alone', !picture.hasAttribute('data-dshbg-auto'));
-  check('a hidden panel is left alone', !hidden.hasAttribute('data-dshbg-auto'));
-  check('the settings page keeps its own recipe', !inSettings.hasAttribute('data-dshbg-auto'));
-  check('the probe emitted a stylesheet', probed.css.length > 500);
-
-  // 开关必须真的关掉探测器，而不是只改一条 CSS。
-  const offNodes = [makeElement('DIV', opaque)];
-  offNodes[0]._box = { width: 400, height: 300 };
-  await emit({ autoGlass: false }, { nodes: offNodes });
-  await new Promise((resolve) => setTimeout(resolve, 40));
-  check('the switch stops the detector marking anything', !offNodes[0].hasAttribute('data-dshbg-auto'));
-
-  // 作用域是探测器最容易出错的地方：work-area 模式下壁纸只盖住中间两栏，侧栏是**故意**
-  // 留成主题原样的。要是探测器把侧栏里那些不透明面板也磨了，作用域开关就等于被悄悄废掉了。
-  // 所以那条界线必须由 `#root` 来划：里面归主题，外面（浮层）才归探测器。
-  const innerPanel = makeElement('DIV', opaque);
-  innerPanel._box = { width: 400, height: 300 };
-  const fakeRoot = makeElement('DIV');
-  fakeRoot.contains = (el) => el === innerPanel;
-  await emit({ fullWindow: false }, { nodes: [innerPanel], root: fakeRoot });
-  await new Promise((resolve) => setTimeout(resolve, 40));
-  check('work-area scope leaves the app frame alone', !innerPanel.hasAttribute('data-dshbg-auto'));
-
-  const innerPanelWide = makeElement('DIV', opaque);
-  innerPanelWide._box = { width: 400, height: 300 };
-  await emit({ fullWindow: true }, { nodes: [innerPanelWide], root: fakeRoot });
-  await new Promise((resolve) => setTimeout(resolve, 40));
-  check(
-    'whole-window scope looks inside the frame too',
-    innerPanelWide.hasAttribute('data-dshbg-auto'),
-  );
-
-  // 框架整体重写 `style` 时会抹掉内联的自定义属性、留下 `data-dshbg-auto` 属性。此时
-  // 再去读计算值毫无意义（我们自己的规则已经生效，`color-mix` 无效，报的是 transparent），
-  // 只有记下来的原色是可信的。这条断言钉住「标记不会因为一次重渲染就变成全透明」。
-  panel.style.removeProperty('--dshbg-auto-fill');
-  check('a wiped colour is really gone', panel.style.getPropertyValue('--dshbg-auto-fill') === '');
-  const detector = probed.observers[probed.observers.length - 1];
-  detector.fire();
-  await new Promise((resolve) => setTimeout(resolve, 320));
-  check(
-    'the mark restores its colour after a re-render',
-    panel.style.getPropertyValue('--dshbg-auto-fill') === 'rgb(28, 28, 30)',
-    panel.style.getPropertyValue('--dshbg-auto-fill'),
-  );
 
   console.log('\ntext colour');
   // Theme mode must leave the label tokens alone. The caption symbols are a separate
@@ -1209,10 +856,9 @@ async function main() {
   check('composer opacity control is on the page', blob.includes('输入框不透明度'));
   check('finish control is on the page', blob.includes('液态玻璃'));
   check('panel opacity control is still there', blob.includes('面板不透明度'));
-  // 临时滑块已经拆掉，数字固化进常量。断言跟着翻转，并且留一条反向的：防止有人日后
-  // 又把「（临时）」控件加回来 —— 那是这套东西里最容易被当成「先放个开关」的入口。
-  check('temporary sliders are gone', !blob.includes('（临时）') && !blob.includes('(temporary)'));
-  check('auto glass catch-all switch is on the page', blob.includes('自动玻璃'));
+  // 临时滑块。它们是要被拆掉的东西，但拆之前必须真的出现在页面上 —— 否则用户找不到。
+  check('temporary glass blur slider is on the page', blob.includes('玻璃模糊（临时）'));
+  check('temporary glass fill slider is on the page', blob.includes('玻璃填充（临时）'));
 
   console.log('\nslot registration');
   check('one slot registration', base.registered.length === 1, `got ${base.registered.length}`);
@@ -1293,15 +939,6 @@ async function main() {
     console.log(`\n--- emitted css (font: auto) ---\n${lit.css}`);
     const glassy = await emit({ composerStyle: 'glass' });
     console.log(`\n--- emitted css (liquid glass) ---\n${glassy.css}`);
-  }
-  // `--dump --css-out=<path> --settings=<json>`: write the sheet for an arbitrary set of
-  // settings. The replica pages under `diag/` need the *real* output for the *user's* real
-  // numbers - a bug that only appears at `surface: 0` cannot be reproduced from the
-  // defaults, and hand-editing a dumped sheet would defeat the point of the replica.
-  if (CSS_OUT !== null) {
-    const custom = await emit(OVERRIDES);
-    fs.writeFileSync(CSS_OUT, custom.css, 'utf8');
-    console.log(`\n--- wrote ${custom.css.length} bytes to ${CSS_OUT} ---`);
   }
   process.exit(failures.length === 0 ? 0 : 1);
 }
