@@ -518,6 +518,35 @@ window.__ModuleLoader__.load({
     // --------------------------------------------------------------------- tokens
 
     /**
+     * How opaque the sidebar column is allowed to get, at minimum.
+     *
+     * `--dsw-specific-sidebar-fill` used to be `lift: 0`, so its alpha *was* the panel
+     * slider. At `surface: 0` that means the sidebar paints nothing at all - and a sidebar
+     * with no fill is not "more glassy", it is gone: the nav items, the workspace group and
+     * the session list all float on the photograph with no column to belong to, and the
+     * only thing separating them from the transcript is a border that is not there.
+     *
+     * **The first version of this number was 40, and it was wrong twice over.** It was
+     * picked by compositing the veil over a screenshot at 0 / 20 / 30 / 40 / 55%, which
+     * answers "how dark does 40% look" - not "does the app show 40%". It does not: the
+     * column and the sidebar root both paint this token (see `columnPaintCss`), so 40%
+     * landed on screen as `1 - 0.6²` = **64%**. The user's verdict on that was
+     * "只有会话有背景啊，这怎么都黑了", which is exactly right.
+     *
+     * 28 is measured against the real thing this time: `diag/window-replica.html` renders
+     * the whole window from the host's own CSS, the user's own wallpaper (recovered from
+     * IndexedDB) and the sheet emitted from their own settings, and
+     * `diag/floor-strip.png` lines up 0 / 16 / 24 / 32 / 40 / the old 64 side by side.
+     * At 28 the column still reads as a surface - the nav rows have something to sit on -
+     * while the wallpaper's haze is plainly there behind it. Below 24 the secondary-colour
+     * rows start to swim; above 32 the picture stops mattering.
+     *
+     * This only applies when the sidebar is re-mixed at all (whole-window scope). In
+     * work-area scope the token is not emitted, so the sidebar keeps the theme's own fill.
+     */
+    const SIDEBAR_FLOOR = 28;
+
+    /**
      * Every token that paints a surface. `lift` keeps elevation legible: a raised panel
      * is re-mixed slightly more opaque than the surface under it, so stacked panels
      * still read as stacked instead of dissolving into one sheet.
@@ -531,25 +560,6 @@ window.__ModuleLoader__.load({
      * wallpaper entirely behind it; the history list carries its own block instead - see
      * `historyBlockCss`.
      */
-    /**
-     * How opaque the sidebar column is allowed to get, at minimum.
-     *
-     * `--dsw-specific-sidebar-fill` used to be `lift: 0`, so its alpha *was* the panel
-     * slider. At `surface: 0` that means the sidebar paints nothing at all - and a sidebar
-     * with no fill is not "more glassy", it is gone: the nav items, the workspace group and
-     * the session list all float on the photograph with no column to belong to, and the
-     * only thing separating them from the transcript is a border that is not there.
-     *
-     * The number is measured, not guessed: `diag/sidebar-floor.png` composites the veil over
-     * the user's own screenshot at 0 / 20 / 30 / 40 / 55%, and 40% is where the column reads
-     * as a surface while the picture still comes through. Below that the grouping is lost;
-     * above it the wallpaper starts to disappear.
-     *
-     * This only applies when the sidebar is re-mixed at all (whole-window scope). In
-     * work-area scope the token is not emitted, so the sidebar keeps the theme's own fill.
-     */
-    const SIDEBAR_FLOOR = 40;
-
     const SURFACE_TOKENS = [
       { token: '--dsw-alias-bg-base', raw: 'base', lift: 0 },
       { token: '--dsw-specific-sidebar-fill', raw: 'sidebar', lift: 0, floor: SIDEBAR_FLOOR, sidebarOnly: true },
@@ -675,6 +685,56 @@ ${remixes}
     }
 
     /**
+     * One surface, one painter.
+     *
+     * The frame's two content columns are grid cells, and each of them paints a surface
+     * token - `--dsw-specific-sidebar-fill` on the left, `--dsw-alias-bg-base` on the right.
+     * So does the root *inside* each one: `SidebarRoot` paints the sidebar fill, and
+     * `ConversationRoot` (`Dc7zOa_root`) paints the base. Two elements, one token,
+     * stacked.
+     *
+     * In the theme's own design that is invisible, because both layers are the same opaque
+     * colour: `#1b1b1c` over `#1b1b1c` is still `#1b1b1c`. The moment the token goes
+     * translucent it stops being invisible, and the error is not subtle - the column's
+     * declared alpha `a` arrives on screen as `1 - (1 - a)²`. At `surface: 0` the sidebar's
+     * 40% floor rendered as **64%**, which is why the whole left half of the window read as
+     * black while the transcript beside it was still showing the photograph.
+     *
+     * **The wrapper is the one that has to go, not the root.** A grid cell exists to place
+     * things; the root is the surface that things sit on. Killing the root would need its
+     * build-hashed class name, and `_root` is a local name shared by half the bundle
+     * (`SettingsRoot`, `SidebarRoot`, `ConversationRoot` ...), so it is not addressable.
+     * The columns are addressable structurally - the same `div:nth-of-type` anchors that
+     * `chatSurfaceCss` and `configPageCss` already rely on.
+     *
+     * **The sidebar half is Windows-only, and that is not a shortcut.** On darwin the host
+     * sets `[data-platform=darwin] ._2H3hWW_root { background: 0 0 }` and moves the fill to
+     * the column (with a gradient on top). The column is the *only* painter there, so
+     * making it transparent would delete the sidebar outright. `[data-windows-titlebar]` is
+     * exactly the condition under which both layers paint.
+     *
+     * The centre column needs no such gate: `ConversationRoot` paints the base on both
+     * platforms. At the default `chatSurface: 0` this rule changes nothing at all - both
+     * layers are already transparent - it only stops the slider from over-delivering once
+     * it is moved.
+     *
+     * Not applied in work-area scope: the sidebar token is not re-mixed there, so the
+     * column and the root both keep the theme's opaque fill and there is nothing to fix.
+     */
+    function columnPaintCss(settings) {
+      if (!settings.fullWindow) return '';
+      const frame = frameSelector();
+      return `
+html[data-dshbg-on][data-windows-titlebar] ${frame} > div:nth-of-type(1) {
+  background: transparent !important;
+}
+html[data-dshbg-on] ${frame} > div:nth-of-type(2) {
+  background: transparent !important;
+}
+`;
+    }
+
+    /**
      * The conversation column gets its own opacity.
      *
      * Reading long text over artwork needs a steadier backdrop than the panels do, and
@@ -682,7 +742,8 @@ ${remixes}
      * transcript should stay legible. One shared slider forces a compromise, so this
      * column overrides `--dsw-alias-bg-base` locally instead of stacking a second layer
      * on top of the one the conversation root already paints - two translucent layers
-     * would compose to something neither number describes.
+     * would compose to something neither number describes. `columnPaintCss` is what
+     * makes that sentence true rather than aspirational.
      *
      * `> div:nth-of-type(2)` is the center column (the same structural anchor the settings
      * page rule uses), so this survives the hashed class names inside the conversation.
@@ -1887,6 +1948,9 @@ ${prefixed('html[data-dshbg-on]', ['dialog::backdrop'])} {
       return [
         wallpaperCss(settings, value),
         tokenCss(settings),
+        // Right after the re-mix, because it is the rule that decides how many times that
+        // re-mix lands. Everything below is tuned on the assumption that it lands once.
+        columnPaintCss(settings),
         chatSurfaceCss(settings),
         composerCss(settings),
         chromeCss(settings),

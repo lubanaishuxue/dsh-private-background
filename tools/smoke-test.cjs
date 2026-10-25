@@ -343,14 +343,49 @@ async function main() {
   // else maximally glassy - leaves the column with no fill at all, and a sidebar with no
   // fill is not "more glassy", it is gone: nav items and the workspace group float on the
   // photograph with nothing to belong to. See `SIDEBAR_FLOOR`.
+  //
+  // 28, not 40: 40 was calibrated on a composite and then landed on screen at 64%, because
+  // the token had two painters. `columnPaintCss` below is what makes this number mean what
+  // it says, and `diag/floor-strip.png` is where 28 comes from.
   const sidebarAlpha = (css) =>
     pick(
       /--dsw-specific-sidebar-fill: color-mix\(in srgb, var\(--dshbg-raw-sidebar\) (\d{1,3})%, transparent\)/.exec(css),
       /(\d{1,3})%/,
-    );  check('the sidebar keeps a base at surface 0', sidebarAlpha((await emit({ fullWindow: true, surface: 0 })).css) === 40);
-  check('the floor is a floor, not a lift', sidebarAlpha((await emit({ fullWindow: true, surface: 25 })).css) === 40);
+    );
+  check('the sidebar keeps a base at surface 0', sidebarAlpha((await emit({ fullWindow: true, surface: 0 })).css) === 28);
+  check('the floor is a floor, not a lift', sidebarAlpha((await emit({ fullWindow: true, surface: 25 })).css) === 28);
   check('above the floor the slider still wins', sidebarAlpha((await emit({ fullWindow: true, surface: 70 })).css) === 70);
   check('the floor never makes the sidebar solid', sidebarAlpha((await emit({ fullWindow: true, surface: 100 })).css) === 100);
+
+  // One surface, one painter. The frame's columns and the roots inside them paint the same
+  // token, which is invisible while both are opaque and doubles the veil once they are not:
+  // a declared 40% arrives as `1 - 0.6²` = 64%. That was v2.27.0's live regression.
+  console.log('\ncolumn paint');
+  const frameSel = String.raw`#root div:has\(> \[data-shell-overlay\]\)`;
+  check(
+    'the sidebar column stops painting, so the fill lands once',
+    new RegExp(
+      String.raw`html\[data-dshbg-on\]\[data-windows-titlebar\] ${frameSel} > div:nth-of-type\(1\) \{\s*background: transparent !important;`,
+    ).test(wide.css),
+  );
+  check(
+    'the centre column stops painting too, so chatSurface lands once',
+    new RegExp(String.raw`html\[data-dshbg-on\] ${frameSel} > div:nth-of-type\(2\) \{\s*background: transparent`).test(
+      wide.css,
+    ),
+  );
+  check(
+    'the sidebar half is gated on Windows, where the root also paints',
+    !new RegExp(String.raw`html\[data-dshbg-on\] ${frameSel} > div:nth-of-type\(1\) \{`).test(wide.css),
+  );
+  check(
+    'the column rule never names a build-hashed class',
+    !/div:nth-of-type\(1\)[^{]*\._?[A-Za-z0-9-]{5,}_/.test(wide.css),
+  );
+  check(
+    'work-area scope leaves the columns alone',
+    !(await emit({ fullWindow: false })).css.includes('div:nth-of-type(1) {\n  background: transparent'),
+  );
 
   console.log('\nconversation opacity');
   // The transcript needs a steadier backdrop than the chrome. It overrides the base token
