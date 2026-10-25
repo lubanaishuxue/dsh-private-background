@@ -2252,6 +2252,72 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
      * open `<html>` carries `data-dshbg-menu` and the card drops its blur; the menu gets its
      * own back. Closing it restores the composer.
      */
+    /**
+     * Hard override for the cost-meter's dialog panels.
+     *
+     * Its dialog is a portaled `<dialog class="cm-stat-dialog">` whose own rule opens with
+     * `background: var(--cm-opaque-base, #fff)` - which is exactly `#151517` in the dark
+     * theme, i.e. the flat slab that survives every stylesheet fix so far. Whatever the
+     * cascade is doing there, an inline declaration with `!important` outranks it, so the
+     * panel is painted from JS instead: same two numbers the rest of the glass uses, derived
+     * from the raw layer colour the capture already exposes.
+     *
+     * Cheap and self-healing: it re-runs on every paint (settings change) and whenever the
+     * DOM changes, and it only touches elements that are actually present. If the plugin
+     * ever re-renders and wipes the inline style, the next mutation puts it back.
+     */
+    function installCostDialogGlass() {
+      if (typeof MutationObserver === 'undefined') return { sync() {}, dispose() {} };
+      const SELECTOR = '.cm-stat-dialog, .cm-qguide, .cm-peak-alert, .cm-fee-dialog';
+      let timer = 0;
+      let disposed = false;
+
+      const sync = () => {
+        timer = 0;
+        if (disposed) return;
+        if (!document.documentElement.hasAttribute('data-dshbg-on')) return;
+        try {
+          const settings = state.settings;
+          const fill = Math.max(58, Math.min(92, clamp(settings.surface, 0, 100) + 16));
+          const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
+          const readVar = (element, name) => {
+            const style = getComputedStyle(element);
+            // A CSSStyleDeclaration always has getPropertyValue; the guard is here because an
+            // exception in this pass would take the whole stylesheet install down with it.
+            return typeof style.getPropertyValue === 'function' ? style.getPropertyValue(name).trim() : '';
+          };
+          const fallback = readVar(document.body, '--dsw-alias-bg-layer-2');
+          for (const element of document.querySelectorAll(SELECTOR)) {
+            const raw = readVar(element, '--dshbg-raw-l2') || fallback;
+            if (raw === '') continue;
+            const paint = `color-mix(in srgb, ${raw} ${fill}%, transparent)`;
+            element.style.setProperty('background-color', paint, 'important');
+            element.style.setProperty('background-image', 'none', 'important');
+            element.style.setProperty('backdrop-filter', `blur(${blur}px) saturate(150%)`, 'important');
+            element.style.setProperty('-webkit-backdrop-filter', `blur(${blur}px) saturate(150%)`, 'important');
+          }
+        } catch {
+          // Painting a third-party dialog may never break the stylesheet install.
+        }
+      };
+
+      const schedule = () => {
+        if (disposed || timer !== 0) return;
+        timer = setTimeout(sync, 140);
+      };
+
+      const observer = new MutationObserver(schedule);
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      return {
+        sync,
+        dispose() {
+          disposed = true;
+          if (timer !== 0) clearTimeout(timer);
+          observer.disconnect();
+        },
+      };
+    }
+
     function installComposerMenuGuard() {
       if (typeof MutationObserver === 'undefined') return { sync() {}, dispose() {} };
       const root = document.documentElement;
@@ -2298,6 +2364,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
 
       const marquee = installTitleMarquee();
       const composerMenu = installComposerMenuGuard();
+      const costDialog = installCostDialogGlass();
 
       let disposed = false;
       let measureToken = 0;
@@ -2326,6 +2393,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         // Re-check the composer/menu trade whenever the sheet changes: a menu that stayed
         // open across a settings change still needs the card's blur dropped.
         composerMenu.sync();
+        costDialog.sync();
       };
 
       /**
@@ -2366,6 +2434,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
             unsubscribe();
             marquee.dispose();
             composerMenu.dispose();
+            costDialog.dispose();
             tag.remove();
             document.documentElement.removeAttribute('data-dshbg-on');
           },
@@ -3042,6 +3111,16 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
 .dshbg-dock-probe { display: flex; flex-direction: column; gap: 1px; margin-top: 2px; padding: 5px 6px; border-radius: 6px; background: rgb(128 128 128 / 12%); font-size: 10px; line-height: 14px; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-caption, #8b9098); word-break: break-all; }
 `;
 
+    /** What the cost dialog is really wearing, for when a fix "does not take". */
+    function costSurface() {
+      const dialog = document.querySelector('.cm-stat-dialog, .cm-qguide, .cm-peak-alert, .cm-fee-dialog');
+      if (dialog === null) return '(未打开)';
+      const style = getComputedStyle(dialog);
+      const parent = dialog.parentElement;
+      const parentStyle = parent === null ? null : getComputedStyle(parent);
+      return `${dialog.tagName}/${style.backgroundColor}/bf:${style.backdropFilter || '-'}/父:${parent === null ? '-' : `${parent.tagName}/${parentStyle.backgroundColor}`}`;
+    }
+
     /** What the browser actually computed. Read only, refreshed while the card is open. */
     function probeSurface() {
       try {
@@ -3059,6 +3138,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
           raw: getComputedStyle(document.body).getPropertyValue('--dshbg-raw-base').trim() || '(空)',
           mixed: getComputedStyle(scope).getPropertyValue('--dsw-alias-bg-base').trim() || '(空)',
           composer: cardStyle === null ? '(无输入框)' : `${cardStyle.backgroundColor} / ${cardStyle.backdropFilter || '-'}`,
+          cost: costSurface(),
           sheet: sheet === null ? '(无样式表)' : `${Math.round(sheet.textContent.length / 1024)} KB`,
         };
       } catch (failure) {

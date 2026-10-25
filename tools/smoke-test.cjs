@@ -113,7 +113,16 @@ function harness(settingsOverride) {
       setItem(key, value) { store.set(key, String(value)); },
       removeItem(key) { store.delete(key); },
     },
-    getComputedStyle() { return { backgroundImage: 'none' }; },
+    getComputedStyle() {
+      // 真实的 CSSStyleDeclaration 既有属性也有 getPropertyValue；读自定义属性（--dshbg-*）
+      // 只能走后者，所以桩子必须两个都提供。
+      return {
+        backgroundImage: 'none',
+        backgroundColor: 'rgba(0, 0, 0, 0)',
+        backdropFilter: '',
+        getPropertyValue: () => '',
+      };
+    },
     // A never-resolving open() keeps boot() pending, which is what the host looks like
     // before the first image read lands.
     indexedDB: { open() { return {}; } },
@@ -914,6 +923,14 @@ async function main() {
       base.css,
     ),
   );
+  // CSS 层叠在这一处从没赢过（它那条 `background: var(--cm-opaque-base)` 就是深色主题的
+  // #151517），所以再加一层内联 !important 兜底，并且探针要能报出弹窗实际算出来的底色。
+  check(
+    'cost dialog panels get an inline last resort',
+    CODE.includes('function installCostDialogGlass') &&
+      CODE.includes("setProperty('background-color', paint, 'important')"),
+  );
+  check('the probe can report the cost dialog surface', CODE.includes('function costSurface'));
   check('modal backdrop dimmed', base.css.includes('.cm-stat-dialog::backdrop'));
 
   console.log('\nlifecycle');
