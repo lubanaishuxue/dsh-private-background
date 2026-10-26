@@ -732,28 +732,6 @@ html[data-dshbg-on] [data-composer-card] {
     }
 
     /**
-     * The `backdrop-filter` pair, or `none` when the radius is zero.
-     *
-     * `blur(0px)` is not free: it still makes the element a backdrop root and still asks
-     * the compositor for a backdrop snapshot on every frame the thing behind it changes.
-     * At radius zero there is nothing to blur, so the honest output is `none` - it costs
-     * nothing and, more usefully, it makes the sliders a real isolation test: drag both
-     * blur sliders to 0 and the window has no backdrop snapshots left at all.
-     *
-     * That test exists because of a report that the transcript blinks while a local model
-     * streams. A backdrop snapshot is taken whenever the content *behind* a blurred
-     * element changes, so a fast stream invalidates every one of them every frame; on a
-     * GPU that is already busy generating, the compositor drops the frame and the work
-     * area goes blank for ~100ms. See the note in README section 8, item 13.
-     */
-    function frost(radius, saturation = 160) {
-      const px = Number(radius);
-      if (!(px > 0)) return '  -webkit-backdrop-filter: none !important;\n  backdrop-filter: none !important;';
-      return `  -webkit-backdrop-filter: blur(${px}px) saturate(${saturation}%) !important;
-  backdrop-filter: blur(${px}px) saturate(${saturation}%) !important;`;
-    }
-
-    /**
      * The frosted-pane recipe, shared by every surface that gets the liquid-glass look.
      *
      * The wallpaper is already blurred at the `html::before` layer, so the pane's own
@@ -783,7 +761,8 @@ html[data-dshbg-on] [data-composer-card] {
     0 10px 30px -14px rgb(0 0 0 / 0.55) !important;`;
       if (!withBlur) return shell;
       return `${shell}
-  ${frost(blur, 160)}`;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(160%) !important;
+  backdrop-filter: blur(${blur}px) saturate(160%) !important;`;
     }
 
     /**
@@ -815,7 +794,8 @@ html[data-dshbg-on] [data-composer-card] {
       return `  background-color: color-mix(in srgb, var(--dshbg-raw-base) 45%, transparent) !important;
   border: ${border} solid color-mix(in srgb, var(--dshbg-raw-label-0) 14%, transparent) !important;
   box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.08) !important;
-  ${frost(radius, 150)}`;
+  -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
+  backdrop-filter: blur(${radius}px) saturate(150%) !important;`;
     }
 
     /**
@@ -835,7 +815,8 @@ html[data-dshbg-on] [data-composer-card] {
   box-shadow:
     inset 0 1px 0 0 rgb(255 255 255 / 0.10),
     0 10px 30px -14px rgb(0 0 0 / 0.55) !important;
-  ${frost(radius, 160)}`;
+  -webkit-backdrop-filter: blur(${radius}px) saturate(160%) !important;
+  backdrop-filter: blur(${radius}px) saturate(160%) !important;`;
     }
 
     /**
@@ -878,7 +859,8 @@ html[data-dshbg-on] [data-composer-card] {
       return `
 ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewResponse"])'])} {
   background: color-mix(in srgb, var(--dshbg-raw-l1) ${fill}%, transparent) !important;
-  ${frost(blur, 150)}
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
 }
 `;
     }
@@ -945,7 +927,8 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewRes
       // virtue of `position: absolute; z-index: 100`, so nothing needs the isolation, and
       // dropping it removes one more way for the child to be fenced off.
       const glass = `  background: color-mix(in srgb, var(--dshbg-raw-l1) ${fill}%, transparent) !important;
-  ${frost(blur, 150)}`;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;`;
       return `
 ${prefixed('html[data-dshbg-on]', ['[data-menu-material]'])} {
 ${glass}
@@ -1016,12 +999,14 @@ ${prefixed('html[data-dshbg-on]', [`${menu}[data-overflow-below]::after`])} {
 ${prefixed('html[data-dshbg-on]', ['body > [class*="_card_"]'])} {
   background: color-mix(in srgb, var(--dsw-hovercard-bg) ${cardFill}%, transparent) !important;
   box-shadow: var(--dsw-shadow-lv3), inset 0 0 0 1px rgb(255 255 255 / 0.10) !important;
-  ${frost(blur, 150)}
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
 }
 ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
   background: color-mix(in srgb, var(--dsw-alias-tooltip-bg) ${bubbleFill}%, transparent) !important;
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.10) !important;
-  ${frost(blur, 150)}
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
 }
 `;
     }
@@ -1156,14 +1141,16 @@ ${prefixed('html[data-dshbg-on]',
 }
 ${prefixed('html[data-dshbg-on]', blocks.flatMap((b) => [`${b} pre`]))} {
   background: transparent !important;
-  ${frost(blur, 160)}
+  -webkit-backdrop-filter: blur(${blur}px) saturate(160%) !important;
+  backdrop-filter: blur(${blur}px) saturate(160%) !important;
 }
 ${prefixed('html[data-dshbg-on]', blocks.flatMap((b) => [`${b} [class*="_bannerWrap"]`]))} {
   background-color: color-mix(in srgb, var(--dshbg-raw-base) ${bannerFill}%, transparent) !important;
   box-shadow:
     inset 0 1px 0 0 rgb(255 255 255 / 0.10),
     inset 0 -1px 0 0 rgb(0 0 0 / 0.22) !important;
-  ${frost(bannerBlur, 160)}
+  -webkit-backdrop-filter: blur(${bannerBlur}px) saturate(160%) !important;
+  backdrop-filter: blur(${bannerBlur}px) saturate(160%) !important;
 }
 ${prefixed('html[data-dshbg-on]', [inlineCode])} {
 ${glassChip(blur)}
@@ -1197,7 +1184,8 @@ ${glassChip(blur)}
 ${prefixed('html[data-dshbg-on]', ['[data-composer-card]'])} {
   position: relative !important;
   background-color: color-mix(in srgb, var(--dshbg-raw-base) ${fill}%, transparent) !important;
-  ${frost(blur, 160)}
+  -webkit-backdrop-filter: blur(${blur}px) saturate(160%) !important;
+  backdrop-filter: blur(${blur}px) saturate(160%) !important;
   border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent) !important;
   box-shadow:
     inset 0 1px 0 0 rgb(255 255 255 / 0.10),
@@ -1238,7 +1226,8 @@ ${prefixed('html[data-dshbg-on][data-dshbg-menu]', ['[data-composer-card]'])} {
       return `
 ${prefixed('html[data-dshbg-on]', [`${panel}[data-sidebar-right-open]`])} {
   background: color-mix(in srgb, var(--dshbg-raw-l1) ${fill}%, transparent) !important;
-  ${frost(blur, 150)}
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
 }
 ${prefixed('html[data-dshbg-on]', [
   `${panel} [data-dockkit-host]`,
@@ -1309,7 +1298,8 @@ ${prefixed('html[data-dshbg-on]', [block])} {
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent),
     inset 0 1px 0 0 rgb(255 255 255 / 0.06) !important;
-  ${frost(radius, 150)}
+  -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
+  backdrop-filter: blur(${radius}px) saturate(150%) !important;
 }
 ${prefixed('html[data-dshbg-on]', [`${block} [class*="_list"]`])} {
   flex: 0 1 auto !important;
@@ -1764,7 +1754,8 @@ ${restores}
       return `
 ${prefixed('html[data-dshbg-on]', ['[role="dialog"][aria-modal="true"]'])} {
   background-color: color-mix(in srgb, var(--dshbg-raw-base) ${fill}%, transparent) !important;
-  ${frost(blur, 150)}
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
   border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 14%, transparent) !important;
 }
 html[data-dshbg-on] dialog::backdrop {

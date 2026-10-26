@@ -549,16 +549,6 @@ async function main() {
     'menu blur reaches the sheet without a local cap',
     (await emit({ menuBlur: 300 })).css.includes('backdrop-filter: blur(300px) saturate(150%)'),
   );
-  // 半径为 0 时必须输出 `none`，不能是 `blur(0px)`。两者看着一样，代价差一整层：
-  // `blur(0px)` 仍然是一个 filter，仍然把元素变成 backdrop root，仍然会在背后内容每帧
-  // 变化时向合成器要一次 backdrop 快照。半径为 0 时没有任何东西要糊，唯一诚实的输出是
-  // `none`。顺带它也是唯一能做隔离测试的档位：两条模糊滑杆拖到 0，全窗口就一次快照都不剩。
-  const noMenuBlur = await emit({ menuBlur: 0 });
-  check('a zero menu radius emits none', noMenuBlur.css.includes('backdrop-filter: none'));
-  check('a zero menu radius never emits blur(0px)', !noMenuBlur.css.includes('blur(0px)'));
-  const noPaneBlur = await emit({ glassBlur: 0 });
-  check('a zero pane radius emits none', noPaneBlur.css.includes('backdrop-filter: none'));
-  check('a zero pane radius never emits blur(0px)', !noPaneBlur.css.includes('blur(0px)'));
   // 悬停卡和 tooltip 是「反色表面」：宿主的 --dsw-hovercard-bg 写死 #2C2C2E，字色写死
   // #fff / #cfd3d6，两套主题都是深的。所以不能转浅色玻璃（白字会糊掉），只能做
   // 「深色玻璃」——保留宿主自己的颜色、只把 alpha 拿掉，再用 backdrop-filter 磨平背后。
