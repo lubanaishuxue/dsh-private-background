@@ -319,31 +319,46 @@ async function main() {
   check('inline code chip drops the drop shadow', !/\[class\*="_markdown_"\] :not\(pre\) > code \{[^}]*0 10px 30px/.test(glass.css));
   check('blur comes from the glass slider', glass.css.includes('blur(14px) saturate(160%)'));
   check('edge highlight is present', glass.css.includes('inset 0 1px 0 0 rgb(255 255 255 / 0.10)'));
-  // The `pre` and the banner's inner row paint the block's own colour on top; without
-  // clearing them the pane is only frosted around an opaque core.
+  // The `pre` and the `_banner` row paint the block's own colour on top; without clearing
+  // them the pane is only frosted around an opaque core.
   check('code block pre is cleared', /\[class\*="_block_"\]\:has\(\[data-code-block-banner\]\) pre/.test(glass.css));
-  // 注意：这里说的是 `_banner` 那一**行**（语言标签 + 复制按钮），不是 `_bannerWrap`
-  // 那个 sticky 的壳。壳必须留底色，行必须让出去，两者不能一起清。
   check(
     'the banner row itself is cleared',
     /\[class\*="_banner"\],[\s\S]{0,300}?\{\s*background: transparent !important/.test(glass.css),
   );
-  // 表头是**盖子**，不是窗口。宿主给它 `position: sticky; top: 0`，代码会从它下面滑过去，
-  // 所以它必须有自己的底色。2.43.0 及以前把它跟 `pre` 一起清成 transparent，滚动时两行
-  // 代码就叠在语言标签和复制按钮上 —— 看起来像 sticky 坏了，其实是表头透明了。
-  const bannerFill = Number(
-    (glass.css.match(
+  // 表头是**盖子**，不是窗口：宿主给它 `position: sticky; top: 0`，代码会从它下面滑过去。
+  // 它借的是**对话框的材料**（composerSurface + menuBlur），不自己另立一套数字 ——
+  // 这样两处玻璃不会分家，用户调一次两个一起动。
+  //
+  // 真正遮住代码的是**模糊**不是填充：50% 时文字仍然清晰，`blur(50px)` 才让它消失。
+  // 所以「填充要多黑」这个问法本身是错的，别再去调一个更大的填充值。
+  const bannerRule = (css) => {
+    const fill = css.match(
       /\[class\*="_bannerWrap"\] \{\s*background-color: color-mix\(in srgb, var\(--dshbg-raw-base\) (\d+)%/,
+    );
+    const blur = css.match(/\[class\*="_bannerWrap"\] \{[\s\S]{0,600}?backdrop-filter: blur\((\d+)px\)/);
+    return { fill: Number(fill && fill[1]), blur: Number(blur && blur[1]) };
+  };
+  const bannerDefault = bannerRule(glass.css);
+  check('the banner stays a lid, not a window', bannerDefault.fill > 0 && bannerDefault.blur > 0);
+  // 真正的性质是「跟对话框是同一个值」，不是「等于某个数字」—— 所以从同一张样式表里
+  // 把对话框自己的两个值读出来比对。写死 50/50 的话，用户一调滑杆这条就失去意义了。
+  const composerFill = Number(
+    (glass.css.match(
+      /\[data-composer-card\] \{\s*position: relative !important;\s*background-color: color-mix\(in srgb, var\(--dshbg-raw-base\) (\d+)%/,
     ) || [])[1],
   );
-  check('the banner stays a lid, not a window', bannerFill > 0);
-  // 86 是「盖得住」的线，不是随手抄的：实测 60% 和 72% 滚动时仍有代码残影。而
-  // PANE_FILL 是 22 —— 一个是壁纸上的面板，一个是压着滚动内容的盖子，两者不能合并，
-  // 所以这里钉住「明显比面板重」，而不是钉住具体数字。
-  check('the banner fill is far heavier than the pane fill', bannerFill >= 80);
+  const composerBlur = Number(
+    (glass.css.match(/\[data-composer-card\] \{[\s\S]{0,600}?backdrop-filter: blur\((\d+)px\)/) || [])[1],
+  );
+  check('the banner reads the composer fill', composerFill > 0 && bannerDefault.fill === composerFill);
+  check('the banner reads the composer blur', composerBlur > 0 && bannerDefault.blur === composerBlur);
+  const bannerTuned = bannerRule(
+    (await emit({ composerStyle: 'glass', composerSurface: 72, menuBlur: 24 })).css,
+  );
   check(
-    'the banner keeps its own blur, so code under it dissolves',
-    /\[class\*="_bannerWrap"\] \{[\s\S]{0,500}?backdrop-filter: blur\(\d+px\)/.test(glass.css),
+    'the banner follows those sliders instead of a constant',
+    bannerTuned.fill === 72 && bannerTuned.blur === 24,
   );
   check(
     'the banner is never left transparent',

@@ -732,32 +732,6 @@ html[data-dshbg-on] [data-composer-card] {
     }
 
     /**
-     * The code-block banner's fill - the one pane in the transcript that has to *hide*
-     * something.
-     *
-     * Every other surface here can afford to be nearly clear (`PANE_FILL` is 22%) because
-     * wallpaper is all that is ever behind it. The banner is the exception: the host gives
-     * it `position: sticky; top: 0; z-index: 6`, so when the transcript scrolls, lines of
-     * code pass *underneath* it. An earlier version cleared its background along with the
-     * rest of the block, and the result was code showing straight through the header - two
-     * lines of text overlapping, which reads as "the sticky is broken" rather than as glass.
-     *
-     * So this number is set by what has to stay hidden, not by taste. 86% keeps the bar
-     * tinted by the wallpaper (it is not a solid slab) while light-on-dark code sliding
-     * under it lands within ~20 levels of the bar's own brightness, i.e. gone. The paired
-     * `backdrop-filter` finishes the job: 13px monospace at `blur(20px)` is no longer text,
-     * it is a smudge, so the remaining 14% of see-through has nothing legible left in it.
-     *
-     * Do not "tidy" this down to `PANE_FILL`. The two look like the same kind of surface and
-     * are not: one is a pane on wallpaper, the other is a lid on moving content.
-     */
-    const BANNER_FILL = 86;
-
-    function bannerFill() {
-      return `color-mix(in srgb, var(--dshbg-raw-base) ${BANNER_FILL}%, transparent)`;
-    }
-
-    /**
      * The frosted-pane recipe, shared by every surface that gets the liquid-glass look.
      *
      * The wallpaper is already blurred at the `html::before` layer, so the pane's own
@@ -1061,16 +1035,20 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
      *   earlier version never touched, because it only cleared `_bannerWrap`. Clearing the
      *   two custom properties on the wrapper handles all three at once, since both are
      *   inherited and every one of those rules reads them through `var()`. The explicit
-     *   transparent rules stay as a belt-and-braces for `pre` and `_banner`, which paint
-     *   their own backgrounds.
+     *   transparent rules stay as a belt-and-braces for `pre` and the `_banner` row, which
+     *   paint their own backgrounds.
      *
-     *   **`_bannerWrap` is the one that must not go transparent.** In the host sheet it is
-     *   `position: sticky; top: 0; z-index: 6` and paints `var(--dsw-alias-bg-base)` - the
-     *   host wrote it as a *lid* for the code that scrolls underneath. Clearing it, which is
-     *   what every version up to 2.43.0 did, turned that lid into a window: two lines of
-     *   code ended up overlapping the language label and the copy button, and the header
-     *   read as "sticky is broken" rather than as transparent. It now gets `bannerFill()`
-     *   and its own blur - see `BANNER_FILL` for why the number is 86 and not `PANE_FILL`.
+     *   **`_bannerWrap` is the exception, and it is the opposite of everything above.** The
+     *   host makes it `position: sticky; top: 0; z-index: 6` and paints it with
+     *   `var(--dsw-alias-bg-base)` - it is a *lid* for the code scrolling underneath, not a
+     *   surface on wallpaper. Clearing it (which every version up to 2.44.0 did) turned the
+     *   lid into a window: two lines of code ended up overlapping the language label and the
+     *   copy button, which reads as "the sticky is broken". It now takes the composer's
+     *   material instead - see `bannerFill` / `bannerBlur` at the top of this function.
+     *
+     *   Note the near-miss: `[class*="_banner"]` matches `_bannerWrap` **and** `_banner`, so
+     *   a rule written for the row silently hits the lid too. The two need separate rules,
+     *   in this order.
      * - Attachment chips are `cJsG2q_fileCard` - hash first, then the local name, so
      *   `[class*="_fileCard"]` is the stable half.
      * - Deliverable cards are `flL80G_file`, and they paint `var(--deliverable-fill)` - a
@@ -1087,10 +1065,22 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
      */
     function transcriptGlassCss(settings) {
       const blur = clamp(settings.glassBlur, 0, 40);
-      // The banner is a lid, so it gets its own blur: enough to dissolve 13px monospace
-      // sliding underneath, floored at 12 so a user who turned the glass blur down still
-      // gets a bar that hides rather than a bar that shows through.
-      const bannerBlur = clamp(Math.round(blur * 0.6), 12, 24);
+      // The banner borrows the *composer's* material rather than inventing its own number.
+      // Two reasons, and the second one is the interesting one:
+      //
+      //  1. It is the same kind of surface in the user's eye - a frosted strip you read
+      //     through - so it should read as the same material, not as a second dialect of
+      //     glass sitting 200px above the input box.
+      //  2. The host gives `_bannerWrap` `position: sticky; top: 0; z-index: 6`, so lines of
+      //     code pass *underneath* it. What hides them is the blur, not the fill: at 50% fill
+      //     the code is still plainly readable, and at `blur(50px)` it is gone. A number
+      //     tuned by "how dark does the bar look" would have missed that entirely - the
+      //     earlier 86%-fill version hid the code by making the bar almost solid, which is
+      //     exactly what the user rejected.
+      //
+      // Same defaults as `composerGlassCss`, so the two cannot drift apart.
+      const bannerFill = clamp(settings.composerSurface === undefined ? 85 : settings.composerSurface, 0, 100);
+      const bannerBlur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
       // A comma inside one item would leave its tail unprefixed, so these stay separate
       // entries and are spread into every rule that needs them.
       const blocks = [`[class*="_block_"]:has([data-code-block-banner])`, `.md-code-block`];
@@ -1141,13 +1131,12 @@ ${prefixed('html[data-dshbg-on]',
   background: transparent !important;
 }
 ${prefixed('html[data-dshbg-on]', blocks.flatMap((b) => [`${b} [class*="_bannerWrap"]`]))} {
-  background-color: ${bannerFill()} !important;
+  background-color: color-mix(in srgb, var(--dshbg-raw-base) ${bannerFill}%, transparent) !important;
   box-shadow:
     inset 0 1px 0 0 rgb(255 255 255 / 0.10),
-    inset 0 -1px 0 0 rgb(0 0 0 / 0.22),
-    0 2px 10px -4px rgb(0 0 0 / 0.55) !important;
-  -webkit-backdrop-filter: blur(${bannerBlur}px) saturate(150%) !important;
-  backdrop-filter: blur(${bannerBlur}px) saturate(150%) !important;
+    inset 0 -1px 0 0 rgb(0 0 0 / 0.22) !important;
+  -webkit-backdrop-filter: blur(${bannerBlur}px) saturate(160%) !important;
+  backdrop-filter: blur(${bannerBlur}px) saturate(160%) !important;
 }
 ${prefixed('html[data-dshbg-on]', [inlineCode])} {
 ${glassChip(blur)}
