@@ -366,10 +366,12 @@ async function main() {
   );
   // 表头不在的时候（无语言围栏、流式未完成、轨迹与预览渲染器）`:has()` 那半不匹配，
   // 代码块就一点底色都没有、把壁纸直接透出来 —— 所以 `.md-code-block` 必须单独兜一层。
+  // 测的是「那条规则里有玻璃填充」，不是「它在列表的第几个位置」—— `.md-code-block`
+  // 从逗号列表中间挪到单独一条规则时，位置变了但性质没变。
+  const mdBlockRule = glass.css.match(/html\[data-dshbg-on\] \.md-code-block[^{]*\{([\s\S]{0,900}?)\}/);
   check(
     'banner-less code blocks still get the glass',
-    /html\[data-dshbg-on\] \.md-code-block,\n/.test(glass.css) &&
-      /html\[data-dshbg-on\] \.md-code-block,[\s\S]{0,2000}?background-color: color-mix/.test(glass.css),
+    !!mdBlockRule && mdBlockRule[1].includes('background-color: color-mix'),
   );
   // Two competing routes to the same surface would fight; glass paints directly.
   // The frame-level remix still emits the token, so assert on the card rule specifically.

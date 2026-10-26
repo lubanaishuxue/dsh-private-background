@@ -745,14 +745,22 @@ html[data-dshbg-on] [data-composer-card] {
      * the `/` command menu, which is why `composerGlassCss` hand-rolls the pane instead of
      * calling this. The rule of thumb: leaves are fine, containers that own popovers are
      * not.
+     *
+     * `withBlur: false` gives the shell without the `backdrop-filter`. It exists for the
+     * code block, which has a sticky banner *inside* it: a backdrop root there blinds the
+     * banner (see `transcriptGlassCss`), so the block takes the shell and the `pre` inside
+     * it takes the blur. Do not use this flag to "simplify" anything else - a pane without
+     * its own blur is just a tinted rectangle.
      */
-    function glassPane(blur) {
-      return `  background-color: ${paneFill()} !important;
+    function glassPane(blur, withBlur = true) {
+      const shell = `  background-color: ${paneFill()} !important;
   border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent) !important;
   box-shadow:
     inset 0 1px 0 0 rgb(255 255 255 / 0.10),
     inset 0 -1px 0 0 rgb(0 0 0 / 0.10),
-    0 10px 30px -14px rgb(0 0 0 / 0.55) !important;
+    0 10px 30px -14px rgb(0 0 0 / 0.55) !important;`;
+      if (!withBlur) return shell;
+      return `${shell}
   -webkit-backdrop-filter: blur(${blur}px) saturate(160%) !important;
   backdrop-filter: blur(${blur}px) saturate(160%) !important;`;
     }
@@ -1114,7 +1122,7 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
       // those two custom properties are stood down (which also kills the static hover tint).
       const changed = '[data-changed-files]';
       return `
-${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, ...blocks, ...bubble, changed])} {
+${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, ...bubble, changed])} {
 ${glassPane(blur)}
 }
 ${prefixed('html[data-dshbg-on]', [changed])} {
@@ -1124,11 +1132,17 @@ ${prefixed('html[data-dshbg-on]', [changed])} {
 ${prefixed('html[data-dshbg-on]', blocks)} {
   --dsl-code-block-background: transparent !important;
   --dsl-code-block-banner-background-color: transparent !important;
+${glassPane(blur, false)}
 }
 ${prefixed('html[data-dshbg-on]',
-  blocks.flatMap((b) => [`${b} [class*="_banner"]`, `${b} pre`]),
+  blocks.flatMap((b) => [`${b} [class*="_banner"]`]),
 )} {
   background: transparent !important;
+}
+${prefixed('html[data-dshbg-on]', blocks.flatMap((b) => [`${b} pre`]))} {
+  background: transparent !important;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(160%) !important;
+  backdrop-filter: blur(${blur}px) saturate(160%) !important;
 }
 ${prefixed('html[data-dshbg-on]', blocks.flatMap((b) => [`${b} [class*="_bannerWrap"]`]))} {
   background-color: color-mix(in srgb, var(--dshbg-raw-base) ${bannerFill}%, transparent) !important;
