@@ -386,6 +386,13 @@ async function main() {
   check('file cards stay glass in solid mode', /\[class\*="_fileCard"\][^{]*\{[^}]*backdrop-filter/.test(base.css));
   check('code blocks stay glass in solid mode', /\[class\*="_block_"\][^{]*\{[^}]*backdrop-filter/.test(base.css));
   check('inline code stays glass in solid mode', /\[class\*="_markdown_"\][^{]*\{[^}]*backdrop-filter/.test(base.css));
+  // 描边一律用 inset 阴影，**不许用真的 border**。
+  // 宿主没给这些盒子写 box-sizing: border-box（侧栏的行是 content-box），所以加 1px
+  // border 会把盒子撑宽 2px。在内容列里 2px 就是一条横向滚动条，而横向滚动条一出现
+  // 又会让竖向滚动条的高度预算变化 —— 两条滚动条互相喂饭，就是你看到的「两个东西
+  // 各自在闪、节奏还错开」。这条断言是全局的：配方里一次 border 都不许有。
+  check('no pane grows itself with a real border', !/border: 1px solid/.test(base.css));
+  check('the pane ring is an inset shadow', /inset 0 0 0 1px color-mix\(in srgb, var\(--dshbg-raw-label-0\) 16%/.test(base.css));
   // 用户消息气泡画 --dsw-specific-bubble，同样不在重混列表里。它属于转写区内容，
   // 所以跟着文件卡/代码块一起常开，而不是跟输入框的开关。
   check('user bubble becomes a pane', base.css.includes('[data-chat-flow-kind="user"] [class*="_bubble"]'));

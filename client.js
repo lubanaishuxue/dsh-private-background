@@ -754,10 +754,10 @@ html[data-dshbg-on] [data-composer-card] {
      */
     function glassPane(blur, withBlur = true) {
       const shell = `  background-color: ${paneFill()} !important;
-  border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent) !important;
   box-shadow:
     inset 0 1px 0 0 rgb(255 255 255 / 0.10),
     inset 0 -1px 0 0 rgb(0 0 0 / 0.10),
+    inset 0 0 0 1px color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent),
     0 10px 30px -14px rgb(0 0 0 / 0.55) !important;`;
       if (!withBlur) return shell;
       return `${shell}
@@ -811,9 +811,9 @@ html[data-dshbg-on] [data-composer-card] {
     function glassFloat(blur) {
       const radius = Math.min(blur, 16);
       return `  background-color: color-mix(in srgb, var(--dshbg-raw-l2) 58%, transparent) !important;
-  border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent) !important;
   box-shadow:
     inset 0 1px 0 0 rgb(255 255 255 / 0.10),
+    inset 0 0 0 1px color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent),
     0 10px 30px -14px rgb(0 0 0 / 0.55) !important;
   -webkit-backdrop-filter: blur(${radius}px) saturate(160%) !important;
   backdrop-filter: blur(${radius}px) saturate(160%) !important;`;
@@ -1186,9 +1186,9 @@ ${prefixed('html[data-dshbg-on]', ['[data-composer-card]'])} {
   background-color: color-mix(in srgb, var(--dshbg-raw-base) ${fill}%, transparent) !important;
   -webkit-backdrop-filter: blur(${blur}px) saturate(160%) !important;
   backdrop-filter: blur(${blur}px) saturate(160%) !important;
-  border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent) !important;
   box-shadow:
     inset 0 1px 0 0 rgb(255 255 255 / 0.10),
+    inset 0 0 0 1px color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent),
     0 10px 30px -14px rgb(0 0 0 / 0.55) !important;
 }
 ${prefixed('html[data-dshbg-on][data-dshbg-menu]', ['[data-composer-card]'])} {
@@ -1756,7 +1756,7 @@ ${prefixed('html[data-dshbg-on]', ['[role="dialog"][aria-modal="true"]'])} {
   background-color: color-mix(in srgb, var(--dshbg-raw-base) ${fill}%, transparent) !important;
   -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
   backdrop-filter: blur(${blur}px) saturate(150%) !important;
-  border: 1px solid color-mix(in srgb, var(--dshbg-raw-label-0) 14%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dshbg-raw-label-0) 14%, transparent) !important;
 }
 html[data-dshbg-on] dialog::backdrop {
   background: rgb(0 0 0 / 26%) !important;
@@ -3115,6 +3115,38 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       return `${dialog.tagName}/${style.backgroundColor}/bf:${style.backdropFilter || '-'}/父:${parent === null ? '-' : `${parent.tagName}/${parentStyle.backgroundColor}`}`;
     }
 
+    /**
+     * Every element whose content is wider than its own box - i.e. who is feeding a
+     * horizontal scrollbar.
+     *
+     * This exists because of a report that "a horizontal scrollbar at the bottom flickers
+     * too, out of step with the content". Two things blinking out of phase is the signature
+     * of two scrollbars feeding each other: the horizontal one takes height, which changes
+     * the vertical one's budget, which takes width, which changes the horizontal one's.
+     * That loop can only start if something is genuinely wider than its box, and the usual
+     * suspect is a pane that grew itself - a real `border` on a content-box element adds
+     * 2px, and 2px is enough.
+     *
+     * Reading it from the dock beats guessing: it names the class, so the next change is
+     * aimed instead of hopeful.
+     */
+    function overflowProbe() {
+      const offenders = [];
+      for (const element of document.querySelectorAll('#root *, body > *')) {
+        const over = element.scrollWidth - element.clientWidth;
+        if (over <= 0 || element.clientWidth === 0) continue;
+        const tag = element.tagName.toLowerCase();
+        // `getAttribute`, not `.className`: on SVG nodes that property is an
+        // `SVGAnimatedString` and stringifying it yields "[object SVGAnimatedString]".
+        const raw = element.getAttribute('class') || '';
+        const cls = raw.trim().split(/\s+/).slice(0, 2).join('.');
+        offenders.push({ over, label: `${tag}${cls === '' ? '' : `.${cls}`}` });
+      }
+      if (offenders.length === 0) return '(无)';
+      offenders.sort((a, b) => b.over - a.over);
+      return offenders.slice(0, 3).map((o) => `${o.label} +${o.over}`).join(' · ');
+    }
+
     /** What the browser actually computed. Read only, refreshed while the card is open. */
     function probeSurface() {
       try {
@@ -3133,6 +3165,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
           mixed: getComputedStyle(scope).getPropertyValue('--dsw-alias-bg-base').trim() || '(空)',
           composer: cardStyle === null ? '(无输入框)' : `${cardStyle.backgroundColor} / ${cardStyle.backdropFilter || '-'}`,
           cost: costSurface(),
+          overflow: overflowProbe(),
           sheet: sheet === null ? '(无样式表)' : `${Math.round(sheet.textContent.length / 1024)} KB`,
         };
       } catch (failure) {
