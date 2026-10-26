@@ -1021,6 +1021,13 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
      *   that same div, which is the one non-hashed hook in the whole transcript, but it only
      *   carries a margin, so the hashed prefix is still what has to be matched.
      *
+     *   **The banner is not always there.** When it is missing - a fenced block with no
+     *   language, a block still streaming in, the trajectory/preview renderers - the
+     *   `:has()` half fails and that block keeps painting nothing at all, which shows the
+     *   wallpaper through the code as a bare gradient. So `.md-code-block` is matched
+     *   directly as a second alternative: it is on every one of these wrappers, banner or
+     *   not, and it is stable across rebuilds.
+     *
      *   Three things paint the block's colour, and clearing two of them is what left the
      *   header bar solid: `_block` paints `var(--dsl-code-block-background)`, `pre` paints
      *   the same variable (with `!important` for shiki), and `_banner` paints
@@ -1046,7 +1053,9 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
      */
     function transcriptGlassCss(settings) {
       const blur = clamp(settings.glassBlur, 0, 40);
-      const block = `[class*="_block_"]:has([data-code-block-banner])`;
+      // A comma inside one item would leave its tail unprefixed, so these stay separate
+            // entries and are spread into every rule that needs them.
+            const blocks = [`[class*="_block_"]:has([data-code-block-banner])`, `.md-code-block`];
       const inlineCode = `[class*="_markdown_"] :not(pre) > code`;
       // The user's own message. `_bubble` paints `--dsw-specific-bubble`, another token
       // that is not in the remix list, so it stays the theme's opaque grey no matter what
@@ -1077,22 +1086,20 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
       // those two custom properties are stood down (which also kills the static hover tint).
       const changed = '[data-changed-files]';
       return `
-${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, block, ...bubble, changed])} {
+${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, ...blocks, ...bubble, changed])} {
 ${glassPane(blur)}
 }
 ${prefixed('html[data-dshbg-on]', [changed])} {
   --changes-fill: transparent !important;
   --changes-hover: color-mix(in srgb, var(--dshbg-raw-label-0) 8%, transparent) !important;
 }
-${prefixed('html[data-dshbg-on]', [block])} {
+${prefixed('html[data-dshbg-on]', blocks)} {
   --dsl-code-block-background: transparent !important;
   --dsl-code-block-banner-background-color: transparent !important;
 }
-${prefixed('html[data-dshbg-on]', [
-  `${block} [class*="_bannerWrap"]`,
-  `${block} [class*="_banner"]`,
-  `${block} pre`,
-])} {
+${prefixed('html[data-dshbg-on]',
+  blocks.flatMap((b) => [`${b} [class*="_bannerWrap"]`, `${b} [class*="_banner"]`, `${b} pre`]),
+)} {
   background: transparent !important;
 }
 ${prefixed('html[data-dshbg-on]', [inlineCode])} {
