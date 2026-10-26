@@ -393,6 +393,25 @@ async function main() {
   // 各自在闪、节奏还错开」。这条断言是全局的：配方里一次 border 都不许有。
   check('no pane grows itself with a real border', !/border: 1px solid/.test(base.css));
   check('the pane ring is an inset shadow', /inset 0 0 0 1px color-mix\(in srgb, var\(--dshbg-raw-label-0\) 16%/.test(base.css));
+  // 排查开关：一次点掉本插件写的每一个模糊。它是「还闪不闪」这个问题的唯一干净答案 ——
+  // 滑杆够不到所有声明，而 blur(0px) 本身仍然是一个 backdrop root，所以「我设成 0 了」
+  // 和「它真的关了」是两件事。
+  check('the kill switch is off by default', !base.css.includes('data-dshbg-flat'));
+  const flatCss = (await emit({ flat: true })).css;
+  check(
+    'the kill switch removes every backdrop filter',
+    /\[data-dshbg-flat\] \*[\s\S]{0,200}?backdrop-filter: none !important/.test(flatCss),
+  );
+  check(
+    'the kill switch also drops the wallpaper blur',
+    /\[data-dshbg-flat\]::before \{\s*filter: none !important/.test(flatCss),
+  );
+  // 必须排在最后：它靠的是「更晚 + 更高特异性」压过上面所有配方，而不是让每个配方
+  // 都长一个 if。
+  check(
+    'the kill switch is written after every recipe',
+    flatCss.lastIndexOf('data-dshbg-flat') > flatCss.lastIndexOf('dialog::backdrop'),
+  );
   // 用户消息气泡画 --dsw-specific-bubble，同样不在重混列表里。它属于转写区内容，
   // 所以跟着文件卡/代码块一起常开，而不是跟输入框的开关。
   check('user bubble becomes a pane', base.css.includes('[data-chat-flow-kind="user"] [class*="_bubble"]'));
@@ -905,23 +924,8 @@ async function main() {
   check('changed-files card becomes a pane', /\[data-changed-files\][^{]*\{[^}]*backdrop-filter/.test(base.css));
   check('changed-files header stops painting black', /\[data-changed-files\] \{[^}]*--changes-fill: transparent/.test(base.css));
   // 「弹窗还是黑的」有一半算在遮罩身上：把背后压到 0.52 再叠深色玻璃，合成出来就是黑。
-  // 现在几乎不再压暗（0.95），玻璃才有东西可透。
-  check(
-    'an open dialog pushes the app back without crushing it to black',
-    /:has\(\[role="dialog"\]\[aria-modal="true"\]\) #root[\s\S]{0,120}?filter: brightness\(0\.95\)/.test(
-      base.css,
-    ),
-  );
-  // 这里必须**没有** blur。#root 是整个应用，在它身上加 filter 等于每帧把整窗重算一遍；
-  // 流式输出时那就是每帧一次，GPU 再被本地模型占着就丢帧。而且壁纸在 html::before 已经糊过
-  // 一次，再糊一次只是把糊了的东西再糊一遍，什么也没买到。
-  // 以前这里是 min(10, max(4, menuBlur/12))，滑杆拖到 0 仍然输出 blur(4px) —— 所以
-  // 「是不是模糊引起的」那个测试永远测不出结论。
-  check(
-    'the app behind a dialog is never blurred',
-    !/:has\(\[role="dialog"\]\[aria-modal="true"\]\) #root[\s\S]{0,160}?filter:[^;]*blur\(/.test(base.css) &&
-      !/#root[\s\S]{0,80}?filter: blur\(/.test(base.css),
-  );
+  // 现在几乎不再压暗，玻璃才有东西可透。
+  check('the app behind a dialog is never filtered', !/#root[^{}]*\{[^}]*filter:/.test(base.css));
   check(
     'the dialog scrim never blurs the window',
     !/dialog::backdrop \{[^}]*backdrop-filter/.test(base.css),

@@ -73,6 +73,14 @@ window.__ModuleLoader__.load({
       // plugin page so the card can be put away once the numbers are settled, without
       // having to delete code.
       showDock: true,
+      // DIAGNOSTIC. Kills every `filter` / `backdrop-filter` this plugin writes, in one
+      // click. It exists because "is the blur causing it?" is otherwise almost impossible
+      // to answer: the sliders do not reach every declaration, and `blur(0px)` is still a
+      // backdrop root, so "I set it to 0" and "it is really off" are different states.
+      // With this on there is not a single backdrop snapshot left in the sheet, so a
+      // flicker that survives it is not a blur problem. Nothing else changes - fills,
+      // radii and borders all stay, so the window still looks like the plugin.
+      flat: false,
       fullWindow: false,
       font: 'theme',
       fontColor: '#f7f8fa',
@@ -277,6 +285,7 @@ window.__ModuleLoader__.load({
         menuBlur: clamp(parsed.menuBlur === undefined ? fallback.menuBlur : parsed.menuBlur, 0, 320),
         sidebarFill: clamp(parsed.sidebarFill === undefined ? fallback.sidebarFill : parsed.sidebarFill, 0, 100),
         showDock: parsed.showDock !== false,
+        flat: parsed.flat === true,
         fullWindow: parsed.fullWindow === true,
         font: fonts.includes(parsed.font) ? parsed.font : fallback.font,
         fontColor:
@@ -1765,42 +1774,37 @@ html[data-dshbg-on] dialog::backdrop {
     }
 
     /**
-     * Everything except an open dialog is pushed back.
+     * The title strip is pushed back while a dialog is open.
      *
      * A dialog is the only thing that should be in focus; the app behind it is context, and
      * over a wallpaper that context stays as bright as the dialog itself unless something
-     * pushes it down. The brightness goes on `#root`, not on `body > *`: the dialogs are
-     * siblings of `#root`, so this de-emphasises the app *without* touching the dialog.
-     * `dialog[open]` catches native `<dialog>`s (the cost meter's), the attribute selector
-     * catches the host's own modals.
+     * pushes it down. `dialog[open]` catches native `<dialog>`s (the cost meter's), the
+     * attribute selector catches the host's own modals.
      *
-     * **There is no `blur()` here, and it must not come back.** `#root` is the whole
-     * application. A `filter` on it is re-evaluated over the entire window on every frame
-     * the app repaints - during a fast stream that is every frame - and on a machine whose
-     * GPU is busy generating, that is how frames get dropped. It also creates a containing
-     * block, which silently breaks `position: fixed` descendants.
+     * **This rule used to sit on `#root` as `filter: blur() brightness()`, and that must not
+     * come back.** The blur was `min(10, max(4, menuBlur / 12))`, so at a slider value of 0
+     * it still emitted `blur(4px)` - which is why a "does the blur cause the flicker?" test
+     * could come back inconclusive no matter what the user did. The brightness went too: a
+     * 5% dim is not worth a full-window render surface.
      *
-     * It bought nothing to begin with: the wallpaper is already blurred at the `html::before`
-     * layer, so a blur over it just re-blurs a blur. The brightness and the scrim are what
-     * actually push the background back - which is the project's own rule anyway, "frost
-     * belongs to panels that must stay readable, not to the background".
+     * **Nothing here touches `#root` any more, and nothing may.** `#root` is the whole
+     * application: a `filter` on it turns it into a single render surface that has to be
+     * re-rastered over the full window on every frame anything inside it changes - during a
+     * fast stream, every frame. It also creates a containing block, which silently breaks
+     * `position: fixed` descendants. Both costs are paid for a 5% dim that the host's own
+     * scrim already does. The project's rule is the same one that settled this: frost and
+     * filters belong to panels that must stay readable, not to the background.
      *
-     * The radius used to be `min(10, max(4, menuBlur / 12))`, which means the blur sliders
-     * could never turn it off: at 0 it still emitted `blur(4px)`. That is worth remembering
-     * the next time a "does the blur cause it?" test comes back inconclusive.
-     *
-     * **The title strip has to be pushed back too, and separately.** The host's scrim is
+     * **The title strip still has to be pushed back, and separately.** The host's scrim is
      * positioned `inset: var(--dsh-frame-chrome-top) 0 0` on purpose - it must not dim the
-     * Windows caption buttons - so the strip sits *outside* it. Without the second rule the
-     * strip keeps full brightness while everything under it dims, and that step is exactly
-     * the "dividing line" that reappears the moment a dialog opens.
+     * Windows caption buttons - so the strip sits *outside* it. Without this rule the strip
+     * keeps full brightness while everything under it dims, and that step is exactly the
+     * "dividing line" that reappears the moment a dialog opens. An inset shadow over a
+     * pseudo-element is cheap: it is a paint, not a filter pass, and it never re-rasters the
+     * window.
      */
     function modalCss(settings) {
       return `
-html[data-dshbg-on]:has([role="dialog"][aria-modal="true"]) #root,
-html[data-dshbg-on]:has(dialog[open]) #root {
-  filter: brightness(0.95) !important;
-}
 html[data-dshbg-on]:has([role="dialog"][aria-modal="true"]) ${frameSelector()}::before,
 html[data-dshbg-on]:has(dialog[open]) ${frameSelector()}::before {
   box-shadow: inset 0 0 0 100vmax var(--dsw-alias-bg-mask-1, rgb(0 0 0 / 46%)) !important;
@@ -1852,6 +1856,33 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
 `;
     }
 
+    /**
+     * The diagnostic kill switch: every blur this plugin writes, off at once.
+     *
+     * Not a product setting. It is how a "it still flickers" report gets turned into a fact:
+     * with this on there is no backdrop snapshot and no `filter` pass left anywhere in the
+     * sheet, so a flicker that survives it cannot be blamed on the compositing cost of the
+     * glass. Everything else - fills, radii, rings, colours - stays, so the window still
+     * reads as the plugin and the comparison is about the blur alone.
+     *
+     * It is written last and scoped to a second attribute, so it wins on specificity
+     * against every recipe above without any of them having to know it exists.
+     */
+    function flatCss(settings) {
+      if (settings.flat !== true) return '';
+      return `
+html[data-dshbg-on][data-dshbg-flat] *,
+html[data-dshbg-on][data-dshbg-flat] *::before,
+html[data-dshbg-on][data-dshbg-flat] *::after {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+html[data-dshbg-on][data-dshbg-flat]::before {
+  filter: none !important;
+}
+`;
+    }
+
     function buildCss(settings, activeImage, tone) {
       const value = backgroundValue(settings, activeImage);
       if (value === null) return '';
@@ -1879,6 +1910,8 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         menuGlassCss(settings),
         dialogCss(settings),
         modalCss(settings),
+        // Absolutely last: the diagnostic switch has to beat every recipe above.
+        flatCss(settings),
       ].join('');
     }
 
@@ -2353,6 +2386,10 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         const root = document.documentElement;
         if (on) root.setAttribute('data-dshbg-on', '');
         else root.removeAttribute('data-dshbg-on');
+        // The diagnostic switch rides on its own attribute so the kill-switch rules can be
+        // written without every recipe having to know about it.
+        if (on && settings.flat === true) root.setAttribute('data-dshbg-flat', '');
+        else root.removeAttribute('data-dshbg-flat');
         // Replacing a `<style>` element's text replaces every rule in it, which restarts
         // every CSS animation the sheet defines - including the title marquee. `paint()` is
         // called on each store commit, so writing an identical sheet would reset the scroll
@@ -2411,6 +2448,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
             composerMenu.dispose();
             tag.remove();
             document.documentElement.removeAttribute('data-dshbg-on');
+            document.documentElement.removeAttribute('data-dshbg-flat');
           },
           'custom-background: stylesheet',
         );
@@ -3147,6 +3185,64 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       return offenders.slice(0, 3).map((o) => `${o.label} +${o.over}`).join(' · ');
     }
 
+    /**
+     * Frame-time sampler, so "it flickers" can be read as a number instead of argued about.
+     *
+     * `worst` is the longest gap between two animation frames in the window since the last
+     * read; `over` counts gaps longer than 50ms, i.e. frames the compositor actually missed
+     * (three 60Hz frames or more). A visible flash needs at least one missed frame, so:
+     *
+     *   worst ~16ms, over 0   -> nothing was dropped. Whatever blinked was painted, which
+     *                            makes it a DOM/state question, not a compositing one.
+     *   worst > 50ms, over >0 -> frames really were dropped. Now it is about cost, and the
+     *                            question becomes "what is expensive", which the kill switch
+     *                            answers in one click.
+     *
+     * It runs only while the tuning card is open - a permanent rAF loop would itself be a
+     * cost, and it would be measuring its own overhead.
+     */
+    function createFrameMeter() {
+      let raf = 0;
+      let last = 0;
+      let worst = 0;
+      let over = 0;
+      const tick = (now) => {
+        if (last !== 0) {
+          const gap = now - last;
+          if (gap > worst) worst = gap;
+          if (gap > 50) over += 1;
+        }
+        last = now;
+        raf = requestAnimationFrame(tick);
+      };
+      return {
+        start() {
+          if (raf !== 0 || typeof requestAnimationFrame !== 'function') return;
+          last = 0;
+          worst = 0;
+          over = 0;
+          raf = requestAnimationFrame(tick);
+        },
+        stop() {
+          if (raf === 0) return;
+          cancelAnimationFrame(raf);
+          raf = 0;
+          last = 0;
+        },
+        read() {
+          const reading = { worst: Math.round(worst), over };
+          worst = 0;
+          over = 0;
+          // Not `last = 0`: that would make the next gap read as "now - 0" and report a
+          // fake multi-second stall. Zero it and the next frame is simply skipped.
+          last = 0;
+          return reading;
+        },
+      };
+    }
+
+    const frameMeter = createFrameMeter();
+
     /** What the browser actually computed. Read only, refreshed while the card is open. */
     function probeSurface() {
       try {
@@ -3166,6 +3262,10 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
           composer: cardStyle === null ? '(无输入框)' : `${cardStyle.backgroundColor} / ${cardStyle.backdropFilter || '-'}`,
           cost: costSurface(),
           overflow: overflowProbe(),
+          frame: (() => {
+            const reading = frameMeter.read();
+            return `最差 ${reading.worst}ms · 掉帧 ${reading.over}`;
+          })(),
           sheet: sheet === null ? '(无样式表)' : `${Math.round(sheet.textContent.length / 1024)} KB`,
         };
       } catch (failure) {
@@ -3199,12 +3299,17 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       useEffect(() => {
         if (!open) {
           setProbe(null);
+          frameMeter.stop();
           return undefined;
         }
+        frameMeter.start();
         setProbe(probeSurface());
-        if (typeof setInterval !== 'function') return undefined;
+        if (typeof setInterval !== 'function') return () => frameMeter.stop();
         const timer = setInterval(() => setProbe(probeSurface()), 800);
-        return () => clearInterval(timer);
+        return () => {
+          clearInterval(timer);
+          frameMeter.stop();
+        };
       }, [open]);
 
       return h(
@@ -3269,6 +3374,18 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
                   onChange: (event) => patchSettings({ font: event.target.checked ? 'auto' : 'theme' }),
                 }),
                 h('span', null, text.dockFont),
+              ),
+              // The kill switch. Ticking it removes every blur this plugin writes, so the
+              // next "does it still flicker?" answer is about the blur alone.
+              h(
+                'label',
+                { className: 'dshbg-dock-switch' },
+                h('input', {
+                  type: 'checkbox',
+                  checked: settings.flat === true,
+                  onChange: (event) => patchSettings({ flat: event.target.checked }),
+                }),
+                h('span', null, lang === 'zh' ? '关掉所有模糊（排查用）' : 'No blur (diagnostic)'),
               ),
               h(
                 'div',
