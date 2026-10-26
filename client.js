@@ -1760,8 +1760,6 @@ ${prefixed('html[data-dshbg-on]', ['[role="dialog"][aria-modal="true"]'])} {
 }
 html[data-dshbg-on] dialog::backdrop {
   background: rgb(0 0 0 / 26%) !important;
-  -webkit-backdrop-filter: blur(6px) !important;
-  backdrop-filter: blur(6px) !important;
 }
 `;
     }
@@ -1771,10 +1769,25 @@ html[data-dshbg-on] dialog::backdrop {
      *
      * A dialog is the only thing that should be in focus; the app behind it is context, and
      * over a wallpaper that context stays as bright as the dialog itself unless something
-     * pushes it down. The blur and the brightness go on `#root`, not on `body > *`: the
-     * dialogs are siblings of `#root`, so this de-emphasises the app *without* touching the
-     * dialog. `dialog[open]` catches native `<dialog>`s (the cost meter's), the attribute
-     * selector catches the host's own modals.
+     * pushes it down. The brightness goes on `#root`, not on `body > *`: the dialogs are
+     * siblings of `#root`, so this de-emphasises the app *without* touching the dialog.
+     * `dialog[open]` catches native `<dialog>`s (the cost meter's), the attribute selector
+     * catches the host's own modals.
+     *
+     * **There is no `blur()` here, and it must not come back.** `#root` is the whole
+     * application. A `filter` on it is re-evaluated over the entire window on every frame
+     * the app repaints - during a fast stream that is every frame - and on a machine whose
+     * GPU is busy generating, that is how frames get dropped. It also creates a containing
+     * block, which silently breaks `position: fixed` descendants.
+     *
+     * It bought nothing to begin with: the wallpaper is already blurred at the `html::before`
+     * layer, so a blur over it just re-blurs a blur. The brightness and the scrim are what
+     * actually push the background back - which is the project's own rule anyway, "frost
+     * belongs to panels that must stay readable, not to the background".
+     *
+     * The radius used to be `min(10, max(4, menuBlur / 12))`, which means the blur sliders
+     * could never turn it off: at 0 it still emitted `blur(4px)`. That is worth remembering
+     * the next time a "does the blur cause it?" test comes back inconclusive.
      *
      * **The title strip has to be pushed back too, and separately.** The host's scrim is
      * positioned `inset: var(--dsh-frame-chrome-top) 0 0` on purpose - it must not dim the
@@ -1783,11 +1796,10 @@ html[data-dshbg-on] dialog::backdrop {
      * the "dividing line" that reappears the moment a dialog opens.
      */
     function modalCss(settings) {
-      const blur = Math.min(10, Math.max(4, Math.round(clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320) / 12)));
       return `
 html[data-dshbg-on]:has([role="dialog"][aria-modal="true"]) #root,
 html[data-dshbg-on]:has(dialog[open]) #root {
-  filter: blur(${blur}px) brightness(0.95) saturate(1) !important;
+  filter: brightness(0.95) !important;
 }
 html[data-dshbg-on]:has([role="dialog"][aria-modal="true"]) ${frameSelector()}::before,
 html[data-dshbg-on]:has(dialog[open]) ${frameSelector()}::before {

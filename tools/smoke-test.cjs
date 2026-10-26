@@ -901,9 +901,23 @@ async function main() {
   // 现在几乎不再压暗（0.95），玻璃才有东西可透。
   check(
     'an open dialog pushes the app back without crushing it to black',
-    /:has\(\[role="dialog"\]\[aria-modal="true"\]\) #root[\s\S]{0,120}?filter: blur\(\d+px\) brightness\(0\.95\)/.test(
+    /:has\(\[role="dialog"\]\[aria-modal="true"\]\) #root[\s\S]{0,120}?filter: brightness\(0\.95\)/.test(
       base.css,
     ),
+  );
+  // 这里必须**没有** blur。#root 是整个应用，在它身上加 filter 等于每帧把整窗重算一遍；
+  // 流式输出时那就是每帧一次，GPU 再被本地模型占着就丢帧。而且壁纸在 html::before 已经糊过
+  // 一次，再糊一次只是把糊了的东西再糊一遍，什么也没买到。
+  // 以前这里是 min(10, max(4, menuBlur/12))，滑杆拖到 0 仍然输出 blur(4px) —— 所以
+  // 「是不是模糊引起的」那个测试永远测不出结论。
+  check(
+    'the app behind a dialog is never blurred',
+    !/:has\(\[role="dialog"\]\[aria-modal="true"\]\) #root[\s\S]{0,160}?filter:[^;]*blur\(/.test(base.css) &&
+      !/#root[\s\S]{0,80}?filter: blur\(/.test(base.css),
+  );
+  check(
+    'the dialog scrim never blurs the window',
+    !/dialog::backdrop \{[^}]*backdrop-filter/.test(base.css),
   );
   // 宿主的遮罩故意不盖 Windows 顶栏（免得压暗原生按钮），所以弹窗一开，顶栏还是亮的、
   // 下面已经暗了 —— 那道横线就又出现。顶栏要单独补同一层压暗。
