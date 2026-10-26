@@ -135,8 +135,8 @@ window.__ModuleLoader__.load({
         scope: '作用范围',
         fullWindow: '同时应用到左侧对话栏',
         fullWindowHint: '关掉时只有工作区换背景，左侧对话列表保持原样；打开则整窗铺满。',
-        dockVisible: '显示左侧调参栏',
-        dockVisibleHint: '侧栏底部那张临时调参卡（滑杆 + 探针）。数值调完就关掉它，界面恢复干净；随时可以再打开。',
+        dockVisible: '显示调参卡',
+        dockVisibleHint: '窗口左下角那张临时调参卡（滑杆 + 探针）。数值调完就关掉它，界面恢复干净；随时可以再打开。',
         font: '字体颜色',
         fonts: { theme: '跟随主题', auto: '自动', light: '浅色', dark: '深色', custom: '自定义' },
         fontHint: '「自动」按背景实际明暗选黑或白；「跟随主题」不做任何改动。',
@@ -193,7 +193,7 @@ window.__ModuleLoader__.load({
         fullWindow: 'Also apply to the conversation sidebar',
         fullWindowHint: 'Off: only the work area changes and the sidebar keeps its own look. On: the wallpaper fills the window.',
         dockVisible: 'Show tuning card',
-        dockVisibleHint: 'The temporary tuning card at the sidebar foot (sliders + probe). Turn it off once the numbers are settled; it can always be turned back on.',
+        dockVisibleHint: 'The temporary tuning card in the bottom-left corner (sliders + probe). Turn it off once the numbers are settled; it can always be turned back on.',
         font: 'Text colour',
         fonts: { theme: 'Theme', auto: 'Auto', light: 'Light', dark: 'Dark', custom: 'Custom' },
         fontHint: '"Auto" picks black or white from the background. "Theme" leaves text untouched.',
@@ -3081,18 +3081,21 @@ html[data-dshbg-on][data-dshbg-flat]::before {
     // ------------------------------------------------------------- tuning dock
 
     /**
-     * TEMPORARY tuning surface, parked in the left column.
+     * TEMPORARY tuning surface, floating over the bottom-left corner.
      *
      * Every number in this plugin has to be judged against a real wallpaper, and the
      * settings page is a separate full-page view - you cannot watch the composer or a menu
-     * while dragging a slider there. So the controls live in the sidebar's own foot seat
-     * while they are being tuned: the app stays on screen, every drag lands immediately in
-     * the stylesheet, and the probe below prints what the browser actually computed. That
-     * last part is what separates "the number is too small" from "the number never reached
-     * the screen" - a distinction this plugin has needed more than once.
+     * while dragging a slider there. So the controls live in the app window while they are
+     * being tuned: the app stays on screen, every drag lands immediately in the stylesheet,
+     * and the probe below prints what the browser actually computed. That last part is what
+     * separates "the number is too small" from "the number never reached the screen" - a
+     * distinction this plugin has needed more than once.
      *
-     * To remove it later: delete this block, the `sidebar.footer.action` registration in
-     * `apply`, and `TEXT.dockTitle`.
+     * It used to be a React component in the host's `sidebar.footer.action` seat. It is now
+     * plain DOM on `<body>`; see `mountTuner` for why that seat was abandoned.
+     *
+     * To remove it later: delete this block, the `ctx.effect(... mountTuner ...)` in `apply`,
+     * and `TEXT.dockTitle`.
      */
     const DOCK_ROWS = [
       { key: 'blur', zh: '背景模糊', en: 'Wallpaper blur', min: 0, max: 40, suffix: 'px' },
@@ -3273,152 +3276,262 @@ html[data-dshbg-on][data-dshbg-flat]::before {
       }
     }
 
-    function SliderDock() {
-      const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-      const { settings } = snapshot;
-      const [open, setOpen] = useState(false);
-      const [probe, setProbe] = useState(null);
-      const lang = currentLang();
-      const text = TEXT[lang];
-      // A tool, not part of the product: once the numbers are settled it is switched off
-      // from the plugin page and stops rendering entirely.
-      if (settings.showDock === false) return null;
-      // The last thing the cost-dialog painter saw, so the header can carry it without the
-      // card being expanded (the dialog covers the sidebar while it is open).
-      let lastCost = '';
+    /**
+     * The last thing the cost-dialog painter saw, so the header can carry it without the
+     * card being expanded (the dialog covers the card while it is open).
+     */
+    function lastCostReading() {
       try {
         const raw = window.localStorage.getItem('dshbg.cost.probe');
-        if (raw !== null) {
-          const record = JSON.parse(raw);
-          lastCost = ` · 弹窗 ${record.bg}${record.bf ? ` / ${record.bf}` : ''}`;
-        }
+        if (raw === null) return '';
+        const record = JSON.parse(raw);
+        return ` · 弹窗 ${record.bg}${record.bf ? ` / ${record.bf}` : ''}`;
       } catch {
-        lastCost = '';
+        return '';
+      }
+    }
+
+    const TUNER_CSS = `${DOCK_CSS}
+.dshbg-tuner {
+  position: fixed;
+  left: 12px;
+  /* 64px, not 12px: the host's own settings button and the cost meter live in the sidebar
+     foot, which is exactly the bottom-left corner. A diagnostic card that swallows the
+     click on 设置 is not a diagnostic card. */
+  bottom: 64px;
+  z-index: 2147483000;
+  width: 248px;
+  box-sizing: border-box;
+  border-radius: 10px;
+  max-height: 78vh;
+  overflow: hidden auto;
+  box-shadow: inset 0 0 0 1px rgb(128 128 128 / 30%), 0 14px 36px -14px rgb(0 0 0 / 60%);
+}
+`;
+
+    /**
+     * The tuning card, built as plain DOM and appended straight to `<body>`.
+     *
+     * It used to be a React component registered into the host's `sidebar.footer.action`
+     * seat. That seat stopped producing anything at all: the store said `showDock: true`,
+     * the component rendered fine when called in isolation, and the sidebar foot simply
+     * never showed it. A diagnostic tool that depends on a host slot you cannot inspect is
+     * not a diagnostic tool - and this card is the only way to read the numbers that decide
+     * the next fix, so "it is not on screen" is the one failure it must not have.
+     *
+     * So: no React, no slot, no host layout. `position: fixed` on a `body` child. If the
+     * plugin runs at all, the card is on screen, and it is out of the flex chain the
+     * sidebar puts its foot in. The colours are written out literally for the same reason
+     * the readout exists: our own remix runs on `body > *`, so every `--dsw-alias-*` this
+     * card would inherit is the remixed, half-transparent one, and a readout nobody can
+     * read is worse than no readout.
+     *
+     * The DOM is built once and then *synced*, never rebuilt on a store commit: replacing a
+     * range input mid-drag ends the drag.
+     */
+    function mountTuner() {
+      // `ctx.effect` callbacks run outside the `try` in `apply`, so this one guards itself:
+      // a mount that throws must not take the whole plugin's client half down with it.
+      if (document.body === null || document.body === undefined) return () => {};
+      const lang = currentLang();
+      const text = TEXT[lang];
+      const host = document.createElement('div');
+      host.className = 'dshbg-dock dshbg-tuner';
+
+      const style = document.createElement('style');
+      style.textContent = TUNER_CSS;
+      host.appendChild(style);
+
+      const head = document.createElement('button');
+      head.type = 'button';
+      head.className = 'dshbg-dock-head';
+      const headLabel = document.createElement('span');
+      const caret = document.createElement('span');
+      caret.className = 'dshbg-dock-caret';
+      head.appendChild(headLabel);
+      head.appendChild(caret);
+
+      const body = document.createElement('div');
+      body.className = 'dshbg-dock-body';
+
+      host.appendChild(head);
+      host.appendChild(body);
+
+      let open = false;
+      let timer = 0;
+      let probe = null;
+      let probeBox = null;
+      const rows = [];
+      const toggles = [];
+
+      const settingsNow = () => getSnapshot().settings;
+
+      function buildBody() {
+        body.textContent = '';
+        rows.length = 0;
+        toggles.length = 0;
+        probeBox = null;
+
+        for (const row of DOCK_ROWS) {
+          const line = document.createElement('label');
+          line.className = 'dshbg-dock-row';
+          const name = document.createElement('span');
+          name.textContent = lang === 'zh' ? row.zh : row.en;
+          const input = document.createElement('input');
+          input.type = 'range';
+          input.min = String(row.min);
+          input.max = String(row.max);
+          input.step = '1';
+          input.value = String(settingsNow()[row.key]);
+          const value = document.createElement('span');
+          value.className = 'dshbg-dock-value';
+          line.appendChild(name);
+          line.appendChild(input);
+          line.appendChild(value);
+          body.appendChild(line);
+          // `input`, not `change`: a range has to land on every pixel of the drag. That is
+          // the entire reason this card exists instead of the settings page.
+          input.addEventListener('input', () => patchSettings({ [row.key]: Number(input.value) }));
+          rows.push({ row, input, value });
+        }
+
+        const switches = [
+          {
+            read: () => settingsNow().composerStyle === 'glass',
+            write: (on) => patchSettings({ composerStyle: on ? 'glass' : 'solid' }),
+            caption: text.dockGlass,
+          },
+          {
+            read: () => settingsNow().fullWindow,
+            write: (on) => patchSettings({ fullWindow: on }),
+            caption: text.dockFullWindow,
+          },
+          {
+            read: () => settingsNow().font === 'auto',
+            write: (on) => patchSettings({ font: on ? 'auto' : 'theme' }),
+            caption: text.dockFont,
+          },
+          // The kill switch. Ticking it removes every blur this plugin writes, so the next
+          // "does it still flicker?" answer is about the blur alone.
+          {
+            read: () => settingsNow().flat === true,
+            write: (on) => patchSettings({ flat: on }),
+            caption: lang === 'zh' ? '关掉所有模糊（排查用）' : 'No blur (diagnostic)',
+          },
+        ];
+
+        for (const item of switches) {
+          const line = document.createElement('label');
+          line.className = 'dshbg-dock-switch';
+          const input = document.createElement('input');
+          input.type = 'checkbox';
+          input.checked = item.read();
+          const caption = document.createElement('span');
+          caption.textContent = item.caption;
+          line.appendChild(input);
+          line.appendChild(caption);
+          body.appendChild(line);
+          input.addEventListener('change', () => item.write(input.checked));
+          toggles.push({ input, read: item.read });
+        }
+
+        const foot = document.createElement('div');
+        foot.className = 'dshbg-dock-foot';
+        const preset = document.createElement('button');
+        preset.type = 'button';
+        preset.className = 'dshbg-dock-link';
+        preset.textContent = text.dockPreset;
+        preset.addEventListener('click', () => patchSettings({ ...RECOMMENDED }));
+        const reset = document.createElement('button');
+        reset.type = 'button';
+        reset.className = 'dshbg-dock-link';
+        reset.textContent = text.reset;
+        reset.addEventListener('click', () => patchSettings({ ...DEFAULTS, imageId: settingsNow().imageId }));
+        foot.appendChild(preset);
+        foot.appendChild(reset);
+        body.appendChild(foot);
+
+        probeBox = document.createElement('div');
+        probeBox.className = 'dshbg-dock-probe';
+        body.appendChild(probeBox);
       }
 
-      useEffect(() => {
-        if (!open) {
-          setProbe(null);
-          frameMeter.stop();
-          return undefined;
+      function paintProbe() {
+        if (probeBox === null) return;
+        probeBox.textContent = '';
+        for (const [key, value] of Object.entries(probe === null ? {} : probe)) {
+          const line = document.createElement('div');
+          line.textContent = `${key} = ${String(value)}`;
+          probeBox.appendChild(line);
         }
-        frameMeter.start();
-        setProbe(probeSurface());
-        if (typeof setInterval !== 'function') return () => frameMeter.stop();
-        const timer = setInterval(() => setProbe(probeSurface()), 800);
-        return () => {
-          clearInterval(timer);
-          frameMeter.stop();
-        };
-      }, [open]);
+      }
 
-      return h(
-        'div',
-        { className: 'dshbg-dock' },
-        h('style', null, DOCK_CSS),
-        h(
-          'button',
-          { type: 'button', className: 'dshbg-dock-head', onClick: () => setOpen(!open) },
-          h('span', null, `${text.dockTitle}${open ? '' : ` · ${settings.menuFill}% / ${settings.menuBlur}px`}${lastCost}`),
-          h('span', { className: 'dshbg-dock-caret' }, open ? '\u25be' : '\u25b8'),
-        ),
-        open
-          ? h(
-              'div',
-              { className: 'dshbg-dock-body' },
-              ...DOCK_ROWS.map((row) =>
-                h(
-                  'label',
-                  { key: row.key, className: 'dshbg-dock-row' },
-                  h('span', null, lang === 'zh' ? row.zh : row.en),
-                  h('input', {
-                    type: 'range',
-                    min: row.min,
-                    max: row.max,
-                    step: 1,
-                    value: settings[row.key],
-                    onChange: (event) => patchSettings({ [row.key]: Number(event.target.value) }),
-                  }),
-                  h('span', { className: 'dshbg-dock-value' }, `${settings[row.key]}${row.suffix}`),
-                ),
-              ),
-              h(
-                'label',
-                { className: 'dshbg-dock-switch' },
-                h('input', {
-                  type: 'checkbox',
-                  checked: settings.composerStyle === 'glass',
-                  onChange: (event) => patchSettings({ composerStyle: event.target.checked ? 'glass' : 'solid' }),
-                }),
-                h('span', null, text.dockGlass),
-              ),
-              h(
-                'label',
-                { className: 'dshbg-dock-switch' },
-                h('input', {
-                  type: 'checkbox',
-                  checked: settings.fullWindow,
-                  onChange: (event) => patchSettings({ fullWindow: event.target.checked }),
-                }),
-                h('span', null, text.dockFullWindow),
-              ),
-              // Text polarity is the one control that decides whether the whole window is
-              // readable over a photograph: the theme ships one palette, and a light
-              // wallpaper with white text is unreadable no matter how the glass is tuned.
-              h(
-                'label',
-                { className: 'dshbg-dock-switch' },
-                h('input', {
-                  type: 'checkbox',
-                  checked: settings.font === 'auto',
-                  onChange: (event) => patchSettings({ font: event.target.checked ? 'auto' : 'theme' }),
-                }),
-                h('span', null, text.dockFont),
-              ),
-              // The kill switch. Ticking it removes every blur this plugin writes, so the
-              // next "does it still flicker?" answer is about the blur alone.
-              h(
-                'label',
-                { className: 'dshbg-dock-switch' },
-                h('input', {
-                  type: 'checkbox',
-                  checked: settings.flat === true,
-                  onChange: (event) => patchSettings({ flat: event.target.checked }),
-                }),
-                h('span', null, lang === 'zh' ? '关掉所有模糊（排查用）' : 'No blur (diagnostic)'),
-              ),
-              h(
-                'div',
-                { className: 'dshbg-dock-foot' },
-                h(
-                  'button',
-                  {
-                    type: 'button',
-                    className: 'dshbg-dock-link',
-                    onClick: () => patchSettings({ ...RECOMMENDED }),
-                  },
-                  text.dockPreset,
-                ),
-                h(
-                  'button',
-                  {
-                    type: 'button',
-                    className: 'dshbg-dock-link',
-                    onClick: () => patchSettings({ ...DEFAULTS, imageId: settings.imageId }),
-                  },
-                  text.reset,
-                ),
-              ),
-              probe === null
-                ? null
-                : h(
-                    'div',
-                    { className: 'dshbg-dock-probe' },
-                    ...Object.entries(probe).map(([key, value]) => h('div', { key }, `${key} = ${String(value)}`)),
-                  ),
-            )
-          : null,
-      );
+      function readProbe() {
+        probe = probeSurface();
+        paintProbe();
+      }
+
+      function sync() {
+        const settings = settingsNow();
+        // Switched off from the plugin page: the card is a tool, not part of the product,
+        // so it has to be able to disappear without any code being deleted.
+        host.style.display = settings.showDock === false ? 'none' : '';
+        // Re-read every commit, not once at mount: the card is a `body` child, so our own
+        // remix has already turned every `--dsw-alias-*` it would inherit into the
+        // half-transparent version, and the theme can flip under it while it is open.
+        const dark = document.body.hasAttribute('data-ds-dark-theme');
+        host.style.backgroundColor = dark ? 'rgb(32 33 36 / 97%)' : 'rgb(255 255 255 / 97%)';
+        host.style.color = dark ? '#e8eaed' : '#1a1c1f';
+        headLabel.textContent = `${text.dockTitle}${
+          open ? '' : ` · ${settings.menuFill}% / ${settings.menuBlur}px`
+        }${lastCostReading()}`;
+        caret.textContent = open ? '\u25be' : '\u25b8';
+        for (const { row, input, value } of rows) {
+          // Never write back into the control the pointer is on.
+          if (document.activeElement !== input) input.value = String(settings[row.key]);
+          value.textContent = `${settings[row.key]}${row.suffix}`;
+        }
+        for (const toggle of toggles) {
+          if (document.activeElement !== toggle.input) toggle.input.checked = toggle.read();
+        }
+      }
+
+      function setOpen(next) {
+        open = next;
+        if (timer !== 0) {
+          clearInterval(timer);
+          timer = 0;
+        }
+        if (open) {
+          buildBody();
+          frameMeter.start();
+          readProbe();
+          if (typeof setInterval === 'function') timer = setInterval(readProbe, 800);
+        } else {
+          body.textContent = '';
+          rows.length = 0;
+          toggles.length = 0;
+          probeBox = null;
+          probe = null;
+          // A permanent rAF loop would itself be a cost, and it would be measuring its own
+          // overhead - so it only runs while the readout is on screen.
+          frameMeter.stop();
+        }
+        sync();
+      }
+
+      head.addEventListener('click', () => setOpen(!open));
+
+      const unsubscribe = subscribe(sync);
+      document.body.appendChild(host);
+      sync();
+
+      return () => {
+        unsubscribe();
+        if (timer !== 0) clearInterval(timer);
+        frameMeter.stop();
+        host.remove();
+      };
     }
 
     // --------------------------------------------------------------- registration
@@ -3445,17 +3558,17 @@ html[data-dshbg-on][data-dshbg-flat]::before {
           console.error('[dsh-custom-background] config slot registration failed:', failure);
         }
 
-        // TEMPORARY tuning seat in the sidebar foot. Its own failure path: a missing seat
-        // must never take the settings page down with it, and the other way round.
+        // TEMPORARY tuning card. Its own failure path: a broken card must never take the
+        // settings page down with it, and the other way round.
+        //
+        // **Not a slot any more.** It used to register into `sidebar.footer.action` and one
+        // day that seat simply stopped producing it - the store said `showDock: true`, the
+        // component rendered fine on its own, and nothing appeared. `mountTuner` puts the
+        // card on `document.body` instead, so there is no host seat left to fail.
         try {
-          ctx.slots.inject('sidebar.footer.action', () =>
-            ctx.slots.register(
-              { name: 'sidebar.footer.action', id: 'custom-background-tuner', order: 10 },
-              SliderDock,
-            ),
-          );
+          ctx.effect(() => mountTuner(), 'custom-background: tuning card');
         } catch (failure) {
-          console.error('[dsh-custom-background] tuner registration failed:', failure);
+          console.error('[dsh-custom-background] tuner mount failed:', failure);
         }
       },
     };

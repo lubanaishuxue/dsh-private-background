@@ -49,13 +49,15 @@ function makeElement(tag) {
     dataset: {},
     attributes: {},
     style: {},
-    textContent: '',
+    _text: '',
     children: [],
     setAttribute(name, value) { el.attributes[name] = String(value); },
     getAttribute(name) { return name in el.attributes ? el.attributes[name] : null; },
     hasAttribute(name) { return name in el.attributes; },
     removeAttribute(name) { delete el.attributes[name]; },
-    appendChild(child) { el.children.push(child); return child; },
+    // `_parent` has to be recorded, otherwise `remove()` cannot take the node out of its
+    // container and the tuning card would survive its own dispose.
+    appendChild(child) { el.children.push(child); child._parent = el; return child; },
     remove() {
       const owner = el._parent;
       if (owner) {
@@ -65,7 +67,29 @@ function makeElement(tag) {
     },
     contains() { return false; },
     closest() { return null; },
+    // The tuning card is plain DOM, so it wires real listeners. Recording them lets a test
+    // do what the user does - click the header, drag a slider - instead of only looking at
+    // the tree it built.
+    addEventListener(type, handler) {
+      if (el._on === undefined) el._on = {};
+      el._on[type] = handler;
+    },
+    removeEventListener(type) {
+      if (el._on !== undefined) delete el._on[type];
+    },
+    fire(type) {
+      const handler = el._on === undefined ? undefined : el._on[type];
+      if (handler !== undefined) handler({ target: el });
+    },
   };
+  Object.defineProperty(el, 'textContent', {
+    get() { return el._text; },
+    set(value) {
+      el._text = String(value);
+      // Real DOM semantics: assigning text replaces every child. `buildBody` relies on it.
+      if (el._text === '') el.children.length = 0;
+    },
+  });
   return el;
 }
 
@@ -172,7 +196,7 @@ function harness(settingsOverride) {
   vm.createContext(sandbox);
   vm.runInContext(CODE, sandbox, { filename: 'client.js' });
 
-  return { definition, ctx, registered, documentElement, head };
+  return { definition, ctx, registered, documentElement, head, body };
 }
 
 const failures = [];
@@ -188,7 +212,7 @@ function check(name, condition, detail) {
 /** Apply the plugin with the given settings and return the emitted stylesheet. */
 async function emit(settingsOverride) {
   const run = harness(settingsOverride);
-  const { definition, ctx, registered, documentElement, head } = run;
+  const { definition, ctx, registered, documentElement, head, body } = run;
 
   const exported = definition.factory((name) => {
     if (name === 'react') return ReactStub;
@@ -205,6 +229,7 @@ async function emit(settingsOverride) {
     exported,
     registered,
     documentElement,
+    body,
     tags,
     css: tags.length > 0 ? tags[0].textContent : '',
   };
@@ -1003,8 +1028,8 @@ async function main() {
   // off has to take it with it - otherwise a scrolling title keeps its ellipsis pinned.
   check('title clip goes away with the stylesheet', !off.css.includes('_crumb'));
   check('mode none leaves <html> unmarked', !off.documentElement.hasAttribute('data-dshbg-on'));
-  // 第二个座位是侧栏的临时调参卡。它和设置页互不依赖：任何一边缺失都不能把另一边带崩。
-  check('mode none still registers both seats', off.registered.length === 2, `got ${off.registered.length}`);
+  // 第二个座位是临时调参卡。它和设置页互不依赖：任何一边缺失都不能把另一边带崩。
+  check('mode none still registers the config page', off.registered.length === 1, `got ${off.registered.length}`);
 
   // Nothing else in this file calls the page component, so a typo in the JSX would only
   // surface in the app. Render it once and look for the controls by their label text.
@@ -1054,45 +1079,93 @@ async function main() {
   // 调参卡的总开关在插件页：数值定稿后从界面关掉即可，不用删代码。
   check(
     'the tuning card can be switched off from the plugin page',
-    blob.includes('显示左侧调参栏') && CODE.includes('showDock: true') && CODE.includes('settings.showDock === false'),
+    blob.includes('显示调参卡') && CODE.includes('showDock: true') && CODE.includes('settings.showDock === false'),
   );
 
-  console.log('\nsidebar tuning dock');
-  // 侧栏那张卡：默认只渲染一行折叠头，展开后才滑杆。标签写错只会在应用里炸，所以真渲染一次。
-  let dock = null;
-  try {
-    dock = base.registered[1].component({});
-  } catch (failure) {
-    dock = null;
-  }
-  check('dock renders without throwing', dock !== null);
-  const beforeDock = strings.length;
-  walk(dock);
-  const dockBlob = strings.slice(beforeDock).join('\n');
-  check('dock shows a collapsed header', dockBlob.includes('调参（临时）'), dockBlob.slice(0, 60));
-  check(
-    'dock carries every dial',
-    ['blur', 'dim', 'surface', 'chatSurface', 'composerSurface', 'glassBlur', 'menuFill', 'menuBlur', 'sidebarFill'].every(
-      (key) => CODE.includes(`key: '${key}'`),
-    ),
+  console.log('\ntuning card');
+  // 这张卡**不再**注册进宿主的 `sidebar.footer.action` 座位。那个座位有一阵子什么都不
+  // 产出：store 里 `showDock` 明明是 `true`，组件单独调也正常，侧栏就是不见东西。诊断
+  // 工具挂在看不见的座位上，就不是诊断工具了 —— 所以它现在是挂到 `document.body` 上的
+  // 普通 DOM。下面这几条钉住的就是「插件只要跑起来，卡就一定在屏幕上」。
+  const tuner = base.body.children.find(
+    (el) => typeof el.className === 'string' && el.className.includes('dshbg-tuner'),
   );
-  check('dock can read back computed values', CODE.includes('function probeSurface') && CODE.includes('getComputedStyle'));
-  // 亮壁纸上最容易翻车的不是玻璃参数，是「白字压亮图」：极性开关必须从侧栏就能切。
-  check('dock can flip text polarity', CODE.includes("settings.font === 'auto'") && CODE.includes("font: 'auto'"));
-  check('dock can restore a legible baseline', CODE.includes('const RECOMMENDED') && CODE.includes('...RECOMMENDED'));
+  check('the tuning card mounts itself on <body>', tuner !== undefined, `body has ${base.body.children.length}`);
+  check(
+    'the card does not depend on a host seat',
+    !CODE.includes("inject('sidebar.footer.action'") && CODE.includes('document.body.appendChild(host)'),
+  );
+  if (tuner !== undefined) {
+    const [tunerStyle, tunerHead, tunerBody] = tuner.children;
+    check('the card pins itself out of the host layout', /position:\s*fixed/.test(tunerStyle.textContent));
+    // 左下角正是宿主自己的「设置」按钮和计费器所在的那一行。诊断卡不能把那一下点击吞掉。
+    check('the card clears the host foot', /bottom:\s*64px/.test(tunerStyle.textContent));
+    // 它自己就是 `body > *`，会被本插件自己的重混命中 —— 所以底色必须是写死的，不能读 token。
+    check('the card does not paint with a remixed token', /rgb\(32 33 36 \/ 97%\)/.test(CODE));
+    check('the card opens collapsed', tunerBody.children.length === 0, `got ${tunerBody.children.length}`);
+    check(
+      'the collapsed header names the card',
+      tunerHead.children[0].textContent.includes('调参（临时）'),
+      tunerHead.children[0].textContent,
+    );
+    check(
+      'dock carries every dial',
+      ['blur', 'dim', 'surface', 'chatSurface', 'composerSurface', 'glassBlur', 'menuFill', 'menuBlur', 'sidebarFill'].every(
+        (key) => CODE.includes(`key: '${key}'`),
+      ),
+    );
+
+    tunerHead.fire('click');
+    // 九条滑杆 + 四个开关 + 页脚 + 探针
+    check('clicking the header opens every control', tunerBody.children.length === 15, `got ${tunerBody.children.length}`);
+    const ranges = tunerBody.children.filter((el) => el.tagName === 'label' && el.className === 'dshbg-dock-row');
+    check('every dial is a live range input', ranges.length === 9, `got ${ranges.length}`);
+    // 拖滑杆必须走 `input` 事件：`change` 只在松手时来一次，那就不是「拖到哪儿看到哪儿」了。
+    const dial = ranges[0];
+    check('the dial is wired to the live event', dial !== undefined && dial.children[1]._on !== undefined && dial.children[1]._on.input !== undefined);
+    if (dial !== undefined) {
+      dial.children[1].value = '33';
+      dial.children[1].fire('input');
+      check('dragging a dial writes the setting', dial.children[2].textContent === '33px', dial.children[2].textContent);
+    }
+
+    const flatSwitch = tunerBody.children.filter((el) => el.className === 'dshbg-dock-switch')[3];
+    check('the kill switch is on the card', flatSwitch !== undefined);
+    if (flatSwitch !== undefined) {
+      flatSwitch.children[0].checked = true;
+      flatSwitch.children[0].fire('change');
+      check(
+        'the kill switch reaches the stylesheet',
+        base.tags[0].textContent.includes('data-dshbg-flat'),
+        `sheet ${base.tags[0].textContent.length} bytes`,
+      );
+      flatSwitch.children[0].checked = false;
+      flatSwitch.children[0].fire('change');
+      check('and it turns back off', !base.tags[0].textContent.includes('data-dshbg-flat'));
+    }
+    check('dock can read back computed values', CODE.includes('function probeSurface') && CODE.includes('getComputedStyle'));
+    // 亮壁纸上最容易翻车的不是玻璃参数，是「白字压亮图」：极性开关必须从卡片就能切。
+    check('dock can flip text polarity', CODE.includes("settings.font === 'auto'") && CODE.includes("font: 'auto'"));
+    check('dock can restore a legible baseline', CODE.includes('const RECOMMENDED') && CODE.includes('...RECOMMENDED'));
+  }
+
+  const hidden = await emit({ showDock: false });
+  const hiddenTuner = hidden.body.children.find(
+    (el) => typeof el.className === 'string' && el.className.includes('dshbg-tuner'),
+  );
+  check(
+    'switching the card off hides it instead of leaking it',
+    hiddenTuner !== undefined && hiddenTuner.style.display === 'none',
+    hiddenTuner === undefined ? 'not mounted' : String(hiddenTuner.style.display),
+  );
 
   console.log('\nslot registration');
-  check('two slot registrations', base.registered.length === 2, `got ${base.registered.length}`);
+  // 只留设置页那一个座位。调参卡已经不是座位了（见上）。
+  check('one slot registration', base.registered.length === 1, `got ${base.registered.length}`);
   if (base.registered.length > 0) {
     const { options } = base.registered[0];
     check('registers into plugins.bundle.config', options.name === 'plugins.bundle.config');
     check('keyed by the package name', options.key === '@local/dsh-custom-background', options.key);
-  }
-  if (base.registered.length > 1) {
-    const { options } = base.registered[1];
-    check('tuner docks into the sidebar foot', options.name === 'sidebar.footer.action', options.name);
-    check('tuner has its own id', options.id === 'custom-background-tuner', options.id);
-    check('config page is registered first', base.registered[0].options.name === 'plugins.bundle.config');
   }
 
   console.log('\ncss syntax sanity');
