@@ -782,23 +782,29 @@ html[data-dshbg-on] [data-composer-card] {
      * calling this. The rule of thumb: leaves are fine, containers that own popovers are
      * not.
      *
-     * `withBlur: false` gives the shell without the `backdrop-filter`. It exists for the
-     * code block, which has a sticky banner *inside* it: a backdrop root there blinds the
-     * banner (see `transcriptGlassCss`), so the block takes the shell and the `pre` inside
-     * it takes the blur. Do not use this flag to "simplify" anything else - a pane without
-     * its own blur is just a tinted rectangle.
+     * **No `backdrop-filter` at all** (v2.47.0). A pane's backdrop is the wallpaper, and
+     * the wallpaper is already blurred at the `html::before` layer - so this element used
+     * to pay for a full backdrop snapshot to re-blur something that was already blurred.
+     * The saturation that snapshot did buy now lives on the wallpaper layer itself, which
+     * costs one pass per wallpaper change instead of one per pane per frame.
+     *
+     * What it cost was not just GPU time. Chromium renders each `backdrop-filter` element
+     * into a surface sized by its backdrop root, and a surface that is not ready in a frame
+     * shows as nothing at all. Streaming a reply repaints the transcript every frame, the
+     * pane's snapshot has to be retaken every frame, and the one frame that lost the race
+     * showed the transcript column as bare wallpaper while the left column - whose panes
+     * were not repainting - stayed intact. That is the flicker.
+     *
+     * `withBlur` is kept as a parameter only because the code block still calls it that way
+     * and the call site reads as intent. It no longer changes the output.
      */
-    function glassPane(blur, withBlur = true) {
-      const shell = `  background-color: ${paneFill()} !important;
+    function glassPane() {
+      return `  background-color: ${paneFill()} !important;
   box-shadow:
     inset 0 1px 0 0 rgb(255 255 255 / 0.10),
     inset 0 -1px 0 0 rgb(0 0 0 / 0.10),
     inset 0 0 0 1px color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent),
     0 10px 30px -14px rgb(0 0 0 / 0.55) !important;`;
-      if (!withBlur) return shell;
-      return `${shell}
-  -webkit-backdrop-filter: blur(${blur}px) saturate(160%) !important;
-  backdrop-filter: blur(${blur}px) saturate(160%) !important;`;
     }
 
     /**
@@ -824,14 +830,16 @@ html[data-dshbg-on] [data-composer-card] {
      * `border` is a parameter rather than a constant because the same recipe is reused on
      * block-level buttons (the cost-detail pills), where the host already draws a 1px
      * border and shrinking it to .5px would visibly thin an edge that is not inline.
+     *
+     * No `backdrop-filter`, for the same reason as `glassPane`: the chips sit on the
+     * transcript's own fill with wallpaper behind it, and that wallpaper is already blurred
+     * at the `html::before` layer. A paragraph with a dozen chips used to take a dozen
+     * backdrop snapshots per frame while a reply streamed in.
      */
-    function glassChip(blur, border = '.5px') {
-      const radius = Math.min(blur, 10);
+    function glassChip(border = '.5px') {
       return `  background-color: color-mix(in srgb, var(--dshbg-raw-base) 45%, transparent) !important;
   border: ${border} solid color-mix(in srgb, var(--dshbg-raw-label-0) 14%, transparent) !important;
-  box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.08) !important;
-  -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
-  backdrop-filter: blur(${radius}px) saturate(150%) !important;`;
+  box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.08) !important;`;
     }
 
     /**
@@ -1108,7 +1116,6 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
      *   and reproducing it means a block-level `pre` is never turned into a chip.
      */
     function transcriptGlassCss(settings) {
-      const blur = clamp(settings.glassBlur, 0, 40);
       // The banner borrows the *composer's* material rather than inventing its own number.
       // Two reasons, and the second one is the interesting one:
       //
@@ -1159,7 +1166,7 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
       const changed = '[data-changed-files]';
       return `
 ${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, ...bubble, changed])} {
-${glassPane(blur)}
+${glassPane()}
 }
 ${prefixed('html[data-dshbg-on]', [changed])} {
   --changes-fill: transparent !important;
@@ -1168,7 +1175,7 @@ ${prefixed('html[data-dshbg-on]', [changed])} {
 ${prefixed('html[data-dshbg-on]', blocks)} {
   --dsl-code-block-background: transparent !important;
   --dsl-code-block-banner-background-color: transparent !important;
-${glassPane(blur, false)}
+${glassPane()}
 }
 ${prefixed('html[data-dshbg-on]',
   blocks.flatMap((b) => [`${b} [class*="_banner"]`]),
@@ -1177,8 +1184,6 @@ ${prefixed('html[data-dshbg-on]',
 }
 ${prefixed('html[data-dshbg-on]', blocks.flatMap((b) => [`${b} pre`]))} {
   background: transparent !important;
-  -webkit-backdrop-filter: blur(${blur}px) saturate(160%) !important;
-  backdrop-filter: blur(${blur}px) saturate(160%) !important;
 }
 ${prefixed('html[data-dshbg-on]', blocks.flatMap((b) => [`${b} [class*="_bannerWrap"]`]))} {
   background-color: color-mix(in srgb, var(--dshbg-raw-base) ${bannerFill}%, transparent) !important;
@@ -1189,7 +1194,7 @@ ${prefixed('html[data-dshbg-on]', blocks.flatMap((b) => [`${b} [class*="_bannerW
   backdrop-filter: blur(${bannerBlur}px) saturate(160%) !important;
 }
 ${prefixed('html[data-dshbg-on]', [inlineCode])} {
-${glassChip(blur)}
+${glassChip()}
 }
 `;
     }
@@ -1320,8 +1325,6 @@ ${prefixed('html[data-dshbg-on]', [
      * inside the box and costs no layout.
      */
     function historyBlockCss(settings) {
-      const blur = clamp(settings.glassBlur, 0, 40);
-      const radius = Math.min(blur, 14);
       const block = '[class*="_treeBody"]';
       return `
 ${prefixed('html[data-dshbg-on]', [block])} {
@@ -1334,8 +1337,6 @@ ${prefixed('html[data-dshbg-on]', [block])} {
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent),
     inset 0 1px 0 0 rgb(255 255 255 / 0.06) !important;
-  -webkit-backdrop-filter: blur(${radius}px) saturate(150%) !important;
-  backdrop-filter: blur(${radius}px) saturate(150%) !important;
 }
 ${prefixed('html[data-dshbg-on]', [`${block} [class*="_list"]`])} {
   flex: 0 1 auto !important;
@@ -1383,14 +1384,13 @@ ${prefixed('html[data-dshbg-on]', [`${block} [class*="_fade"]`])} {
      */
     function sidebarGlassCss(settings) {
       if (!settings.fullWindow) return '';
-      const blur = clamp(settings.glassBlur, 0, 40);
       const meter = '.cm-footer-stack.summary:not(.rail)';
       return `
 ${prefixed('html[data-dshbg-on]', ['[class$="_newSession"]'])} {
-${glassPane(blur)}
+${glassPane()}
 }
 ${prefixed('html[data-dshbg-on]', [meter])} {
-${glassPane(blur)}
+${glassPane()}
   width: calc(100% - 4px) !important;
   margin-inline: 2px !important;
 }
@@ -1449,13 +1449,13 @@ ${prefixed('html[data-dshbg-on]', [dock])} {
   box-sizing: border-box !important;
   padding: 3px 8px !important;
   border-radius: 12px !important;
-${glassPane(blur)}
+${glassPane()}
 }
 ${prefixed('html[data-dshbg-on]', [`${headerSlot} button:not([class*="_trigger"])`])} {
-${glassChip(blur)}
+${glassChip()}
 }
 ${prefixed('html[data-dshbg-on]', [`${dock} .cm-btn`])} {
-${glassChip(blur, '1px')}
+${glassChip('1px')}
 }
 ${prefixed('html[data-dshbg-on]', [toBottom])} {
 ${glassFloat(blur)}
@@ -3239,6 +3239,41 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
     }
 
     /**
+     * Every element that is currently taking a backdrop snapshot, biggest first.
+     *
+     * This is the readout that was missing for five rounds of "it still flickers". The kill
+     * switch answers *whether* blur is involved; it cannot answer *which* blur, and the
+     * fixes for the two candidates are nothing alike - a full-screen `filter` wants a cheaper
+     * pass, a per-element `backdrop-filter` wants the snapshot gone entirely.
+     *
+     * Chromium gives every `backdrop-filter` element a surface sized by its backdrop root,
+     * so an element that is small on screen can still cost a full-column snapshot. Sorting
+     * by area rather than by count puts that one first.
+     *
+     * `backdrop-filter` is inherited-adjacent in neither direction, so this only reports
+     * elements whose own computed value is set - which is exactly the set that costs
+     * anything.
+     */
+    function blurredProbe() {
+      const hits = [];
+      for (const element of document.querySelectorAll('#root *, body > *')) {
+        const style = getComputedStyle(element);
+        const value = style.backdropFilter || style.webkitBackdropFilter || '';
+        if (value === '' || value === 'none') continue;
+        const rect = element.getBoundingClientRect();
+        if (rect.width < 1 || rect.height < 1) continue;
+        const tag = element.tagName.toLowerCase();
+        const raw = element.getAttribute('class') || '';
+        const cls = raw.trim().split(/\s+/).slice(0, 2).join('.');
+        const size = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
+        hits.push({ area: rect.width * rect.height, label: `${tag}${cls === '' ? '' : `.${cls}`} ${size}` });
+      }
+      if (hits.length === 0) return '(无)';
+      hits.sort((a, b) => b.area - a.area);
+      return `${hits.length} 个 · ${hits.slice(0, 2).map((h) => h.label).join(' · ')}`;
+    }
+
+    /**
      * Frame-time sampler, so "it flickers" can be read as a number instead of argued about.
      *
      * `worst` is the longest gap between two animation frames in the window since the last
@@ -3315,6 +3350,7 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
           composer: cardStyle === null ? '(无输入框)' : `${cardStyle.backgroundColor} / ${cardStyle.backdropFilter || '-'}`,
           cost: costSurface(),
           overflow: overflowProbe(),
+          blurred: blurredProbe(),
           frame: (() => {
             const reading = frameMeter.read();
             return `最差 ${reading.worst}ms · 掉帧 ${reading.over}`;

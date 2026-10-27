@@ -417,9 +417,39 @@ async function main() {
   // 转写区的表面是内容、不是外壳：输入框切回实心是「输入框」的决定，不该连带把所有
   // 代码块和文件卡也拉回实色。所以这两类与输入框的开关解耦，常开。
   check('solid mode leaves the message box flat', !/\[data-composer-card\][^{]*\{[^}]*backdrop-filter/.test(base.css));
-  check('file cards stay glass in solid mode', /\[class\*="_fileCard"\][^{]*\{[^}]*backdrop-filter/.test(base.css));
-  check('code blocks stay glass in solid mode', /\[class\*="_block_"\][^{]*\{[^}]*backdrop-filter/.test(base.css));
-  check('inline code stays glass in solid mode', /\[class\*="_markdown_"\][^{]*\{[^}]*backdrop-filter/.test(base.css));
+  // ⭐ v2.47.0：这些表面**不许**再自带 backdrop-filter。
+  //
+  // 它们底下只有「已经在 `html::before` 糊过的壁纸」，所以自带一份等于花一次全尺寸
+  // backdrop 快照去糊一张已经糊了的图 —— 视觉上买不到东西，代价却是每帧一次。而
+  // Chromium 给每个 backdrop-filter 元素按它的 backdrop root 开一张 surface，某帧这张
+  // surface 没就绪就是**整片空白**：流式输出时正文列每帧重绘，快照每帧重拍，输掉的那
+  // 一帧整列只剩壁纸，而左栏没在重绘所以完好。这就是那个闪。
+  //
+  // 断言测的是「规则体里没有 backdrop-filter」，不是「某处有 backdrop-filter」—— 旧的
+  // 五条正好相反，它们把 bug 保护了整整五轮。
+  const ruleBody = (css, selector) => {
+    const at = css.indexOf(selector);
+    if (at < 0) return null;
+    const open = css.indexOf('{', at);
+    if (open < 0) return null;
+    const close = css.indexOf('}', open);
+    if (close < 0) return null;
+    return css.slice(open, close);
+  };
+  for (const selector of [
+    '[class*="_fileCard"]',
+    '[class*="_block_"]',
+    '[class*="_markdown_"]',
+    '[data-changed-files]',
+    '[data-chat-flow-kind="user"] [class*="_bubble"]',
+  ]) {
+    const body = ruleBody(base.css, selector);
+    check(
+      `no backdrop filter on ${selector}`,
+      body !== null && !body.includes('backdrop-filter'),
+      body === null ? 'rule missing' : body.slice(0, 80),
+    );
+  }
   // 描边一律用 inset 阴影，**不许用真的 border**。
   // 宿主没给这些盒子写 box-sizing: border-box（侧栏的行是 content-box），所以加 1px
   // border 会把盒子撑宽 2px。在内容列里 2px 就是一条横向滚动条，而横向滚动条一出现
@@ -468,10 +498,6 @@ async function main() {
     base.css.includes('[data-chat-flow-kind="steering"] [class*="_bubble"]') &&
       base.css.includes('[data-chat-flow-kind="turn-trigger"] [class*="_bubble"]') &&
       base.css.includes('[class*="_userRow"] [class*="_bubble"]'),
-  );
-  check(
-    'user bubble is frosted, not just tinted',
-    /\[data-chat-flow-kind="user"\] \[class\*="_bubble"\][^{]*\{[^}]*backdrop-filter/.test(base.css),
   );
   // 气泡是用户消息，走常规 pane 配方（用户明确要求别单独给它加重填充）。
   check('user bubble is back on the pane recipe', /\[class\*="_bubble"\][^{]*\{[^}]*22%/.test(base.css));
@@ -654,9 +680,14 @@ async function main() {
       base.css,
     ),
   );
-  // 一屏几十个芯片，模糊半径按最大值算会把 GPU 拖死；上限 10px，够用。
+  // 一屏几十个芯片。v2.47.0 之前这里讨论的是「模糊半径按最大值算会把 GPU 拖死，上限
+  // 10px」—— 但半径压到多少都还是每帧一次快照，而芯片底下只有糊过的壁纸，那笔钱本来
+  // 就不该花。现在一个都没有，半径自然也就不需要上限了。
   const chipMax = await emit({ glassBlur: 40 });
-  check('inline code chip blur is capped', chipMax.css.includes('blur(10px) saturate(150%)'));
+  check(
+    'inline code takes no snapshot even at max blur',
+    !ruleBody(chipMax.css, '[class*="_markdown_"]').includes('backdrop-filter'),
+  );
 
   // 侧栏里的表面（新会话按钮、计费器）跟着侧栏走：只改工作区时侧栏要保持主题原样，
   // 给不透明的面板磨砂没有意义，还会成为这一列里唯一被碰过的元素。
@@ -667,6 +698,15 @@ async function main() {
   check('sidebar panes frost in whole-window scope', wide.css.includes('[class$="_newSession"]'));
   check('new-session children are not matched', !wide.css.includes('[class*="_newSession"]'));
   check('cost meter card is frosted with the sidebar', wide.css.includes('.cm-footer-stack.summary:not(.rail)'));
+  // 侧栏整列底下只有壁纸，壁纸已经在 `html::before` 糊过 —— 这一列的任何表面都不该再花
+  // 一次快照。v2.47.0 之前它们各自带 `blur(Npx) saturate()`，收益是零（糊的东西再糊一遍），
+  // 代价是每帧一次全尺寸快照。
+  for (const selector of ['[class$="_newSession"]', '.cm-footer-stack.summary:not(.rail)']) {
+    check(
+      `sidebar pane ${selector} takes no snapshot`,
+      !ruleBody(wide.css, selector).includes('backdrop-filter'),
+    );
+  }
   // 侧栏历史记录：行与行只隔 2px（宿主 `_flatList > * + *`），给每一行各自一块圆角玻璃
   // 就必然变成「一串药丸」——文件夹和会话一样重，选中的那条还看不出来。所以是一整块背景
   // 托住列表，但**按内容收缩**（随对话增加而变高），不是撑满整列留一块空板子。
@@ -678,7 +718,8 @@ async function main() {
   );
   // 宿主 `_list` 是 `flex: 1`（basis 0%），在 auto 高度的父容器里会塌成 0，所以上面那条
   // 内层规则不是冗余，是必需品。
-  check('history block is frosted', /\[class\*="_treeBody"\][\s\S]{0,60}?\{[^}]*backdrop-filter/.test(wide.css));
+  // v2.47.0：侧栏这一列底下只有壁纸，而壁纸已经糊过了 —— 不再自带 backdrop 快照。
+  check('history block takes no backdrop snapshot', !ruleBody(wide.css, '[class*="_treeBody"]').includes('backdrop-filter'));
   // 环用 inset 阴影，不用 border：_list 用负边距给滚动条让位，content-box 上 1px 边框会把
   // 那条槽推歪。
   check(
@@ -967,7 +1008,7 @@ async function main() {
     'remix reaches every portal, not just the frame',
     /html\[data-dshbg-on\] body > \* \{[^}]*--dsw-alias-bg-base: color-mix/.test(base.css),
   );
-  check('changed-files card becomes a pane', /\[data-changed-files\][^{]*\{[^}]*backdrop-filter/.test(base.css));
+  check('changed-files card becomes a pane', /\[data-changed-files\][^{]*\{[^}]*22%/.test(base.css));
   check('changed-files header stops painting black', /\[data-changed-files\] \{[^}]*--changes-fill: transparent/.test(base.css));
   // 「弹窗还是黑的」有一半算在遮罩身上：把背后压到 0.52 再叠深色玻璃，合成出来就是黑。
   // 现在几乎不再压暗，玻璃才有东西可透。
