@@ -81,6 +81,11 @@ window.__ModuleLoader__.load({
       // flicker that survives it is not a blur problem. Nothing else changes - fills,
       // radii and borders all stay, so the window still looks like the plugin.
       flat: false,
+      // DIAGNOSTIC, the narrower half of the switch above: only the wallpaper's own
+      // full-screen `filter: blur()` goes away. The panes keep their backdrop snapshots.
+      // Running the two switches separately is what tells a whole-screen filter pass apart
+      // from a per-pane snapshot.
+      noWallpaperBlur: false,
       fullWindow: false,
       font: 'theme',
       fontColor: '#f7f8fa',
@@ -286,6 +291,7 @@ window.__ModuleLoader__.load({
         sidebarFill: clamp(parsed.sidebarFill === undefined ? fallback.sidebarFill : parsed.sidebarFill, 0, 100),
         showDock: parsed.showDock !== false,
         flat: parsed.flat === true,
+        noWallpaperBlur: parsed.noWallpaperBlur === true,
         fullWindow: parsed.fullWindow === true,
         font: fonts.includes(parsed.font) ? parsed.font : fallback.font,
         fontColor:
@@ -603,6 +609,23 @@ window.__ModuleLoader__.load({
       return null;
     }
 
+    /**
+     * The wallpaper, one fixed layer behind everything.
+     *
+     * **The geometry is deliberately `vw`/`vh` and not `inset: -Npx`.** They look identical
+     * - same box, same `cover` crop - but they do not react to the same things. `inset`
+     * resolves against the *viewport*, so the moment a scrollbar appears or disappears the
+     * box changes size by the scrollbar's width, and a full-screen `filter: blur(50px)` has
+     * to be redone from scratch. `vw`/`vh` resolve against the *initial containing block*,
+     * which includes the scrollbar gutter and therefore does not move when the scrollbar
+     * does.
+     *
+     * That difference is the whole reason a streaming reply used to blank the transcript
+     * column for a frame: content grew, something below started overflowing, a horizontal
+     * scrollbar came and went, the wallpaper re-blurred, and the backdrop snapshot the
+     * transcript's glass was waiting on was not ready in time. `will-change: filter` keeps
+     * the blurred result cached across the repaints that remain.
+     */
     function wallpaperCss(settings, value) {
       const bleed = Math.round(settings.blur * 2 + 12);
       return `
@@ -613,7 +636,10 @@ html[data-dshbg-on] ${frameSelector()} { background: transparent !important; }
 html[data-dshbg-on]::before {
   content: "";
   position: fixed;
-  inset: -${bleed}px;
+  top: -${bleed}px;
+  left: -${bleed}px;
+  width: calc(100vw + ${bleed * 2}px);
+  height: calc(100vh + ${bleed * 2}px);
   z-index: -1;
   pointer-events: none;
   background-image: ${value};
@@ -622,6 +648,7 @@ html[data-dshbg-on]::before {
   background-size: cover;
   filter: blur(${settings.blur}px);
   transform: translateZ(0);
+  will-change: filter;
 }
 html[data-dshbg-on]::after {
   content: "";
@@ -1857,30 +1884,46 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
     }
 
     /**
-     * The diagnostic kill switch: every blur this plugin writes, off at once.
+     * The diagnostic kill switches: every blur this plugin writes, off on demand.
      *
-     * Not a product setting. It is how a "it still flickers" report gets turned into a fact:
-     * with this on there is no backdrop snapshot and no `filter` pass left anywhere in the
-     * sheet, so a flicker that survives it cannot be blamed on the compositing cost of the
-     * glass. Everything else - fills, radii, rings, colours - stays, so the window still
-     * reads as the plugin and the comparison is about the blur alone.
+     * Not product settings. They are how a "it still flickers" report gets turned into a
+     * fact, and there are two of them because there are two independent costs in the sheet:
      *
-     * It is written last and scoped to a second attribute, so it wins on specificity
-     * against every recipe above without any of them having to know it exists.
+     * - `flat`      - every `backdrop-filter` gone. No backdrop snapshot is taken anywhere.
+     * - `noWallpaper` - only the wallpaper's own `filter: blur()` gone. Every pane still
+     *   takes its backdrop snapshot, but the layer it samples no longer has to be blurred
+     *   first.
+     *
+     * One switch was not enough. "Blur off, no flicker" only proves that *some* blur is
+     * involved - the wallpaper's full-screen `filter` and the panes' `backdrop-filter` are
+     * two different passes, and the fix for one is nothing like the fix for the other. With
+     * both switches, one run separates them: wallpaper-only off and it stops means the
+     * whole-screen filter was the cost; still flickering means the panes' snapshots are.
+     *
+     * Both are written last and scoped to their own attributes, so they win on specificity
+     * against every recipe above without any of those recipes having to know they exist.
      */
     function flatCss(settings) {
-      if (settings.flat !== true) return '';
-      return `
+      const all = settings.flat === true;
+      const wallpaper = all || settings.noWallpaperBlur === true;
+      if (!all && !wallpaper) return '';
+      const rules = [];
+      if (all) {
+        rules.push(`
 html[data-dshbg-on][data-dshbg-flat] *,
 html[data-dshbg-on][data-dshbg-flat] *::before,
 html[data-dshbg-on][data-dshbg-flat] *::after {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
-}
-html[data-dshbg-on][data-dshbg-flat]::before {
+}`);
+      }
+      if (wallpaper) {
+        rules.push(`
+html[data-dshbg-on][data-dshbg-noblur]::before {
   filter: none !important;
-}
-`;
+}`);
+      }
+      return `${rules.join('')}\n`;
     }
 
     function buildCss(settings, activeImage, tone) {
@@ -2386,10 +2429,16 @@ html[data-dshbg-on][data-dshbg-flat]::before {
         const root = document.documentElement;
         if (on) root.setAttribute('data-dshbg-on', '');
         else root.removeAttribute('data-dshbg-on');
-        // The diagnostic switch rides on its own attribute so the kill-switch rules can be
-        // written without every recipe having to know about it.
+        // The diagnostic switches ride on their own attributes so the kill-switch rules can
+        // be written without every recipe having to know about them.
         if (on && settings.flat === true) root.setAttribute('data-dshbg-flat', '');
         else root.removeAttribute('data-dshbg-flat');
+        // `flat` implies the wallpaper half too, so one click still means "all of it".
+        if (on && (settings.flat === true || settings.noWallpaperBlur === true)) {
+          root.setAttribute('data-dshbg-noblur', '');
+        } else {
+          root.removeAttribute('data-dshbg-noblur');
+        }
         // Replacing a `<style>` element's text replaces every rule in it, which restarts
         // every CSS animation the sheet defines - including the title marquee. `paint()` is
         // called on each store commit, so writing an identical sheet would reset the scroll
@@ -2449,6 +2498,7 @@ html[data-dshbg-on][data-dshbg-flat]::before {
             tag.remove();
             document.documentElement.removeAttribute('data-dshbg-on');
             document.documentElement.removeAttribute('data-dshbg-flat');
+            document.documentElement.removeAttribute('data-dshbg-noblur');
           },
           'custom-background: stylesheet',
         );
@@ -3417,6 +3467,14 @@ html[data-dshbg-on][data-dshbg-flat]::before {
             read: () => settingsNow().flat === true,
             write: (on) => patchSettings({ flat: on }),
             caption: lang === 'zh' ? '关掉所有模糊（排查用）' : 'No blur (diagnostic)',
+          },
+          // The narrow half: wallpaper only. Two switches instead of one is what separates
+          // "the whole-screen filter is too expensive" from "the panes' snapshots are" -
+          // the fixes are nothing alike, so guessing between them wastes a round trip.
+          {
+            read: () => settingsNow().noWallpaperBlur === true,
+            write: (on) => patchSettings({ noWallpaperBlur: on }),
+            caption: lang === 'zh' ? '只关壁纸模糊' : 'No wallpaper blur',
           },
         ];
 

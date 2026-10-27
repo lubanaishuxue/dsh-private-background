@@ -253,6 +253,15 @@ async function main() {
   check('adds the dimming layer', base.css.includes('html[data-dshbg-on]::after'));
   check('uses the gradient preset', base.css.includes('linear-gradient(135deg, #ff9a9e'));
   check('blur value present', base.css.includes('filter: blur(16px)'));
+  // 壁纸层的几何必须走 vw/vh，不能走 inset。两者画出来的盒子一模一样，但对什么变化敏感
+  // 完全相反：inset 相对视口解析，滚动条一出现整屏 filter 就得重做一次；vw/vh 相对初始
+  // 包含块（含滚动条槽）解析，滚动条进出它不动。流式输出时正文列闪一帧就是这么来的。
+  check(
+    'the wallpaper box does not resize when a scrollbar comes and goes',
+    /width: calc\(100vw \+ \d+px\)/.test(base.css) && /height: calc\(100vh \+ \d+px\)/.test(base.css),
+  );
+  check('the wallpaper box never uses inset', !/html\[data-dshbg-on\]::before \{[^}]*inset:/.test(base.css));
+  check('the wallpaper blur is a cached layer', /will-change: filter/.test(base.css));
   check('clears html background', base.css.includes('html[data-dshbg-on] { background: transparent !important; }'));
   check('clears body background', base.css.includes('html[data-dshbg-on] body,'));
 
@@ -429,7 +438,19 @@ async function main() {
   );
   check(
     'the kill switch also drops the wallpaper blur',
-    /\[data-dshbg-flat\]::before \{\s*filter: none !important/.test(flatCss),
+    /\[data-dshbg-noblur\]::before \{\s*filter: none !important/.test(flatCss),
+  );
+  // 窄一半的开关：只关壁纸那一整屏 filter，面板的 backdrop 快照照旧。一个开关区分不了
+  // 「整屏 filter 太贵」和「面板快照太贵」，而这两种的修法完全不同。
+  const wallOnlyCss = (await emit({ noWallpaperBlur: true })).css;
+  check(
+    'the narrow switch leaves every backdrop filter alone',
+    !wallOnlyCss.includes('data-dshbg-flat') &&
+      /\[data-dshbg-noblur\]::before \{\s*filter: none !important/.test(wallOnlyCss),
+  );
+  check(
+    'the wallpaper-only switch is off by default',
+    !base.css.includes('data-dshbg-noblur'),
   );
   // 必须排在最后：它靠的是「更晚 + 更高特异性」压过上面所有配方，而不是让每个配方
   // 都长一个 if。
@@ -1116,8 +1137,8 @@ async function main() {
     );
 
     tunerHead.fire('click');
-    // 九条滑杆 + 四个开关 + 页脚 + 探针
-    check('clicking the header opens every control', tunerBody.children.length === 15, `got ${tunerBody.children.length}`);
+    // 九条滑杆 + 五个开关 + 页脚 + 探针
+    check('clicking the header opens every control', tunerBody.children.length === 16, `got ${tunerBody.children.length}`);
     const ranges = tunerBody.children.filter((el) => el.tagName === 'label' && el.className === 'dshbg-dock-row');
     check('every dial is a live range input', ranges.length === 9, `got ${ranges.length}`);
     // 拖滑杆必须走 `input` 事件：`change` 只在松手时来一次，那就不是「拖到哪儿看到哪儿」了。
