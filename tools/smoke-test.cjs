@@ -495,11 +495,37 @@ async function main() {
     'the code block never becomes a scroll container',
     !/overflow:\s*(hidden|auto|scroll)/.test(blockBody),
   );
-  // 别再给表头补 border-radius 来「修」这个 —— 那只管顶部，管不到「表头滑到底」那个现场，
-  // 而且会在顶部造出双圆角。表头保持宿主给的半径就够了。
+  // 圆角**只由外壳的 `overflow: clip` 给**，表头一个角都不要自己声明（v2.48.2）。
+  //
+  // 表头是 `sticky; top: 0`。它自带圆角时，一旦吸在视口顶上，外壳的圆角已经滚出屏幕，
+  // 表头的圆角还在 —— 那两个弧挖出的缺口里露出外壳（方角）的填充，就是用户说的
+  // 「文本框什么也不干，在表头的左上右上会出现文本框的直角」。
+  //
+  // 所以这里测的是**性质**：表头那几条规则里不许出现非零的 `border-*-radius`。
+  // 不许写 `!includes('border-radius')` —— 现在我们是主动把它写成 0，那条会假绿。
+  const bannerRuleBodies = (css) => {
+    const out = [];
+    let at = css.indexOf('[class*="_banner"]');
+    while (at >= 0) {
+      const open = css.indexOf('{', at);
+      const close = css.indexOf('}', open);
+      if (open < 0 || close < 0) break;
+      out.push(css.slice(open, close));
+      at = css.indexOf('[class*="_banner"]', close);
+    }
+    return out;
+  };
+  const bannerRadiusDecls = bannerRuleBodies(base.css).flatMap((body) =>
+    [...body.matchAll(/border(?:-(?:top|bottom))?(?:-(?:left|right))?-radius:\s*([^;!]+)/g)].map((m) => m[1].trim()),
+  );
   check(
-    'the banner does not invent its own radius',
-    !String(ruleBody(base.css, '[class*="_banner"]')).includes('border-radius'),
+    'the banner never rounds a corner of its own',
+    bannerRadiusDecls.every((value) => /^0(?:px)?$/.test(value)),
+    bannerRadiusDecls.join(' | '),
+  );
+  check(
+    'the banner explicitly flattens its top corners',
+    /\[class\*="_banner"\][^{]*\{[\s\S]{0,200}?border-top-left-radius: 0 !important/.test(base.css),
   );
   check('the pane ring is an inset shadow', /inset 0 0 0 1px color-mix\(in srgb, var\(--dshbg-raw-label-0\) 16%/.test(base.css));
   // 诊断开关已经摘掉（v2.48.0，闪烁定位到面板快照并修完之后）。**但它们必须是真的关掉，

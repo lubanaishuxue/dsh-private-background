@@ -1189,6 +1189,22 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
       //
       // 这条注释不能写进下面的模板字符串：CSS 里出现块注释会被「no stray block comments」
       // 拦下，而注释里只要有反引号就提前闭合模板字符串。两种各炸过一次。
+      //
+      // ---- 表头不许自带圆角（v2.48.2，用户「先做 2」）----
+      //
+      // 宿主的表头自己写着 `border-top-left/right-radius: <同一个半径>`。**没吸顶时它是对的**：
+      // 表头圆角 + 外壳圆角半径相同，一叠正好是一个角。
+      //
+      // 但表头是 `sticky; top: 0`。块滚到一半、表头吸在视口顶上时，**外壳的圆角已经滚出屏幕**，
+      // 表头的圆角还在 —— 那两个弧挖出两个缺口，缺口里露出的是外壳（方角）自己的填充。
+      // 用户的原话：「文本框什么也不干，在表头的左上右上会出现文本框的直角」。
+      // 实测 `diag/banner-lid.cjs` 的 4 倍放大图里，右上角那个方块就是它。
+      //
+      // 修法**不是**给表头补半径（第一版就是这么错的），而是**把表头的半径摘掉**，让圆角只由
+      // 外壳的 `overflow: clip` 提供：
+      //   - 没吸顶：外壳裁一次，表头看上去仍然是圆的（半径一样，逐像素相同）
+      //   - 吸顶：外壳的圆角在屏幕外，表头是方的，缺口不存在
+      // 这就是「圆角永远由容器给，子元素一个角都不要自己声明」。
       return `
 ${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, ...bubble, changed])} {
 ${glassPane()}
@@ -1218,6 +1234,12 @@ ${prefixed('html[data-dshbg-on]', blocks.flatMap((b) => [`${b} [class*="_bannerW
     inset 0 -1px 0 0 rgb(0 0 0 / 0.22) !important;
   -webkit-backdrop-filter: blur(${bannerBlur}px) saturate(160%) !important;
   backdrop-filter: blur(${bannerBlur}px) saturate(160%) !important;
+}
+${prefixed('html[data-dshbg-on]',
+  blocks.flatMap((b) => [`${b} [class*="_banner"]`, `${b} [class*="_header_"]`]),
+)} {
+  border-top-left-radius: 0 !important;
+  border-top-right-radius: 0 !important;
 }
 ${prefixed('html[data-dshbg-on]', [inlineCode])} {
 ${glassChip()}
