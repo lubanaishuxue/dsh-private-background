@@ -1095,28 +1095,17 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
      *   transparent rules stay as a belt-and-braces for `pre` and the `_banner` row, which
      *   paint their own backgrounds.
      *
-     *   **`_bannerWrap` is a lid, and the lid is the blur.** The host makes it
-     *   `position: sticky; top: 0; z-index: 6` and paints it with `var(--dsw-alias-bg-base)`,
-     *   so it is the thing code scrolls underneath. Clearing it completely (which every
-     *   version up to 2.44.0 did) turned the lid into a window: two lines of code ended up
-     *   overlapping the language label and the copy button, which reads as "the sticky is
-     *   broken". But giving it its own fill is how the title bar became a dark slab on a
-     *   light block - see the note at the top of this function. It now paints nothing and
-     *   keeps `backdrop-filter`, which is the half that actually hides the code.
+     *   **`_bannerWrap` is the exception, and it is the opposite of everything above.** The
+     *   host makes it `position: sticky; top: 0; z-index: 6` and paints it with
+     *   `var(--dsw-alias-bg-base)` - it is a *lid* for the code scrolling underneath, not a
+     *   surface on wallpaper. Clearing it (which every version up to 2.44.0 did) turned the
+     *   lid into a window: two lines of code ended up overlapping the language label and the
+     *   copy button, which reads as "the sticky is broken". It now takes the composer's
+     *   material instead - see `bannerFill` / `bannerBlur` at the top of this function.
      *
      *   Note the near-miss: `[class*="_banner"]` matches `_bannerWrap` **and** `_banner`, so
      *   a rule written for the row silently hits the lid too. The two need separate rules,
      *   in this order.
-     *
-     *   **Two more shapes have a `_header_` and no banner attribute at all**: the terminal
-     *   block (`_block_8z71b_`) and the search-results block (`_block_1u3n2_`). Both paint
-     *   `var(--dsw-alias-markdown-code-block)` on the block and
-     *   `var(--dsw-alias-markdown-code-block-banner)` on the header, and both were left
-     *   opaque because neither `[data-code-block-banner]` nor `.md-code-block` is on them.
-     *   They are matched by the direct-child `_header_` alternative in `blocks`, and their
-     *   header is cleared by the same rule as the markdown one - the header paints the
-     *   *banner* token, not the block token, so clearing the custom properties alone would
-     *   have missed it.
      * - Attachment chips are `cJsG2q_fileCard` - hash first, then the local name, so
      *   `[class*="_fileCard"]` is the stable half.
      * - Deliverable cards are `flL80G_file`, and they paint `var(--deliverable-fill)` - a
@@ -1132,42 +1121,25 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
      *   and reproducing it means a block-level `pre` is never turned into a chip.
      */
     function transcriptGlassCss(settings) {
-      // The banner's lid used to borrow the *composer's* fill, and that is what made the
-      // title bar look like a separate dark slab welded onto a light block: the composer
-      // slider sat at 50% while the block body painted `PANE_FILL` (22%), so the same glass
-      // was painted twice as dark inside one rectangle.
+      // The banner borrows the *composer's* material rather than inventing its own number.
+      // Two reasons, and the second one is the interesting one:
       //
-      // **The fill is not what hides the code scrolling underneath.** The host makes
-      // `_bannerWrap` `position: sticky; top: 0; z-index: 6`, so lines of code really do
-      // pass under it, and what makes them unreadable is the blur - at `blur(40px)` a 12px
-      // monospace line is gone. A number tuned by "how dark does the bar look" would have
-      // missed that entirely; the 86%-fill version hid the code by making the bar almost
-      // solid, which is exactly what the user rejected as a black band.
+      //  1. It is the same kind of surface in the user's eye - a frosted strip you read
+      //     through - so it should read as the same material, not as a second dialect of
+      //     glass sitting 200px above the input box.
+      //  2. The host gives `_bannerWrap` `position: sticky; top: 0; z-index: 6`, so lines of
+      //     code pass *underneath* it. What hides them is the blur, not the fill: at 50% fill
+      //     the code is still plainly readable, and at `blur(50px)` it is gone. A number
+      //     tuned by "how dark does the bar look" would have missed that entirely - the
+      //     earlier 86%-fill version hid the code by making the bar almost solid, which is
+      //     exactly what the user rejected.
       //
-      // So the wrap paints **nothing of its own**. It sits inside the block, the block
-      // already paints `paneFill()`, and the header therefore reads at the same tone as the
-      // body - one piece of glass, with the hairline shadow doing the separating. Same
-      // expression, not the same number: that is the rule this file already follows for
-      // `PANE_FILL` and the history meter.
+      // Same defaults as `composerGlassCss`, so the two cannot drift apart.
+      const bannerFill = clamp(settings.composerSurface === undefined ? 85 : settings.composerSurface, 0, 100);
       const bannerBlur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
       // A comma inside one item would leave its tail unprefixed, so these stay separate
       // entries and are spread into every rule that needs them.
-      //
-      // Three hooks, because the host ships three shapes of "code block with a lid":
-      //   - `[data-code-block-banner]` on the markdown block's row (`_banner` for the plain
-      //     variant, `_header_1pq26_10` for the one with labels).
-      //   - a direct `_header_` child, which is the shape the terminal block (`_block_8z71b_`)
-      //     and the search-results block (`_block_1u3n2_`) use - neither carries
-      //     `data-code-block-banner` and neither carries `md-code-block`, so the first two
-      //     alternatives miss them and they stayed opaque.
-      //   - `.md-code-block`, the one non-hashed hook, which is on every markdown block even
-      //     when the banner is missing.
-      const blocks = [
-        `[class*="_block_"]:has([data-code-block-banner])`,
-        `[class*="_block_"]:has(> [class*="_header_"])`,
-        `.md-code-block`,
-      ];
-
+      const blocks = [`[class*="_block_"]:has([data-code-block-banner])`, `.md-code-block`];
       const inlineCode = `[class*="_markdown_"] :not(pre) > code`;
       // The user's own message. `_bubble` paints `--dsw-specific-bubble`, another token
       // that is not in the remix list, so it stays the theme's opaque grey no matter what
@@ -1232,7 +1204,7 @@ ${glassPane()}
   overflow: clip !important;
 }
 ${prefixed('html[data-dshbg-on]',
-  blocks.flatMap((b) => [`${b} [class*="_banner"]`, `${b} [class*="_header_"]`]),
+  blocks.flatMap((b) => [`${b} [class*="_banner"]`]),
 )} {
   background: transparent !important;
 }
@@ -1240,7 +1212,7 @@ ${prefixed('html[data-dshbg-on]', blocks.flatMap((b) => [`${b} pre`]))} {
   background: transparent !important;
 }
 ${prefixed('html[data-dshbg-on]', blocks.flatMap((b) => [`${b} [class*="_bannerWrap"]`]))} {
-  background-color: transparent !important;
+  background-color: color-mix(in srgb, var(--dshbg-raw-base) ${bannerFill}%, transparent) !important;
   box-shadow:
     inset 0 1px 0 0 rgb(255 255 255 / 0.10),
     inset 0 -1px 0 0 rgb(0 0 0 / 0.22) !important;
