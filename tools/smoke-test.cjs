@@ -382,42 +382,39 @@ async function main() {
     /\[class\*="_banner"\],[\s\S]{0,300}?\{\s*background: transparent !important/.test(glass.css),
   );
   // 表头是**盖子**，不是窗口：宿主给它 `position: sticky; top: 0`，代码会从它下面滑过去。
-  // 它借的是**对话框的材料**（composerSurface + menuBlur），不自己另立一套数字 ——
-  // 这样两处玻璃不会分家，用户调一次两个一起动。
   //
-  // 真正遮住代码的是**模糊**不是填充：50% 时文字仍然清晰，`blur(50px)` 才让它消失。
-  // 所以「填充要多黑」这个问法本身是错的，别再去调一个更大的填充值。
+  // 遮住代码的是**模糊**，不是填充 —— 50% 时文字仍然清晰，`blur(40px)` 才让它消失。
+  // 「填充要多黑」这个问法本身是错的：照它推到 86% 得到的是一条黑带（2.44.0 被否）。
+  //
+  // ⚠️ 这三条以前钉的是「表头的填充 == 对话框的填充」。那是**在保护 bug**：
+  // 对话框滑杆在 50%，而代码块正文是 `PANE_FILL`（22%），于是同一个矩形里同一个玻璃被画了
+  // 两遍深色 —— 用户看到的就是「标题框还是黑的、没做全部适配」。
+  // 现在钉的是性质：**表头自己不画填充**（正文那份就是全部），**模糊还在**（盖子还在）。
   const bannerRule = (css) => {
-    const fill = css.match(
-      /\[class\*="_bannerWrap"\] \{\s*background-color: color-mix\(in srgb, var\(--dshbg-raw-base\) (\d+)%/,
-    );
-    const blur = css.match(/\[class\*="_bannerWrap"\] \{[\s\S]{0,600}?backdrop-filter: blur\((\d+)px\)/);
-    return { fill: Number(fill && fill[1]), blur: Number(blur && blur[1]) };
+    const rule = css.match(/\[class\*="_bannerWrap"\] \{([\s\S]{0,700}?)\}/);
+    const body = rule ? rule[1] : '';
+    const blur = body.match(/backdrop-filter: blur\((\d+)px\)/);
+    return {
+      paintsOwnFill: /background-color: (?!transparent)[^;]+;/.test(body),
+      transparent: /background-color: transparent !important/.test(body),
+      blur: Number(blur && blur[1]),
+    };
   };
   const bannerDefault = bannerRule(glass.css);
-  check('the banner stays a lid, not a window', bannerDefault.fill > 0 && bannerDefault.blur > 0);
-  // 真正的性质是「跟对话框是同一个值」，不是「等于某个数字」—— 所以从同一张样式表里
-  // 把对话框自己的两个值读出来比对。写死 50/50 的话，用户一调滑杆这条就失去意义了。
-  const composerFill = Number(
-    (glass.css.match(
-      /\[data-composer-card\] \{\s*position: relative !important;\s*background-color: color-mix\(in srgb, var\(--dshbg-raw-base\) (\d+)%/,
-    ) || [])[1],
+  check('the banner keeps its blur (that is the lid)', bannerDefault.blur > 0);
+  check('the banner paints no fill of its own', bannerDefault.transparent && !bannerDefault.paintsOwnFill);
+  // 同一个矩形里只能有一层深色：正文的 paneFill 已经在底下，表头再加一层就是那条黑带。
+  // 断言比的是**表达式**，不是数字 —— 表头要是哪天自己写回一个百分比，这条就会响。
+  check(
+    'the banner does not add a second layer of dark',
+    !/\[class\*="_bannerWrap"\][^}]{0,300}?color-mix\(in srgb, var\(--dshbg-raw-base\)/.test(glass.css),
   );
-  const composerBlur = Number(
-    (glass.css.match(/\[data-composer-card\] \{[\s\S]{0,600}?backdrop-filter: blur\((\d+)px\)/) || [])[1],
-  );
-  check('the banner reads the composer fill', composerFill > 0 && bannerDefault.fill === composerFill);
-  check('the banner reads the composer blur', composerBlur > 0 && bannerDefault.blur === composerBlur);
   const bannerTuned = bannerRule(
     (await emit({ composerStyle: 'glass', composerSurface: 72, menuBlur: 24 })).css,
   );
   check(
-    'the banner follows those sliders instead of a constant',
-    bannerTuned.fill === 72 && bannerTuned.blur === 24,
-  );
-  check(
-    'the banner is never left transparent',
-    !/\[class\*="_bannerWrap"\][^}]{0,200}?background: transparent/.test(glass.css),
+    'the banner blur still follows its slider',
+    bannerTuned.blur === 24 && !bannerTuned.paintsOwnFill,
   );
   // 表头不在的时候（无语言围栏、流式未完成、轨迹与预览渲染器）`:has()` 那半不匹配，
   // 代码块就一点底色都没有、把壁纸直接透出来 —— 所以 `.md-code-block` 必须单独兜一层。
@@ -427,6 +424,27 @@ async function main() {
   check(
     'banner-less code blocks still get the glass',
     !!mdBlockRule && mdBlockRule[1].includes('background-color: color-mix'),
+  );
+  // 宿主有三种「带盖子的代码块」，只有 markdown 那种带 `data-code-block-banner`。
+  // 终端块 `_block_8z71b_` 和搜索结果块 `_block_1u3n2_` 都没有这个属性、也没有
+  // `.md-code-block`，只能靠「直接子元素是 `_header_`」认出来 —— 漏了它们就是
+  // 用户说的「没做全部适配」。
+  check(
+    'blocks whose lid is a bare _header_ are covered too',
+    glass.css.includes('[class*="_block_"]:has(> [class*="_header_"])'),
+  );
+  // 第二种表头（`_header_1pq26_10`）画的是 `--dsw-alias-markdown-code-block-banner`，
+  // 不是 `--dsl-code-block-*`，所以清自定义属性清不到它，必须单独清 background。
+  const headerClearRule = (() => {
+    const at = glass.css.indexOf('[class*="_header_"]');
+    if (at < 0) return null;
+    const open = glass.css.indexOf('{', at);
+    const close = glass.css.indexOf('}', open);
+    return open < 0 || close < 0 ? null : glass.css.slice(open, close);
+  })();
+  check(
+    'the _header_ row is cleared as well as the _banner_ row',
+    !!headerClearRule && headerClearRule.includes('background: transparent !important'),
   );
   // Two competing routes to the same surface would fight; glass paints directly.
   // The frame-level remix still emits the token, so assert on the card rule specifically.
