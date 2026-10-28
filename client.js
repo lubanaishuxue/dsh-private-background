@@ -1169,25 +1169,6 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
       // translucent body. Both halves are fixed together: the card gets the pane recipe, and
       // those two custom properties are stood down (which also kills the static hover tint).
       const changed = '[data-changed-files]';
-      // ---- 表头必须自己圆角，不能指望外壳裁（v2.48.1）----
-      //
-      // 外壳（`_block_`）上没有 `overflow: hidden` —— 也不能加，加了 `position: sticky`
-      // 的表头就不再跟着代码滚。所以表头一旦是直角，它的背景会直接铺到外壳圆角的外面：
-      // 角上留下一小块方角，而方角底下是壁纸、圆角里面是「表头填充叠在外壳填充上」，
-      // 两边颜色不同，于是看起来像「圆角被一个直角框住」。
-      //
-      // 用 `inherit` 而不是把半径抄成常数：外壳的半径是宿主给的
-      // （`--dsl-code-block-border-radius` → `--dsw-radius-lg`），抄一个 8px/16px 进来，
-      // 下一次主题调整就对不上了。`inherit` 直接取父元素算出来的值，`_banner` 再从
-      // `_bannerWrap` 继承，链条正好是对的。**宿主给不给这两行是版本相关的** ——
-      // `ref/frontend.css` 里两个盒子都写了 `border-top-*-radius`，但用户真机上那一版
-      // 显然没给，否则不会出现方角。所以不能靠「宿主会给我」。
-      //
-      // 下两个角归零：表头下面是代码区，只有上半部分属于外壳的圆角。
-      //
-      // 顺带一个坑：这条注释不能写进下面的模板字符串里。CSS 里出现 `/*` 会被
-      // 「no stray block comments」那条断言拦下来，而且注释里只要有反引号就会提前
-      // 闭合模板字符串 —— 两种写法都炸过一次。
       return `
 ${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, ...bubble, changed])} {
 ${glassPane()}
@@ -1205,10 +1186,6 @@ ${prefixed('html[data-dshbg-on]',
   blocks.flatMap((b) => [`${b} [class*="_banner"]`]),
 )} {
   background: transparent !important;
-  border-top-left-radius: inherit !important;
-  border-top-right-radius: inherit !important;
-  border-bottom-left-radius: 0 !important;
-  border-bottom-right-radius: 0 !important;
 }
 ${prefixed('html[data-dshbg-on]', blocks.flatMap((b) => [`${b} pre`]))} {
   background: transparent !important;
