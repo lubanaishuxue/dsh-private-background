@@ -1169,6 +1169,26 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
       // translucent body. Both halves are fixed together: the card gets the pane recipe, and
       // those two custom properties are stood down (which also kills the static hover tint).
       const changed = '[data-changed-files]';
+      // ---- 代码块要自己裁圆角，用 `overflow: clip`（v2.48.1）----
+      //
+      // 表头是 `position: sticky; top: 0` 的盖子，会跟着滚动往下滑。滑到最远时它的**下沿
+      // 正好压在外壳的下沿上**（sticky 的极限位移 = 外壳高 − 表头高，那一刻两者底边重合）。
+      // 表头下两角是直角、外壳下两角是圆角，而外壳**不裁子元素** —— 于是表头的深色填充铺到
+      // 外壳圆角外面，左下右下变成方角，圆角上只剩一道弧线。用户截图就是这个。
+      //
+      // 顶上是反过来的、而且本来就没问题：外壳上两角是直角、表头是圆角，两者半径相同，
+      // 一叠正好合成一个圆角。
+      //
+      // 修法**不是**给表头补 `border-radius: inherit` —— 那只管顶部，管不到「表头滑到底」
+      // 这个真正的现场。要修的是「外壳不裁」这件事本身。
+      //
+      // ⚠️ **`clip` 不是 `hidden`，这两个不能换。** `overflow: hidden` 会建立滚动容器，
+      // sticky 的参照物变成它自己（而它不滚动）→ 表头彻底不再粘，代码直接盖到语言标签上。
+      // `overflow: clip` 不建滚动容器，只按圆角裁，sticky 照旧相对转写区滚动。
+      // 实测 `diag/banner-clip.html`：`hidden` 位移 0/72（死了），`clip` 位移 72/72（活着）。
+      //
+      // 这条注释不能写进下面的模板字符串：CSS 里出现块注释会被「no stray block comments」
+      // 拦下，而注释里只要有反引号就提前闭合模板字符串。两种各炸过一次。
       return `
 ${prefixed('html[data-dshbg-on]', ['[class*="_fileCard"]', ...deliverable, ...bubble, changed])} {
 ${glassPane()}
@@ -1181,6 +1201,7 @@ ${prefixed('html[data-dshbg-on]', blocks)} {
   --dsl-code-block-background: transparent !important;
   --dsl-code-block-banner-background-color: transparent !important;
 ${glassPane()}
+  overflow: clip !important;
 }
 ${prefixed('html[data-dshbg-on]',
   blocks.flatMap((b) => [`${b} [class*="_banner"]`]),

@@ -477,6 +477,30 @@ async function main() {
   // 又会让竖向滚动条的高度预算变化 —— 两条滚动条互相喂饭，就是你看到的「两个东西
   // 各自在闪、节奏还错开」。这条断言是全局的：配方里一次 border 都不许有。
   check('no pane grows itself with a real border', !/border: 1px solid/.test(base.css));
+  // ⭐ v2.48.1：代码块必须自己裁圆角。
+  //
+  // 表头是 sticky 的盖子，滑到最远时下沿压在外壳下沿上；表头下角是直角、外壳下角是圆角，
+  // 而外壳不裁子元素 → 表头的填充铺到圆角外面，下两角变方角。修法是让外壳裁。
+  //
+  // ⚠️ **`clip` 和 `hidden` 不能换。** `hidden` 会建立滚动容器，sticky 的参照物变成它
+  // 自己（而它不滚动）→ 表头彻底不粘。`clip` 不建滚动容器，只按圆角裁。
+  // 所以这里测的是两件事：一定要 clip，一定不能是 hidden/auto/scroll。
+  const blockBody = String(ruleBody(base.css, '[class*="_block_"]'));
+  check(
+    'the code block clips its own rounded corners',
+    blockBody.includes('overflow: clip'),
+    blockBody.slice(0, 120),
+  );
+  check(
+    'the code block never becomes a scroll container',
+    !/overflow:\s*(hidden|auto|scroll)/.test(blockBody),
+  );
+  // 别再给表头补 border-radius 来「修」这个 —— 那只管顶部，管不到「表头滑到底」那个现场，
+  // 而且会在顶部造出双圆角。表头保持宿主给的半径就够了。
+  check(
+    'the banner does not invent its own radius',
+    !String(ruleBody(base.css, '[class*="_banner"]')).includes('border-radius'),
+  );
   check('the pane ring is an inset shadow', /inset 0 0 0 1px color-mix\(in srgb, var\(--dshbg-raw-label-0\) 16%/.test(base.css));
   // 诊断开关已经摘掉（v2.48.0，闪烁定位到面板快照并修完之后）。**但它们必须是真的关掉，
   // 不能只是从界面上消失** —— 当初勾过的人 localStorage 里还留着 `flat: true`，如果
