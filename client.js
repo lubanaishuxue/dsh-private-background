@@ -141,7 +141,7 @@ window.__ModuleLoader__.load({
         fullWindow: '同时应用到左侧对话栏',
         fullWindowHint: '关掉时只有工作区换背景，左侧对话列表保持原样；打开则整窗铺满。',
         dockVisible: '显示调参卡',
-        dockVisibleHint: '窗口左下角那张临时调参卡（滑杆 + 探针）。数值调完就关掉它，界面恢复干净；随时可以再打开。',
+        dockVisibleHint: '那张临时调参卡（滑杆 + 探针），拖标题栏可以挪到任何地方。数值调完就关掉它，界面恢复干净；随时可以再打开。',
         font: '字体颜色',
         fonts: { theme: '跟随主题', auto: '自动', light: '浅色', dark: '深色', custom: '自定义' },
         fontHint: '「自动」按背景实际明暗选黑或白；「跟随主题」不做任何改动。',
@@ -198,7 +198,7 @@ window.__ModuleLoader__.load({
         fullWindow: 'Also apply to the conversation sidebar',
         fullWindowHint: 'Off: only the work area changes and the sidebar keeps its own look. On: the wallpaper fills the window.',
         dockVisible: 'Show tuning card',
-        dockVisibleHint: 'The temporary tuning card in the bottom-left corner (sliders + probe). Turn it off once the numbers are settled; it can always be turned back on.',
+        dockVisibleHint: 'The temporary tuning card (sliders + probe); drag its header to move it anywhere. Turn it off once the numbers are settled; it can always be turned back on.',
         font: 'Text colour',
         fonts: { theme: 'Theme', auto: 'Auto', light: 'Light', dark: 'Dark', custom: 'Custom' },
         fontHint: '"Auto" picks black or white from the background. "Theme" leaves text untouched.',
@@ -290,8 +290,13 @@ window.__ModuleLoader__.load({
         menuBlur: clamp(parsed.menuBlur === undefined ? fallback.menuBlur : parsed.menuBlur, 0, 320),
         sidebarFill: clamp(parsed.sidebarFill === undefined ? fallback.sidebarFill : parsed.sidebarFill, 0, 100),
         showDock: parsed.showDock !== false,
-        flat: parsed.flat === true,
-        noWallpaperBlur: parsed.noWallpaperBlur === true,
+        // Both diagnostic switches are **forced off**, not read from storage. Anyone who
+        // ticked them while chasing the flicker still has `true` saved, and honouring that
+        // would leave the plugin permanently blur-less with no switch on screen to undo it -
+        // the same dead end the `showDock` early-return created. To re-arm the diagnostics,
+        // restore `parsed.flat === true` here and put the two entries back in the card.
+        flat: false,
+        noWallpaperBlur: false,
         fullWindow: parsed.fullWindow === true,
         font: fonts.includes(parsed.font) ? parsed.font : fallback.font,
         fontColor:
@@ -3380,10 +3385,11 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
     const TUNER_CSS = `${DOCK_CSS}
 .dshbg-tuner {
   position: fixed;
+  /* Fallback position only: mountTuner() places the card on the right-hand side as soon as
+     it is in the document, and restores wherever the user last dragged it. Every fixed
+     corner collides with something - the bottom-left is the host's 设置 button and the cost
+     meter, the top-right is the session chips - so the position is the user's to choose. */
   left: 12px;
-  /* 64px, not 12px: the host's own settings button and the cost meter live in the sidebar
-     foot, which is exactly the bottom-left corner. A diagnostic card that swallows the
-     click on 设置 is not a diagnostic card. */
   bottom: 64px;
   z-index: 2147483000;
   width: 248px;
@@ -3392,6 +3398,14 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
   max-height: 78vh;
   overflow: hidden auto;
   box-shadow: inset 0 0 0 1px rgb(128 128 128 / 30%), 0 14px 36px -14px rgb(0 0 0 / 60%);
+}
+.dshbg-tuner .dshbg-dock-head {
+  cursor: grab;
+  /* Without this a drag on a touch/pen surface scrolls the card instead of moving it. */
+  touch-action: none;
+}
+.dshbg-tuner .dshbg-dock-head:active {
+  cursor: grabbing;
 }
 `;
 
@@ -3497,21 +3511,15 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
             write: (on) => patchSettings({ font: on ? 'auto' : 'theme' }),
             caption: text.dockFont,
           },
-          // The kill switch. Ticking it removes every blur this plugin writes, so the next
-          // "does it still flicker?" answer is about the blur alone.
-          {
-            read: () => settingsNow().flat === true,
-            write: (on) => patchSettings({ flat: on }),
-            caption: lang === 'zh' ? '关掉所有模糊（排查用）' : 'No blur (diagnostic)',
-          },
-          // The narrow half: wallpaper only. Two switches instead of one is what separates
-          // "the whole-screen filter is too expensive" from "the panes' snapshots are" -
-          // the fixes are nothing alike, so guessing between them wastes a round trip.
-          {
-            read: () => settingsNow().noWallpaperBlur === true,
-            write: (on) => patchSettings({ noWallpaperBlur: on }),
-            caption: lang === 'zh' ? '只关壁纸模糊' : 'No wallpaper blur',
-          },
+          // The two diagnostic switches used to sit here. They did their job: "no blur at
+          // all" is what pinned the flicker on the panes' backdrop snapshots, and the fix
+          // is in v2.47.0 - `glassPane` / `glassChip` no longer take a snapshot at all.
+          // Nothing is left for them to turn off, and a card that offers a switch which
+          // changes nothing is worse than one that does not offer it.
+          //
+          // The plumbing stays (`flatCss`, the `data-dshbg-flat` / `data-dshbg-noblur`
+          // attributes) because the next flicker report will want it back. To re-arm it:
+          // add the two entries back here, and stop forcing them false in `parseSettings`.
         ];
 
         for (const item of switches) {
@@ -3614,16 +3622,130 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
         sync();
       }
 
-      head.addEventListener('click', () => setOpen(!open));
+      let suppressClick = false;
+
+      head.addEventListener('click', () => {
+        // A drag ends with a click on the same element. Without this flag, moving the card
+        // would also collapse it - which reads as "the drag did something weird" rather
+        // than "the drag moved it".
+        if (suppressClick) {
+          suppressClick = false;
+          return;
+        }
+        setOpen(!open);
+      });
+
+      // ---- dragging -------------------------------------------------------
+      //
+      // The card has to be movable because there is no corner of the window that is not
+      // already somebody else's: bottom-left is 设置 and the cost meter, top-right is the
+      // session chips, bottom-right is the jump-to-bottom disc. Rather than pick the least
+      // bad one and be wrong for a different window size, it remembers where it was put.
+      const POS_KEY = 'dshbg-tuner-pos';
+      let dragState = null;
+
+      const readPos = () => {
+        try {
+          const raw = window.localStorage.getItem(POS_KEY);
+          if (raw === null) return null;
+          const parsed = JSON.parse(raw);
+          if (typeof parsed !== 'object' || parsed === null) return null;
+          if (typeof parsed.x !== 'number' || typeof parsed.y !== 'number') return null;
+          return parsed;
+        } catch (failure) {
+          return null;
+        }
+      };
+
+      const savePos = (x, y) => {
+        try {
+          window.localStorage.setItem(POS_KEY, JSON.stringify({ x, y }));
+        } catch (failure) {
+          // Private mode / quota. Losing the position is not worth an error.
+        }
+      };
+
+      function place(x, y) {
+        const rect = host.getBoundingClientRect();
+        // Keep at least a sliver on screen: a card dragged past the edge is unreachable, and
+        // `localStorage` would keep it there across restarts.
+        const maxX = Math.max(0, window.innerWidth - rect.width);
+        const maxY = Math.max(0, window.innerHeight - rect.height);
+        host.style.left = `${Math.min(Math.max(0, x), maxX)}px`;
+        host.style.top = `${Math.min(Math.max(0, y), maxY)}px`;
+        host.style.right = 'auto';
+        host.style.bottom = 'auto';
+      }
+
+      const defaultPlace = () => {
+        const rect = host.getBoundingClientRect();
+        place(
+          window.innerWidth - rect.width - 16,
+          Math.max(16, (window.innerHeight - rect.height) / 2),
+        );
+      };
+
+      head.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
+        const rect = host.getBoundingClientRect();
+        dragState = {
+          id: event.pointerId,
+          offsetX: event.clientX - rect.left,
+          offsetY: event.clientY - rect.top,
+          startX: event.clientX,
+          startY: event.clientY,
+          moved: false,
+        };
+        head.setPointerCapture(event.pointerId);
+      });
+
+      head.addEventListener('pointermove', (event) => {
+        if (dragState === null || event.pointerId !== dragState.id) return;
+        if (!dragState.moved) {
+          // 4px of slack, so a slightly shaky click still opens the card.
+          if (
+            Math.abs(event.clientX - dragState.startX) < 4 &&
+            Math.abs(event.clientY - dragState.startY) < 4
+          ) {
+            return;
+          }
+          dragState.moved = true;
+        }
+        place(event.clientX - dragState.offsetX, event.clientY - dragState.offsetY);
+      });
+
+      const endDrag = (event) => {
+        if (dragState === null || event.pointerId !== dragState.id) return;
+        const moved = dragState.moved;
+        dragState = null;
+        if (head.hasPointerCapture(event.pointerId)) head.releasePointerCapture(event.pointerId);
+        if (!moved) return;
+        suppressClick = true;
+        savePos(parseFloat(host.style.left), parseFloat(host.style.top));
+      };
+      head.addEventListener('pointerup', endDrag);
+      head.addEventListener('pointercancel', endDrag);
+
+      const onResize = () => {
+        // Shrinking the window can leave the card outside it. Re-clamping is enough - the
+        // stored position stays whatever the user chose.
+        if (host.style.left === '') return;
+        place(parseFloat(host.style.left), parseFloat(host.style.top));
+      };
+      window.addEventListener('resize', onResize);
 
       const unsubscribe = subscribe(sync);
       document.body.appendChild(host);
+      const saved = readPos();
+      if (saved === null) defaultPlace();
+      else place(saved.x, saved.y);
       sync();
 
       return () => {
         unsubscribe();
         if (timer !== 0) clearInterval(timer);
         frameMeter.stop();
+        window.removeEventListener('resize', onResize);
         host.remove();
       };
     }

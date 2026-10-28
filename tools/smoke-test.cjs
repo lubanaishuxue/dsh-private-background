@@ -67,6 +67,16 @@ function makeElement(tag) {
     },
     contains() { return false; },
     closest() { return null; },
+    // The tuning card is draggable, so it reads and writes real geometry. A fixed 248x320
+    // box is enough for the clamp arithmetic to be checkable; anything more faithful would
+    // be a layout engine.
+    getBoundingClientRect() {
+      return { left: 0, top: 0, right: 248, bottom: 320, width: 248, height: 320, x: 0, y: 0 };
+    },
+    // Pointer capture is what lets a drag continue once the pointer leaves the header.
+    setPointerCapture() {},
+    releasePointerCapture() {},
+    hasPointerCapture() { return false; },
     // The tuning card is plain DOM, so it wires real listeners. Recording them lets a test
     // do what the user does - click the header, drag a slider - instead of only looking at
     // the tree it built.
@@ -77,9 +87,11 @@ function makeElement(tag) {
     removeEventListener(type) {
       if (el._on !== undefined) delete el._on[type];
     },
-    fire(type) {
+    // Pointer events need their own fields (clientX / pointerId), so the stub has to pass a
+    // payload through rather than hand every handler the same shape.
+    fire(type, props) {
       const handler = el._on === undefined ? undefined : el._on[type];
-      if (handler !== undefined) handler({ target: el });
+      if (handler !== undefined) handler({ target: el, ...(props === undefined ? {} : props) });
     },
   };
   Object.defineProperty(el, 'textContent', {
@@ -131,7 +143,13 @@ function harness(settingsOverride) {
     querySelectorAll() { return []; },
   };
 
+  const windowListeners = {};
   const window = {
+    // The card clamps its drag position against the viewport and listens for resize.
+    innerWidth: 1280,
+    innerHeight: 800,
+    addEventListener(type, handler) { windowListeners[type] = handler; },
+    removeEventListener(type) { delete windowListeners[type]; },
     localStorage: {
       getItem(key) { return store.has(key) ? store.get(key) : null; },
       setItem(key, value) { store.set(key, String(value)); },
@@ -196,7 +214,7 @@ function harness(settingsOverride) {
   vm.createContext(sandbox);
   vm.runInContext(CODE, sandbox, { filename: 'client.js' });
 
-  return { definition, ctx, registered, documentElement, head, body };
+  return { definition, ctx, registered, documentElement, head, body, window, windowListeners, store };
 }
 
 const failures = [];
@@ -212,7 +230,7 @@ function check(name, condition, detail) {
 /** Apply the plugin with the given settings and return the emitted stylesheet. */
 async function emit(settingsOverride) {
   const run = harness(settingsOverride);
-  const { definition, ctx, registered, documentElement, head, body } = run;
+  const { definition, ctx, registered, documentElement, head, body, window, windowListeners, store } = run;
 
   const exported = definition.factory((name) => {
     if (name === 'react') return ReactStub;
@@ -230,6 +248,9 @@ async function emit(settingsOverride) {
     registered,
     documentElement,
     body,
+    window,
+    windowListeners,
+    store,
     tags,
     css: tags.length > 0 ? tags[0].textContent : '',
   };
@@ -457,36 +478,21 @@ async function main() {
   // 各自在闪、节奏还错开」。这条断言是全局的：配方里一次 border 都不许有。
   check('no pane grows itself with a real border', !/border: 1px solid/.test(base.css));
   check('the pane ring is an inset shadow', /inset 0 0 0 1px color-mix\(in srgb, var\(--dshbg-raw-label-0\) 16%/.test(base.css));
-  // 排查开关：一次点掉本插件写的每一个模糊。它是「还闪不闪」这个问题的唯一干净答案 ——
-  // 滑杆够不到所有声明，而 blur(0px) 本身仍然是一个 backdrop root，所以「我设成 0 了」
-  // 和「它真的关了」是两件事。
-  check('the kill switch is off by default', !base.css.includes('data-dshbg-flat'));
-  const flatCss = (await emit({ flat: true })).css;
+  // 诊断开关已经摘掉（v2.48.0，闪烁定位到面板快照并修完之后）。**但它们必须是真的关掉，
+  // 不能只是从界面上消失** —— 当初勾过的人 localStorage 里还留着 `flat: true`，如果
+  // `parseSettings` 继续认这个值，插件就会永久停在「无模糊」状态，而界面上已经没有开关
+  // 能把它关回来。那和 `showDock` 那个早退死锁是同一个形状，只是更难发现。
+  check('the diagnostics are off by default', !base.css.includes('data-dshbg-flat') && !base.css.includes('data-dshbg-noblur'));
+  const forcedOff = (await emit({ flat: true, noWallpaperBlur: true })).css;
   check(
-    'the kill switch removes every backdrop filter',
-    /\[data-dshbg-flat\] \*[\s\S]{0,200}?backdrop-filter: none !important/.test(flatCss),
+    'stale storage cannot force the diagnostics back on',
+    !forcedOff.includes('data-dshbg-flat') && !forcedOff.includes('data-dshbg-noblur'),
   );
+  // 管道留着，下一个「还闪」的报告要用。要重新武装：把两行改回 `parsed.x === true`，
+  // 再把两个勾选框加回调参卡。
   check(
-    'the kill switch also drops the wallpaper blur',
-    /\[data-dshbg-noblur\]::before \{\s*filter: none !important/.test(flatCss),
-  );
-  // 窄一半的开关：只关壁纸那一整屏 filter，面板的 backdrop 快照照旧。一个开关区分不了
-  // 「整屏 filter 太贵」和「面板快照太贵」，而这两种的修法完全不同。
-  const wallOnlyCss = (await emit({ noWallpaperBlur: true })).css;
-  check(
-    'the narrow switch leaves every backdrop filter alone',
-    !wallOnlyCss.includes('data-dshbg-flat') &&
-      /\[data-dshbg-noblur\]::before \{\s*filter: none !important/.test(wallOnlyCss),
-  );
-  check(
-    'the wallpaper-only switch is off by default',
-    !base.css.includes('data-dshbg-noblur'),
-  );
-  // 必须排在最后：它靠的是「更晚 + 更高特异性」压过上面所有配方，而不是让每个配方
-  // 都长一个 if。
-  check(
-    'the kill switch is written after every recipe',
-    flatCss.lastIndexOf('data-dshbg-flat') > flatCss.lastIndexOf('dialog::backdrop'),
+    'the diagnostic plumbing is still there for the next flicker',
+    CODE.includes('function flatCss') && CODE.includes('data-dshbg-flat') && CODE.includes('data-dshbg-noblur'),
   );
   // 用户消息气泡画 --dsw-specific-bubble，同样不在重混列表里。它属于转写区内容，
   // 所以跟着文件卡/代码块一起常开，而不是跟输入框的开关。
@@ -1179,7 +1185,7 @@ async function main() {
 
     tunerHead.fire('click');
     // 九条滑杆 + 五个开关 + 页脚 + 探针
-    check('clicking the header opens every control', tunerBody.children.length === 16, `got ${tunerBody.children.length}`);
+    check('clicking the header opens every control', tunerBody.children.length === 14, `got ${tunerBody.children.length}`);
     const ranges = tunerBody.children.filter((el) => el.tagName === 'label' && el.className === 'dshbg-dock-row');
     check('every dial is a live range input', ranges.length === 9, `got ${ranges.length}`);
     // 拖滑杆必须走 `input` 事件：`change` 只在松手时来一次，那就不是「拖到哪儿看到哪儿」了。
@@ -1191,20 +1197,45 @@ async function main() {
       check('dragging a dial writes the setting', dial.children[2].textContent === '33px', dial.children[2].textContent);
     }
 
-    const flatSwitch = tunerBody.children.filter((el) => el.className === 'dshbg-dock-switch')[3];
-    check('the kill switch is on the card', flatSwitch !== undefined);
-    if (flatSwitch !== undefined) {
-      flatSwitch.children[0].checked = true;
-      flatSwitch.children[0].fire('change');
+    // 三个产品开关（液态玻璃 / 整窗铺满 / 自动反色）。诊断那两个已经摘掉 —— 它们要关的
+    // 东西在 v2.47.0 已经不存在了，留一个什么都不改的勾选框比没有更糟。
+    const switches = tunerBody.children.filter((el) => el.className === 'dshbg-dock-switch');
+    check('the card carries the three product switches', switches.length === 3, `got ${switches.length}`);
+    const polarity = switches[2];
+    if (polarity !== undefined) {
+      polarity.children[0].checked = true;
+      polarity.children[0].fire('change');
       check(
-        'the kill switch reaches the stylesheet',
-        base.tags[0].textContent.includes('data-dshbg-flat'),
-        `sheet ${base.tags[0].textContent.length} bytes`,
+        'flipping polarity reaches the settings',
+        JSON.parse(base.store.get('dsh.custom-background.settings.v3')).font === 'auto',
+        base.store.get('dsh.custom-background.settings.v3'),
       );
-      flatSwitch.children[0].checked = false;
-      flatSwitch.children[0].fire('change');
-      check('and it turns back off', !base.tags[0].textContent.includes('data-dshbg-flat'));
+      polarity.children[0].checked = false;
+      polarity.children[0].fire('change');
     }
+    // 拖拽：位置要能改、要被记住、要在窗口缩小时被拉回可视区。三条一起测，因为它们
+    // 共用 `place()` —— 只测「能拖」的话，拖出屏幕外就再也找不回来这件事会被漏掉。
+    check('dragging the header moves the card', (() => {
+      tunerHead.fire('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
+      tunerHead.fire('pointermove', { pointerId: 1, clientX: 300, clientY: 260 });
+      tunerHead.fire('pointerup', { pointerId: 1 });
+      return tuner.style.left === '200px' && tuner.style.top === '160px';
+    })(), `${tuner.style.left} / ${tuner.style.top}`);
+    check(
+      'the position is remembered',
+      JSON.parse(base.store.get('dshbg-tuner-pos')).x === 200,
+      base.store.get('dshbg-tuner-pos'),
+    );
+    check('a drag does not also collapse the card', tunerBody.children.length === 14, `got ${tunerBody.children.length}`);
+    check('shrinking the window pulls the card back on screen', (() => {
+      base.window.innerWidth = 300;
+      base.window.innerHeight = 200;
+      base.windowListeners.resize();
+      // 窗口比卡片还小时两个上限都归 0，卡片贴左上角 —— 仍然抓得到。
+      const maxX = Math.max(0, 300 - 248);
+      const maxY = Math.max(0, 200 - 320);
+      return parseFloat(tuner.style.left) <= maxX + 0.5 && parseFloat(tuner.style.top) <= maxY + 0.5;
+    })(), `${tuner.style.left} / ${tuner.style.top}`);
     check('dock can read back computed values', CODE.includes('function probeSurface') && CODE.includes('getComputedStyle'));
     // 亮壁纸上最容易翻车的不是玻璃参数，是「白字压亮图」：极性开关必须从卡片就能切。
     check('dock can flip text polarity', CODE.includes("settings.font === 'auto'") && CODE.includes("font: 'auto'"));
