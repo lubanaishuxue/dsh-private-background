@@ -102,6 +102,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
   check('boot picks the selected picture, not the newest', snap().activeImage === a.dataUrl, snap().activeImage);
 
   await api.addImage({});
+  const d = snap().images.at(-1);
   check('a fresh upload becomes the wallpaper', snap().activeImage === 'data:new', snap().activeImage);
   check(
     'a fresh upload is written to settings',
@@ -121,20 +122,35 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
   check('and again', snap().activeImage === c.dataUrl, snap().activeImage);
 
   // ---- deleting ------------------------------------------------------------------
-  await api.removeImage(c.id);
-  check('deleting the active picture leaves nothing to paint', snap().activeImage === null, snap().activeImage);
-  check('deleting the active picture turns the wallpaper off', snap().settings.mode === 'none', snap().settings.mode);
-
-  api.patchSettings({ mode: 'image', imageId: b.id });
-  check('a surviving picture can still be selected', snap().activeImage === b.dataUrl, snap().activeImage);
+  // Removing the picture that is on screen used to blank the wallpaper outright. The
+  // selection now slides to the tile that takes its place; only an empty gallery falls
+  // back to "no background". Gallery order here is [a, b, c, d].
+  api.patchSettings({ imageId: b.id });
+  await api.removeImage(b.id);
+  check(
+    'deleting the active picture falls back to the tile that takes its place',
+    snap().activeImage === c.dataUrl,
+    snap().activeImage,
+  );
+  check('deleting the active picture keeps the wallpaper on', snap().settings.mode === 'image', snap().settings.mode);
+  check('the fallback is persisted, not just painted', writes.at(-1).imageId === c.id, writes.at(-1).imageId);
 
   await api.removeImage(a.id);
-  check('deleting an inactive picture keeps the active one', snap().activeImage === b.dataUrl, snap().activeImage);
+  check('deleting an inactive picture keeps the active one', snap().activeImage === c.dataUrl, snap().activeImage);
 
   // ---- settings that are not about the gallery must not disturb it ----------------
   api.patchSettings({ dim: 42 });
-  check('an unrelated setting keeps the wallpaper', snap().activeImage === b.dataUrl, snap().activeImage);
+  check('an unrelated setting keeps the wallpaper', snap().activeImage === c.dataUrl, snap().activeImage);
   check('an unrelated setting still gets persisted', writes.at(-1).dim === 42, writes.at(-1).dim);
+
+  // ---- emptying the gallery -------------------------------------------------------
+  await api.removeImage(c.id);
+  check('deleting down to one survivor hands over to it', snap().activeImage === d.dataUrl, snap().activeImage);
+  check('a survivor keeps the wallpaper on', snap().settings.mode === 'image', snap().settings.mode);
+
+  await api.removeImage(d.id);
+  check('an empty gallery leaves nothing to paint', snap().activeImage === null, snap().activeImage);
+  check('an empty gallery turns the wallpaper off', snap().settings.mode === 'none', snap().settings.mode);
 
   console.log(failures === 0 ? '\nPASS' : `\nFAIL (${failures})`);
   process.exit(failures === 0 ? 0 : 1);

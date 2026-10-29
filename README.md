@@ -773,11 +773,24 @@ function commit(patch, settingsPatch) { /* …derive… */ }
 
 ⚠️ **别再把它改回「存一份」。** 这类 bug 的复现条件很窄（必须先有第二张图、再点第一张），正常点一遍设置页看不出来，所以它能活很久。**凡是「B 是 A 的函数」的地方都按这个写：算出来，别存。**
 
-回归测试：`node tools/store-test.cjs`（13 项）。它**不是**把 store 重写一遍 —— 那样测的是测试本身 —— 而是从 `client.js` 里把 store 那一段切出来，配桩驱动。可以指到旧版本上验证它真的会红：
+**删掉正在用的那张，不该把壁纸关掉。** v2.49.1 之前 `removeImage` 是「`imageId: null` + `mode: 'none'`」—— 图库里明明还有别的图，删一格就整窗变空白。现在的契约是：
+
+| 删的时候 | 结果 |
+|---|---|
+| 删的是**正在用**的那张，图库里还有别的 | 选择**滑到顶替它位置的那一格**（删的是最后一格就滑到新的最后一格） |
+| 删的是**正在用**的那张，图库空了 | `imageId: null` + `mode: 'none'` —— 真的没东西可显示了 |
+| 删的是**没用**的那张 | 什么都不动 |
+
+⚠️ **为什么是「顶替它的那一格」而不是「最新那张」** —— 图库是按上传顺序排的，手指刚点的那一格被删掉后，视线还在原位；跳到最新那张等于替用户做了一次他没想到的选择。
+
+回归测试：`node tools/store-test.cjs`（17 项）。它**不是**把 store 重写一遍 —— 那样测的是测试本身 —— 而是从 `client.js` 里把 store 那一段切出来，配桩驱动。可以指到旧版本上验证它真的会红：
 
 ```bash
 git show v2.48.2:client.js > /tmp/old.js && node tools/store-test.cjs /tmp/old.js
 # FAIL clicking an older picture repaints with it — data:new   （6 项红）
+
+git show v2.49.0:client.js > /tmp/old2.js && node tools/store-test.cjs /tmp/old2.js
+# FAIL deleting the active picture falls back to the tile that takes its place — null   （7 项红）
 ```
 
 **22. 死代码要靠「数」找，不能靠「看着像」。**
@@ -807,7 +820,7 @@ v2.49.0 做了一次减法：`client.js` 3857 → 2941 行（-24%），冒烟测
 
 ```bash
 node tools/smoke-test.cjs     # 样式表：233 项
-node tools/store-test.cjs       # 状态层：13 项
+node tools/store-test.cjs       # 状态层：17 项
 ```
 
 233 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、液态玻璃五档归属与四套配方（面板 / 芯片 / 悬浮控件 / 深色玻璃）、底部状态栏、头部胶囊、用户气泡、费用明细胶囊与头部那颗的隐藏、回到最下面圆钮、侧栏历史块（随内容收缩、行一条规则都没有、三处边缘对齐、关掉宿主 `_fade`、**和计费器共用同一个 `paneFill()`**）、计费器宽度与 Windows 下的按钮内缩、悬停预览卡的玻璃与 50% 填充下限（外加「别再钉回不透明」）、菜单的玻璃画在表面而非材料层、材料层让位、**输入框的玻璃画在卡片自己身上、菜单开着时由 `installComposerMenuGuard` 让出模糊、浓度走 `composerSurface`**（伪元素那条路试过两次，填充上屏、模糊从未上屏）、右侧侧边栏的玻璃（**只在打开时**）与下层停止画底色、悬停卡的填充下限、**菜单模糊能一路进到样式表、上限 320**、**侧栏自己的浓度档与「列不再重复画底」**、**弹窗打开时背后几乎不压暗（0.95，不是 0.52）**、**费用明细弹窗的玻璃由打过补丁的它自己负责，本插件不再插手**、悬停卡与 tooltip 的深色玻璃（描边不用 border）、团队面板（portal 与内层 token 重混）、代码块三处底色与标题栏、**没有表头的代码块（.md-code-block 兜底）**、**表头壳是盖子不是窗口（借对话框的 composerSurface + menuBlur，断言比对的是「两处相等」而不是某个常数）**、**代码块的模糊挂在 `pre` 上而不是块上（块带 backdrop-filter 会让表头采不到 `pre`）**、**弹窗打开时 `#root` 只压暗不模糊、`::backdrop` 只压暗不磨（两条否定断言，滑杆够不到的整窗 filter 一律不许有）**、**配方里一次真 `border` 都不许有、面板的环必须是 inset 阴影（真 border 在 content-box 上撑宽 2px，2px 就够起一条横向滚动条）**、**诊断开关和它的管道都不在了**、标题的「放得下就不滚」与 `max-width` 还原时机、选择器 / 测量方式 / 无缝循环 / 自激防护 / 声明式动效与关键帧、配置页实际渲染、五种字体模式、cost-meter 兼容层、**壁纸层的盒子走 vw/vh 而不是 inset（滚动条进出它不动）、且带 will-change: filter**、**「底下只有糊过的壁纸」的表面一律不许有 backdrop-filter（六个选择器逐个查规则体）、侧栏 pane 同样不许**、**代码块用 overflow: clip 自己裁圆角（不是 hidden，那会杀掉 sticky 表头）**、**表头一个角都不许自己声明（扫出所有 border*radius 声明，非零值一个都不许有，且显式压平上两角）**、生命周期、CSS 语法与选择器前缀。

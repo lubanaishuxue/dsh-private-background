@@ -482,16 +482,31 @@ window.__ModuleLoader__.load({
       return record;
     }
 
+    /**
+     * Removing the picture that is on screen must not turn the wallpaper off.
+     *
+     * It used to null `imageId` and force `mode: 'none'`, so deleting one tile blanked the
+     * whole app even though the gallery still held other pictures. The selection now slides
+     * to the tile that takes its place (or to the new last one, when the deleted tile was
+     * last), which keeps the eye where it already was. Only an empty gallery — nothing left
+     * to show — falls back to "no background".
+     */
     async function removeImage(id) {
       await deleteImageRecord(id);
+      const before = state.images === null ? [] : state.images;
+      const images = before.filter((record) => record.id !== id);
       const wasActive = state.settings.imageId === id;
-      const images = (state.images === null ? [] : state.images).filter((record) => record.id !== id);
-      commit(
-        { images },
-        wasActive
-          ? { imageId: null, mode: state.settings.mode === 'image' ? 'none' : state.settings.mode }
-          : undefined,
-      );
+      let settingsPatch;
+      if (wasActive) {
+        const index = before.findIndex((record) => record.id === id);
+        const at = index < 0 ? images.length - 1 : Math.min(index, images.length - 1);
+        const successor = images.length === 0 ? null : images[at];
+        settingsPatch =
+          successor === null
+            ? { imageId: null, mode: state.settings.mode === 'image' ? 'none' : state.settings.mode }
+            : { imageId: successor.id };
+      }
+      commit({ images }, settingsPatch);
     }
 
     // ------------------------------------------------------------------ selectors
