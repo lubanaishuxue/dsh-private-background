@@ -57,35 +57,18 @@ window.__ModuleLoader__.load({
       composerSurface: 50,
       composerStyle: 'solid',
       glassBlur: 40,
-      // TEMPORARY. The menu glass fill is the one number that has to be judged by eye on
-      // a real wallpaper, so it is exposed as a slider until the user picks a value.
-      // Baking it in means: set this to the chosen number, then delete the slider block
-      // in ConfigPage and the two TEXT entries. Nothing else reads it by name.
-      menuFill: 40,
-      // TEMPORARY, paired with menuFill. Blur and fill are a trade: more blur buys back
-      // fill. Baking it in is the same procedure as menuFill above.
+      // The menu glass, baked in. These two were sliders ("scratch controls") while the
+      // pair was being judged on a real wallpaper, because fill and blur trade against each
+      // other: the host's 40px flattened the artwork into a wash, which forced the fill up
+      // to 76% to keep the text readable, and 76% is what stopped it looking like glass.
+      // Settled at 30 / 50. They stay in `settings` rather than becoming constants so that a
+      // value already in storage keeps working and `readSettings` keeps clamping it.
+      menuFill: 30,
       menuBlur: 50,
       // The sidebar's own density when it is included in the scope. Measured separately
       // from the panel slider because that column has two paint layers (host column plus
       // its inner root) and therefore reads darker than the same alpha elsewhere.
       sidebarFill: 40,
-      // Whether the temporary tuning card is shown in the sidebar foot. It lives in the
-      // plugin page so the card can be put away once the numbers are settled, without
-      // having to delete code.
-      showDock: true,
-      // DIAGNOSTIC. Kills every `filter` / `backdrop-filter` this plugin writes, in one
-      // click. It exists because "is the blur causing it?" is otherwise almost impossible
-      // to answer: the sliders do not reach every declaration, and `blur(0px)` is still a
-      // backdrop root, so "I set it to 0" and "it is really off" are different states.
-      // With this on there is not a single backdrop snapshot left in the sheet, so a
-      // flicker that survives it is not a blur problem. Nothing else changes - fills,
-      // radii and borders all stay, so the window still looks like the plugin.
-      flat: false,
-      // DIAGNOSTIC, the narrower half of the switch above: only the wallpaper's own
-      // full-screen `filter: blur()` goes away. The panes keep their backdrop snapshots.
-      // Running the two switches separately is what tells a whole-screen filter pass apart
-      // from a per-pane snapshot.
-      noWallpaperBlur: false,
       fullWindow: false,
       font: 'theme',
       fontColor: '#f7f8fa',
@@ -140,8 +123,6 @@ window.__ModuleLoader__.load({
         scope: '作用范围',
         fullWindow: '同时应用到左侧对话栏',
         fullWindowHint: '关掉时只有工作区换背景，左侧对话列表保持原样；打开则整窗铺满。',
-        dockVisible: '显示调参卡',
-        dockVisibleHint: '那张临时调参卡（滑杆 + 探针），拖标题栏可以挪到任何地方。数值调完就关掉它，界面恢复干净；随时可以再打开。',
         font: '字体颜色',
         fonts: { theme: '跟随主题', auto: '自动', light: '浅色', dark: '深色', custom: '自定义' },
         fontHint: '「自动」按背景实际明暗选黑或白；「跟随主题」不做任何改动。',
@@ -160,17 +141,7 @@ window.__ModuleLoader__.load({
         glassHint: '液态玻璃让输入框、底部状态栏、头部胶囊、代码块、文件卡片、消息气泡一起变磨砂半透明，边缘带一道高光。字压在图上更容易读，因为背景被磨平了。',
         glassHintSolid: '实心：各自按上面的不透明度铺底色，没有模糊和高光。',
         glassBlur: '玻璃模糊',
-        menuFill: '玻璃填充（临时）',
-        menuFillHint: '临时调试用，同时管三处：弹出菜单、输入框、右侧侧边栏。填充越低越透、玻璃感越强，但背后的正文和壁纸大字也会越来越抢字。和上面那条「玻璃模糊」是一对——模糊越大，填充就可以压得越低还看得清。试到满意告诉我这两个数字，我固化成默认值并把两条滑块都删掉。',
-        menuBlur: '玻璃模糊（临时）',
-        menuBlurHint: '临时调试用，同时管三处：弹出菜单、输入框、右侧侧边栏。宿主原本钉死在 40px。模糊越大，背后那层被磨得越平，字越好读、填充就可以越低；模糊越小，背景的形状越清楚、越像玻璃，但字也越容易被带花。0 就是完全不糊。',
         reset: '恢复默认',
-        dockTitle: '调参（临时）',
-        dockGlass: '液态玻璃',
-        dockFullWindow: '整窗铺满',
-        dockFont: '字体自动反色',
-        dockPreset: '推荐初值',
-        autoSaved: '改动即时生效并自动保存',
         diagnostics: '样式 / 激活 / 框架 / 三栏',
         toneLight: '深色背景 → 浅色字',
         toneDark: '浅色背景 → 深色字',
@@ -197,8 +168,6 @@ window.__ModuleLoader__.load({
         scope: 'Scope',
         fullWindow: 'Also apply to the conversation sidebar',
         fullWindowHint: 'Off: only the work area changes and the sidebar keeps its own look. On: the wallpaper fills the window.',
-        dockVisible: 'Show tuning card',
-        dockVisibleHint: 'The temporary tuning card (sliders + probe); drag its header to move it anywhere. Turn it off once the numbers are settled; it can always be turned back on.',
         font: 'Text colour',
         fonts: { theme: 'Theme', auto: 'Auto', light: 'Light', dark: 'Dark', custom: 'Custom' },
         fontHint: '"Auto" picks black or white from the background. "Theme" leaves text untouched.',
@@ -216,18 +185,8 @@ window.__ModuleLoader__.load({
         glassLiquid: 'Liquid glass',
         glassHint: 'Liquid glass turns the message box, the status row, the header chips, code blocks, file cards and message bubbles into frosted panes with a lit edge. Text stays readable because the backdrop is flattened, not just dimmed.',
         glassHintSolid: 'Solid: each surface just fills with its own opacity - no blur, no highlight.',
-        menuFill: 'Glass fill (temporary)',
-        menuFillHint: 'Scratch control for all three at once: popup menus, the composer, and the right sidebar. Lower is more transparent and reads more like glass, but the transcript and any large wallpaper type start competing with the text. It pairs with the blur control above: more blur buys back fill. Tell me both numbers when you are happy and I will bake them in and delete both sliders.',
-        menuBlur: 'Glass blur (temporary)',
-        menuBlurHint: 'Scratch control for all three at once: popup menus, the composer, and the right sidebar. The host pins this at 40px. More blur flattens the backdrop harder, so text stays readable at a lower fill; less blur keeps the wallpaper recognisable and looks more like glass, but the glyphs get dirtier. 0 is no blur at all.',
         glassBlur: 'Glass blur',
         reset: 'Reset',
-        dockTitle: 'Tuning (temp)',
-        dockGlass: 'Liquid glass',
-        dockFullWindow: 'Whole window',
-        dockFont: 'Auto-invert text',
-        dockPreset: 'Suggested',
-        autoSaved: 'Changes apply and save immediately',
         diagnostics: 'style / active / frame / columns',
         toneLight: 'Dark background, light text',
         toneDark: 'Light background, dark text',
@@ -289,14 +248,6 @@ window.__ModuleLoader__.load({
         menuFill: clamp(parsed.menuFill === undefined ? fallback.menuFill : parsed.menuFill, 20, 100),
         menuBlur: clamp(parsed.menuBlur === undefined ? fallback.menuBlur : parsed.menuBlur, 0, 320),
         sidebarFill: clamp(parsed.sidebarFill === undefined ? fallback.sidebarFill : parsed.sidebarFill, 0, 100),
-        showDock: parsed.showDock !== false,
-        // Both diagnostic switches are **forced off**, not read from storage. Anyone who
-        // ticked them while chasing the flicker still has `true` saved, and honouring that
-        // would leave the plugin permanently blur-less with no switch on screen to undo it -
-        // the same dead end the `showDock` early-return created. To re-arm the diagnostics,
-        // restore `parsed.flat === true` here and put the two entries back in the card.
-        flat: false,
-        noWallpaperBlur: false,
         fullWindow: parsed.fullWindow === true,
         font: fonts.includes(parsed.font) ? parsed.font : fallback.font,
         fontColor:
@@ -458,7 +409,6 @@ window.__ModuleLoader__.load({
       activeImage: null,
       images: null,
       luma: null,
-      ready: false,
     };
     const listeners = new Set();
 
@@ -518,9 +468,9 @@ window.__ModuleLoader__.load({
       listImageRecords()
         .then((records) => {
           const images = Array.isArray(records) ? records : [];
-          commit({ images, ready: true });
+          commit({ images });
         })
-        .catch(() => commit({ images: [], ready: true }));
+        .catch(() => commit({ images: [] }));
     }
 
     async function addImage(file) {
@@ -821,9 +771,6 @@ html[data-dshbg-on] [data-composer-card] {
      * pane's snapshot has to be retaken every frame, and the one frame that lost the race
      * showed the transcript column as bare wallpaper while the left column - whose panes
      * were not repainting - stayed intact. That is the flicker.
-     *
-     * `withBlur` is kept as a parameter only because the code block still calls it that way
-     * and the call site reads as intent. It no longer changes the output.
      */
     function glassPane() {
       return `  background-color: ${paneFill()} !important;
@@ -924,8 +871,8 @@ html[data-dshbg-on] [data-composer-card] {
      * preview, the file-diff hover card, the plan viewer).
      */
     function previewCardCss(settings) {
-      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
-      const shared = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
+      const blur = clamp(settings.menuBlur, 0, 320);
+      const shared = clamp(settings.menuFill, 20, 100);
       const fill = Math.max(shared, 50);
       return `
 ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewResponse"])'])} {
@@ -981,8 +928,8 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewRes
      */
     function menuSurfaceCss(settings) {
       const menu = '[class*="_menu"]:has([class*="_itemDescription"])';
-      const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
-      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
+      const fill = clamp(settings.menuFill, 20, 100);
+      const blur = clamp(settings.menuBlur, 0, 320);
       // The glass goes on the *surface*, not on the `_material` child, and this is the whole
       // fix for "the menu blur does nothing".
       //
@@ -1061,8 +1008,8 @@ ${prefixed('html[data-dshbg-on]', [`${menu}[data-overflow-below]::after`])} {
      * fixed 244px, so a 1px border would eat into its own text box.
      */
     function tooltipGlassCss(settings) {
-      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
-      const shared = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
+      const blur = clamp(settings.menuBlur, 0, 320);
+      const shared = clamp(settings.menuFill, 20, 100);
       // Inverted surfaces: hard floors, see the note above.
       const cardFill = Math.max(shared, 50);
       const bubbleFill = Math.max(shared, 58);
@@ -1157,8 +1104,8 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
       //     exactly what the user rejected.
       //
       // Same defaults as `composerGlassCss`, so the two cannot drift apart.
-      const bannerFill = clamp(settings.composerSurface === undefined ? 85 : settings.composerSurface, 0, 100);
-      const bannerBlur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
+      const bannerFill = clamp(settings.composerSurface, 0, 100);
+      const bannerBlur = clamp(settings.menuBlur, 0, 320);
       // A comma inside one item would leave its tail unprefixed, so these stay separate
       // entries and are spread into every rule that needs them.
       const blocks = [`[class*="_block_"]:has([data-code-block-banner])`, `.md-code-block`];
@@ -1289,8 +1236,8 @@ ${glassChip()}
      */
     function composerGlassCss(settings) {
       if (settings.composerStyle !== 'glass') return '';
-      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
-      const fill = clamp(settings.composerSurface === undefined ? 85 : settings.composerSurface, 0, 100);
+      const blur = clamp(settings.menuBlur, 0, 320);
+      const fill = clamp(settings.composerSurface, 0, 100);
       return `
 ${prefixed('html[data-dshbg-on]', ['[data-composer-card]'])} {
   position: relative !important;
@@ -1331,8 +1278,8 @@ ${prefixed('html[data-dshbg-on][data-dshbg-menu]', ['[data-composer-card]'])} {
      * out to `<body>` by the host's menu primitive.
      */
     function rightPanelGlassCss(settings) {
-      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
-      const fill = clamp(settings.menuFill === undefined ? 76 : settings.menuFill, 20, 100);
+      const blur = clamp(settings.menuBlur, 0, 320);
+      const fill = clamp(settings.menuFill, 20, 100);
       const panel = '[data-sidebar-right-panel]';
       return `
 ${prefixed('html[data-dshbg-on]', [`${panel}[data-sidebar-right-open]`])} {
@@ -1855,8 +1802,8 @@ ${restores}
      * silently.
      */
     function dialogCss(settings) {
-      const fill = Math.max(clamp(settings.menuFill === undefined ? 30 : settings.menuFill, 20, 100), 46);
-      const blur = clamp(settings.menuBlur === undefined ? 40 : settings.menuBlur, 0, 320);
+      const fill = Math.max(clamp(settings.menuFill, 20, 100), 46);
+      const blur = clamp(settings.menuBlur, 0, 320);
       return `
 ${prefixed('html[data-dshbg-on]', ['[role="dialog"][aria-modal="true"]'])} {
   background-color: color-mix(in srgb, var(--dshbg-raw-base) ${fill}%, transparent) !important;
@@ -1953,49 +1900,6 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
 `;
     }
 
-    /**
-     * The diagnostic kill switches: every blur this plugin writes, off on demand.
-     *
-     * Not product settings. They are how a "it still flickers" report gets turned into a
-     * fact, and there are two of them because there are two independent costs in the sheet:
-     *
-     * - `flat`      - every `backdrop-filter` gone. No backdrop snapshot is taken anywhere.
-     * - `noWallpaper` - only the wallpaper's own `filter: blur()` gone. Every pane still
-     *   takes its backdrop snapshot, but the layer it samples no longer has to be blurred
-     *   first.
-     *
-     * One switch was not enough. "Blur off, no flicker" only proves that *some* blur is
-     * involved - the wallpaper's full-screen `filter` and the panes' `backdrop-filter` are
-     * two different passes, and the fix for one is nothing like the fix for the other. With
-     * both switches, one run separates them: wallpaper-only off and it stops means the
-     * whole-screen filter was the cost; still flickering means the panes' snapshots are.
-     *
-     * Both are written last and scoped to their own attributes, so they win on specificity
-     * against every recipe above without any of those recipes having to know they exist.
-     */
-    function flatCss(settings) {
-      const all = settings.flat === true;
-      const wallpaper = all || settings.noWallpaperBlur === true;
-      if (!all && !wallpaper) return '';
-      const rules = [];
-      if (all) {
-        rules.push(`
-html[data-dshbg-on][data-dshbg-flat] *,
-html[data-dshbg-on][data-dshbg-flat] *::before,
-html[data-dshbg-on][data-dshbg-flat] *::after {
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
-}`);
-      }
-      if (wallpaper) {
-        rules.push(`
-html[data-dshbg-on][data-dshbg-noblur]::before {
-  filter: none !important;
-}`);
-      }
-      return `${rules.join('')}\n`;
-    }
-
     function buildCss(settings, activeImage, tone) {
       const value = backgroundValue(settings, activeImage);
       if (value === null) return '';
@@ -2024,7 +1928,6 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
         dialogCss(settings),
         modalCss(settings),
         // Absolutely last: the diagnostic switch has to beat every recipe above.
-        flatCss(settings),
       ].join('');
     }
 
@@ -2082,30 +1985,7 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
      * `text-overflow: clip` lives in the activation-scoped stylesheet. Left running without
      * it, a scrolling title would still pin its ellipsis to the right edge.
      */
-    const MARQUEE_PROBE = 'dsh.custom-background.marquee.probe';
-    const MARQUEE_TRACE = `${MARQUEE_PROBE}.trace`;
-    // Two full cycles at 200ms. One cycle is not enough: the reported fault started at the
-    // first wrap. 200ms still resolves a wrap (the loop is ~5.9s) while halving how much
-    // this writes into LevelDB on every launch.
-    const MARQUEE_TRACE_LIMIT = 60;
-
-    /**
-     * TEMPORARY diagnostics, module scope on purpose.
-     *
-     * The plugin is re-applied often enough that a per-install buffer is thrown away before
-     * it fills, which is exactly why the first version of this trace never wrote anything.
-     * Sharing the state here means a re-install adds a row rather than starting over - and
-     * the generation number in each row is how a re-install shows up in the data.
-     */
-    let marqueeGen = 0;
-    let marqueeTrace = null;
-    let marqueeTraceTimer = 0;
-    let marqueeTraceTicks = 0;
-    let sheetWrites = 0;
-    let syncCalls = 0;
-
     function installTitleMarquee() {
-      const gen = ++marqueeGen;
       // The marquee is an enhancement, not a load-bearing part of the plugin: if the host
       // ever runs this outside a full renderer there is nothing to observe, and the title
       // simply keeps its ellipsis.
@@ -2220,93 +2100,6 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
         return { box, inner, pin, text, shift: Math.round(text - inner) };
       };
 
-      /**
-       * Last measurement, in localStorage. The marquee is the one part of this plugin whose
-       * failure is invisible in a screenshot - a title that does not scroll looks exactly
-       * like a title that fits - so it leaves its numbers behind where they can be read back
-       * off disk when the plugin is running inside a packaged app with no devtools.
-       * Deduplicated on everything except the timestamp, so a steady state writes nothing.
-       */
-      const record = (crumb, metrics, note) => {
-        try {
-          const payload = {
-            on: document.documentElement.hasAttribute('data-dshbg-on'),
-            n: document.querySelectorAll(CRUMB).length,
-            cls: String(crumb.className ?? '').slice(0, 48),
-            box: metrics.box,
-            inner: metrics.inner,
-            text: Math.round(metrics.text),
-            shift: metrics.shift,
-            sw: crumb.scrollWidth,
-            mq: crumb.hasAttribute('data-dshbg-mq') ? 1 : 0,
-            note,
-          };
-          const signature = JSON.stringify(payload);
-          if (signature === probe) return;
-          probe = signature;
-          window.localStorage.setItem(MARQUEE_PROBE, JSON.stringify({ ...payload, at: Date.now() }));
-        } catch {
-          // Diagnostics must never be able to break the marquee.
-        }
-      };
-
-      /**
-       * TEMPORARY: what the animation is actually doing, read from the animation object
-       * rather than inferred from the box. `text-indent` alone cannot tell a scrolling title
-       * from one that restarts every few frames, and `scrollWidth` turned out to be useless
-       * here - it does not move with `text-indent` at all. `currentTime` on the running
-       * animation is the only number that answers the question: a sawtooth means restarts,
-       * a ramp means it is scrolling, and `-1` means no animation is attached at all.
-       */
-      const trace = () => {
-        if (marqueeTraceTimer !== 0 || marqueeTraceTicks >= MARQUEE_TRACE_LIMIT) return;
-        if (marqueeTrace === null) marqueeTrace = [];
-        marqueeTraceTimer = setInterval(() => {
-          const crumb = document.querySelector(CRUMB);
-          let row;
-          if (crumb === null) {
-            row = [Math.round(performance.now()), gen, 'gone', sheetWrites, syncCalls];
-          } else {
-            const style = getComputedStyle(crumb);
-            const running = typeof crumb.getAnimations === 'function' ? crumb.getAnimations() : [];
-            const anim = running[0];
-            // `currentIteration` is what separates a legitimate wrap from a restart: a wrap
-            // steps it up by one, a restart drops `currentTime` back to zero and leaves the
-            // iteration where it was. `startTime` is the second witness - it only moves when
-            // the animation is thrown away and rebuilt.
-            const timing = anim ? anim.effect.getComputedTiming() : null;
-            row = [
-              Math.round(performance.now()),
-              gen,
-              style.textIndent,
-              anim ? anim.playState : 'none',
-              anim ? Math.round(Number(anim.currentTime) || 0) : -1,
-              timing ? timing.currentIteration : -1,
-              anim && anim.startTime !== null ? Math.round(Number(anim.startTime)) : -1,
-              crumb.clientWidth,
-              crumb.hasAttribute('data-dshbg-mq') ? 1 : 0,
-              crumb.style.getPropertyValue('--dshbg-mq-loop'),
-              crumb.style.getPropertyValue('--dshbg-mq-dur'),
-              crumb.getAttribute('data-dshbg-mq')?.length ?? -1,
-              (crumb.textContent ?? '').length,
-              sheetWrites,
-              syncCalls,
-            ];
-          }
-          marqueeTrace.push(row);
-          if (marqueeTrace.length > MARQUEE_TRACE_LIMIT) marqueeTrace.shift();
-          try {
-            window.localStorage.setItem(MARQUEE_TRACE, JSON.stringify(marqueeTrace));
-          } catch {
-            // Same rule as `record`: diagnostics may never break the marquee.
-          }
-          if (++marqueeTraceTicks >= MARQUEE_TRACE_LIMIT) {
-            clearInterval(marqueeTraceTimer);
-            marqueeTraceTimer = 0;
-          }
-        }, 200);
-      };
-
       const apply = (crumb) => {
         // Widen the title to the room the header has *before* measuring it, so `shift`
         // answers the question that matters: does the title still not fit once it is allowed
@@ -2324,7 +2117,6 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
         const metrics = measure(crumb);
         if (metrics.shift < 2) {
           stop(crumb);
-          record(crumb, metrics, 'fits');
           return;
         }
         // The repeat is what makes the loop seamless, and its text has to track the title:
@@ -2343,13 +2135,10 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
           crumb.style.setProperty('--dshbg-mq-dur', `${Math.max(3000, Math.round((loop / MARQUEE_SPEED) * 1000))}ms`);
         }
         if (metrics.pin > 0) crumb.style.setProperty('min-width', `${metrics.pin}px`, 'important');
-        record(crumb, metrics, 'scroll');
-        trace();
       };
 
       const sync = () => {
         if (disposed) return;
-        syncCalls += 1;
         const crumbs = document.querySelectorAll(CRUMB);
         if (!document.documentElement.hasAttribute('data-dshbg-on')) {
           for (const crumb of crumbs) reset(crumb);
@@ -2417,12 +2206,6 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
         dispose() {
           disposed = true;
           if (timer !== 0) clearTimeout(timer);
-          // The trace keeps its buffer across installs, so the timer is the only part that
-          // belongs to this instance.
-          if (marqueeTraceTimer !== 0) {
-            clearInterval(marqueeTraceTimer);
-            marqueeTraceTimer = 0;
-          }
           for (const handle of retries) clearTimeout(handle);
           resize.disconnect();
           mutations.disconnect();
@@ -2499,16 +2282,6 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
         const root = document.documentElement;
         if (on) root.setAttribute('data-dshbg-on', '');
         else root.removeAttribute('data-dshbg-on');
-        // The diagnostic switches ride on their own attributes so the kill-switch rules can
-        // be written without every recipe having to know about them.
-        if (on && settings.flat === true) root.setAttribute('data-dshbg-flat', '');
-        else root.removeAttribute('data-dshbg-flat');
-        // `flat` implies the wallpaper half too, so one click still means "all of it".
-        if (on && (settings.flat === true || settings.noWallpaperBlur === true)) {
-          root.setAttribute('data-dshbg-noblur', '');
-        } else {
-          root.removeAttribute('data-dshbg-noblur');
-        }
         // Replacing a `<style>` element's text replaces every rule in it, which restarts
         // every CSS animation the sheet defines - including the title marquee. `paint()` is
         // called on each store commit, so writing an identical sheet would reset the scroll
@@ -2516,7 +2289,6 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
         const next = on ? buildCss(settings, activeImage, toneOf(luma)) : '';
         if (next !== lastCss) {
           lastCss = next;
-          sheetWrites += 1;
           tag.textContent = next;
         }
         // Turning the wallpaper off also drops the `text-overflow: clip` that the marquee
@@ -2567,8 +2339,6 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
             composerMenu.dispose();
             tag.remove();
             document.documentElement.removeAttribute('data-dshbg-on');
-            document.documentElement.removeAttribute('data-dshbg-flat');
-            document.documentElement.removeAttribute('data-dshbg-noblur');
           },
           'custom-background: stylesheet',
         );
@@ -2578,22 +2348,11 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
     }
 
     function readDiagnostics() {
-      // The last reading the cost-dialog painter left behind. It matters because that dialog
-      // covers the sidebar: you cannot read a live probe while it is open, so the reading is
-      // taken at paint time and shown here afterwards.
-      let cost = null;
-      try {
-        const raw = window.localStorage.getItem('dshbg.cost.probe');
-        cost = raw === null ? null : JSON.parse(raw);
-      } catch {
-        cost = null;
-      }
       return {
         style: document.querySelector(`style[data-dshbg-css="${PACKAGE}"]`) !== null,
         active: document.documentElement.hasAttribute('data-dshbg-on'),
         frame: document.querySelector(frameSelector()) !== null,
         columns: document.querySelectorAll(workAreaColumns().join(',')).length,
-        cost,
       };
     }
 
@@ -2962,12 +2721,6 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
             hint: text.fullWindowHint,
             onChange: (value) => patchSettings({ fullWindow: value }),
           }),
-          h(Switch, {
-            checked: settings.showDock !== false,
-            label: text.dockVisible,
-            hint: text.dockVisibleHint,
-            onChange: (value) => patchSettings({ showDock: value }),
-          }),
         ),
       );
 
@@ -3080,37 +2833,6 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
             settings.composerStyle === 'glass'
               ? null
               : h('p', { className: 'dshbg-hint' }, text.composerSurfaceHint),
-            // TEMPORARY scratch controls, a pair. The menu's blur and its fill trade against
-            // each other, so tuning one without the other only moves the problem around:
-            // the host's 40px flattens the wallpaper into a wash, which forced the fill up
-            // to 76% to keep the text readable, and 76% is what stopped it looking like
-            // glass. Exposed together so the pair can be judged on a real wallpaper.
-            //
-            // To bake them in: copy the chosen values into `DEFAULTS.menuBlur` /
-            // `DEFAULTS.menuFill`, then delete this block and the four `menuFill*` /
-            // `menuBlur*` TEXT entries. `menuSurfaceCss` keeps reading the two settings, so
-            // nothing else has to change - and `readSettings` keeps clamping, which is what
-            // makes an old saved value survive the sliders' removal harmlessly.
-            h(Slider, {
-              label: text.menuBlur,
-              value: settings.menuBlur,
-              min: 0,
-              max: 64,
-              step: 1,
-              suffix: 'px',
-              onChange: (value) => patchSettings({ menuBlur: value }),
-            }),
-            h('p', { className: 'dshbg-hint' }, text.menuBlurHint),
-            h(Slider, {
-              label: text.menuFill,
-              value: settings.menuFill,
-              min: 20,
-              max: 100,
-              step: 1,
-              suffix: '%',
-              onChange: (value) => patchSettings({ menuFill: value }),
-            }),
-            h('p', { className: 'dshbg-hint' }, text.menuFillHint),
           ),
         );
       }
@@ -3186,633 +2908,7 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
             } / ${diag.columns}`,
           ),
         ),
-        diag.cost === null
-          ? null
-          : h(
-              'p',
-              { className: 'dshbg-hint' },
-              `费用明细弹窗上次读数：${diag.cost.tag}.${diag.cost.cls} · 底色 ${diag.cost.bg} · 模糊 ${
-                diag.cost.bf === '' ? '-' : diag.cost.bf
-              } · 父 ${diag.cost.parent}`,
-            ),
       );
-    }
-
-    // ------------------------------------------------------------- tuning dock
-
-    /**
-     * TEMPORARY tuning surface, floating over the bottom-left corner.
-     *
-     * Every number in this plugin has to be judged against a real wallpaper, and the
-     * settings page is a separate full-page view - you cannot watch the composer or a menu
-     * while dragging a slider there. So the controls live in the app window while they are
-     * being tuned: the app stays on screen, every drag lands immediately in the stylesheet,
-     * and the probe below prints what the browser actually computed. That last part is what
-     * separates "the number is too small" from "the number never reached the screen" - a
-     * distinction this plugin has needed more than once.
-     *
-     * It used to be a React component in the host's `sidebar.footer.action` seat. It is now
-     * plain DOM on `<body>`; see `mountTuner` for why that seat was abandoned.
-     *
-     * To remove it later: delete this block, the `ctx.effect(... mountTuner ...)` in `apply`,
-     * and `TEXT.dockTitle`.
-     */
-    const DOCK_ROWS = [
-      { key: 'blur', zh: '背景模糊', en: 'Wallpaper blur', min: 0, max: 40, suffix: 'px' },
-      { key: 'dim', zh: '压暗', en: 'Dim', min: 0, max: 80, suffix: '%' },
-      { key: 'surface', zh: '面板不透明度', en: 'Panel opacity', min: 0, max: 100, suffix: '%' },
-      { key: 'sidebarFill', zh: '侧栏不透明度', en: 'Sidebar opacity', min: 0, max: 100, suffix: '%' },
-      { key: 'chatSurface', zh: '对话区不透明度', en: 'Conversation opacity', min: 0, max: 100, suffix: '%' },
-      { key: 'composerSurface', zh: '输入框不透明度', en: 'Composer opacity', min: 0, max: 100, suffix: '%' },
-      { key: 'glassBlur', zh: '玻璃模糊', en: 'Pane blur', min: 0, max: 40, suffix: 'px' },
-      { key: 'menuFill', zh: '菜单填充', en: 'Menu fill', min: 20, max: 100, suffix: '%' },
-      { key: 'menuBlur', zh: '菜单模糊', en: 'Menu blur', min: 0, max: 320, suffix: 'px' },
-    ];
-
-    /**
-     * A readable starting point for a photographic wallpaper.
-     *
-     * The failure mode on a bright photo is not "the glass is wrong", it is "every surface is
-     * a wash and the text is white": the transcript needs a floor to read on, the sidebar even
-     * more (two paint layers), and the polarity has to follow the picture. This is one click so
-     * tuning starts from something legible instead of from zero.
-     */
-    const RECOMMENDED = {
-      dim: 30,
-      surface: 55,
-      chatSurface: 55,
-      sidebarFill: 60,
-      composerSurface: 70,
-      glassBlur: 30,
-      menuFill: 45,
-      menuBlur: 50,
-      font: 'auto',
-    };
-
-    const DOCK_CSS = `
-.dshbg-dock { display: flex; flex-direction: column; font-size: 11px; color: var(--dsw-alias-label-secondary, #4b5563); }
-.dshbg-dock-head { display: flex; align-items: center; gap: 6px; width: 100%; box-sizing: border-box; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; font: inherit; color: inherit; text-align: left; }
-.dshbg-dock-head:hover { background: var(--dsw-alias-interactive-bg-hover, rgb(0 0 0 / 6%)); }
-.dshbg-dock-head span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dshbg-dock-caret { flex: none; font-size: 9px; opacity: .7; }
-.dshbg-dock-body { display: flex; flex-direction: column; gap: 6px; padding: 2px 8px 8px; }
-.dshbg-dock-row { display: grid; grid-template-columns: 1fr 54px 42px; align-items: center; gap: 6px; }
-.dshbg-dock-row input { width: 100%; min-width: 0; accent-color: var(--dsw-alias-state-business-primary, #4176e6); }
-.dshbg-dock-value { font-size: 10px; text-align: right; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-caption, #8b9098); }
-.dshbg-dock-switch { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 11px; }
-.dshbg-dock-switch input { margin: 0; accent-color: var(--dsw-alias-state-business-primary, #4176e6); }
-.dshbg-dock-foot { display: flex; gap: 8px; }
-.dshbg-dock-link { border: 0; background: transparent; padding: 0; cursor: pointer; font-size: 10px; color: var(--dsw-alias-state-business-primary, #4176e6); }
-.dshbg-dock-probe { display: flex; flex-direction: column; gap: 1px; margin-top: 2px; padding: 5px 6px; border-radius: 6px; background: rgb(128 128 128 / 12%); font-size: 10px; line-height: 14px; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-caption, #8b9098); word-break: break-all; }
-`;
-
-    /** What the cost dialog is really wearing, for when a fix "does not take". */
-    function costSurface() {
-      const dialog = document.querySelector('.cm-stat-dialog, .cm-qguide, .cm-peak-alert, .cm-fee-dialog');
-      if (dialog === null) return '(未打开)';
-      const style = getComputedStyle(dialog);
-      const parent = dialog.parentElement;
-      const parentStyle = parent === null ? null : getComputedStyle(parent);
-      return `${dialog.tagName}/${style.backgroundColor}/bf:${style.backdropFilter || '-'}/父:${parent === null ? '-' : `${parent.tagName}/${parentStyle.backgroundColor}`}`;
-    }
-
-    /**
-     * Every element whose content is wider than its own box - i.e. who is feeding a
-     * horizontal scrollbar.
-     *
-     * This exists because of a report that "a horizontal scrollbar at the bottom flickers
-     * too, out of step with the content". Two things blinking out of phase is the signature
-     * of two scrollbars feeding each other: the horizontal one takes height, which changes
-     * the vertical one's budget, which takes width, which changes the horizontal one's.
-     * That loop can only start if something is genuinely wider than its box, and the usual
-     * suspect is a pane that grew itself - a real `border` on a content-box element adds
-     * 2px, and 2px is enough.
-     *
-     * Reading it from the dock beats guessing: it names the class, so the next change is
-     * aimed instead of hopeful.
-     */
-    function overflowProbe() {
-      const offenders = [];
-      for (const element of document.querySelectorAll('#root *, body > *')) {
-        const over = element.scrollWidth - element.clientWidth;
-        if (over <= 0 || element.clientWidth === 0) continue;
-        const tag = element.tagName.toLowerCase();
-        // `getAttribute`, not `.className`: on SVG nodes that property is an
-        // `SVGAnimatedString` and stringifying it yields "[object SVGAnimatedString]".
-        const raw = element.getAttribute('class') || '';
-        const cls = raw.trim().split(/\s+/).slice(0, 2).join('.');
-        offenders.push({ over, label: `${tag}${cls === '' ? '' : `.${cls}`}` });
-      }
-      if (offenders.length === 0) return '(无)';
-      offenders.sort((a, b) => b.over - a.over);
-      return offenders.slice(0, 3).map((o) => `${o.label} +${o.over}`).join(' · ');
-    }
-
-    /**
-     * Every element that is currently taking a backdrop snapshot, biggest first.
-     *
-     * This is the readout that was missing for five rounds of "it still flickers". The kill
-     * switch answers *whether* blur is involved; it cannot answer *which* blur, and the
-     * fixes for the two candidates are nothing alike - a full-screen `filter` wants a cheaper
-     * pass, a per-element `backdrop-filter` wants the snapshot gone entirely.
-     *
-     * Chromium gives every `backdrop-filter` element a surface sized by its backdrop root,
-     * so an element that is small on screen can still cost a full-column snapshot. Sorting
-     * by area rather than by count puts that one first.
-     *
-     * `backdrop-filter` is inherited-adjacent in neither direction, so this only reports
-     * elements whose own computed value is set - which is exactly the set that costs
-     * anything.
-     */
-    function blurredProbe() {
-      const hits = [];
-      for (const element of document.querySelectorAll('#root *, body > *')) {
-        const style = getComputedStyle(element);
-        const value = style.backdropFilter || style.webkitBackdropFilter || '';
-        if (value === '' || value === 'none') continue;
-        const rect = element.getBoundingClientRect();
-        if (rect.width < 1 || rect.height < 1) continue;
-        const tag = element.tagName.toLowerCase();
-        const raw = element.getAttribute('class') || '';
-        const cls = raw.trim().split(/\s+/).slice(0, 2).join('.');
-        const size = `${Math.round(rect.width)}x${Math.round(rect.height)}`;
-        hits.push({ area: rect.width * rect.height, label: `${tag}${cls === '' ? '' : `.${cls}`} ${size}` });
-      }
-      if (hits.length === 0) return '(无)';
-      hits.sort((a, b) => b.area - a.area);
-      return `${hits.length} 个 · ${hits.slice(0, 2).map((h) => h.label).join(' · ')}`;
-    }
-
-    /**
-     * Frame-time sampler, so "it flickers" can be read as a number instead of argued about.
-     *
-     * `worst` is the longest gap between two animation frames in the window since the last
-     * read; `over` counts gaps longer than 50ms, i.e. frames the compositor actually missed
-     * (three 60Hz frames or more). A visible flash needs at least one missed frame, so:
-     *
-     *   worst ~16ms, over 0   -> nothing was dropped. Whatever blinked was painted, which
-     *                            makes it a DOM/state question, not a compositing one.
-     *   worst > 50ms, over >0 -> frames really were dropped. Now it is about cost, and the
-     *                            question becomes "what is expensive", which the kill switch
-     *                            answers in one click.
-     *
-     * It runs only while the tuning card is open - a permanent rAF loop would itself be a
-     * cost, and it would be measuring its own overhead.
-     */
-    function createFrameMeter() {
-      let raf = 0;
-      let last = 0;
-      let worst = 0;
-      let over = 0;
-      const tick = (now) => {
-        if (last !== 0) {
-          const gap = now - last;
-          if (gap > worst) worst = gap;
-          if (gap > 50) over += 1;
-        }
-        last = now;
-        raf = requestAnimationFrame(tick);
-      };
-      return {
-        start() {
-          if (raf !== 0 || typeof requestAnimationFrame !== 'function') return;
-          last = 0;
-          worst = 0;
-          over = 0;
-          raf = requestAnimationFrame(tick);
-        },
-        stop() {
-          if (raf === 0) return;
-          cancelAnimationFrame(raf);
-          raf = 0;
-          last = 0;
-        },
-        read() {
-          const reading = { worst: Math.round(worst), over };
-          worst = 0;
-          over = 0;
-          // Not `last = 0`: that would make the next gap read as "now - 0" and report a
-          // fake multi-second stall. Zero it and the next frame is simply skipped.
-          last = 0;
-          return reading;
-        },
-      };
-    }
-
-    const frameMeter = createFrameMeter();
-
-    /** What the browser actually computed. Read only, refreshed while the card is open. */
-    function probeSurface() {
-      try {
-        const card = document.querySelector('[data-composer-card]');
-        const cardStyle = card === null ? null : getComputedStyle(card);
-        // Read the token on the element that actually *receives* the remix - the frame. On
-        // `#root` it would still report the theme's own value, which looks like a failure
-        // that is not there.
-        const scope = document.querySelector(frameSelector()) || document.body;
-        const sheet = document.querySelector('style[data-dshbg-css]');
-        const settings = state.settings;
-        return {
-          mode: `${settings.mode} / ${settings.fullWindow ? '整窗' : '工作区'} / ${settings.composerStyle}`,
-          want: `fill ${settings.menuFill}% · blur ${settings.menuBlur}px · pane ${settings.glassBlur}px · side ${settings.sidebarFill}%`,
-          raw: getComputedStyle(document.body).getPropertyValue('--dshbg-raw-base').trim() || '(空)',
-          mixed: getComputedStyle(scope).getPropertyValue('--dsw-alias-bg-base').trim() || '(空)',
-          composer: cardStyle === null ? '(无输入框)' : `${cardStyle.backgroundColor} / ${cardStyle.backdropFilter || '-'}`,
-          cost: costSurface(),
-          overflow: overflowProbe(),
-          blurred: blurredProbe(),
-          frame: (() => {
-            const reading = frameMeter.read();
-            return `最差 ${reading.worst}ms · 掉帧 ${reading.over}`;
-          })(),
-          sheet: sheet === null ? '(无样式表)' : `${Math.round(sheet.textContent.length / 1024)} KB`,
-        };
-      } catch (failure) {
-        return { error: String(failure && failure.message) };
-      }
-    }
-
-    /**
-     * The last thing the cost-dialog painter saw, so the header can carry it without the
-     * card being expanded (the dialog covers the card while it is open).
-     */
-    function lastCostReading() {
-      try {
-        const raw = window.localStorage.getItem('dshbg.cost.probe');
-        if (raw === null) return '';
-        const record = JSON.parse(raw);
-        return ` · 弹窗 ${record.bg}${record.bf ? ` / ${record.bf}` : ''}`;
-      } catch {
-        return '';
-      }
-    }
-
-    const TUNER_CSS = `${DOCK_CSS}
-.dshbg-tuner {
-  position: fixed;
-  /* Fallback position only: mountTuner() places the card on the right-hand side as soon as
-     it is in the document, and restores wherever the user last dragged it. Every fixed
-     corner collides with something - the bottom-left is the host's 设置 button and the cost
-     meter, the top-right is the session chips - so the position is the user's to choose. */
-  left: 12px;
-  bottom: 64px;
-  z-index: 2147483000;
-  width: 248px;
-  box-sizing: border-box;
-  border-radius: 10px;
-  max-height: 78vh;
-  overflow: hidden auto;
-  box-shadow: inset 0 0 0 1px rgb(128 128 128 / 30%), 0 14px 36px -14px rgb(0 0 0 / 60%);
-}
-.dshbg-tuner .dshbg-dock-head {
-  cursor: grab;
-  /* Without this a drag on a touch/pen surface scrolls the card instead of moving it. */
-  touch-action: none;
-}
-.dshbg-tuner .dshbg-dock-head:active {
-  cursor: grabbing;
-}
-`;
-
-    /**
-     * The tuning card, built as plain DOM and appended straight to `<body>`.
-     *
-     * It used to be a React component registered into the host's `sidebar.footer.action`
-     * seat. That seat stopped producing anything at all: the store said `showDock: true`,
-     * the component rendered fine when called in isolation, and the sidebar foot simply
-     * never showed it. A diagnostic tool that depends on a host slot you cannot inspect is
-     * not a diagnostic tool - and this card is the only way to read the numbers that decide
-     * the next fix, so "it is not on screen" is the one failure it must not have.
-     *
-     * So: no React, no slot, no host layout. `position: fixed` on a `body` child. If the
-     * plugin runs at all, the card is on screen, and it is out of the flex chain the
-     * sidebar puts its foot in. The colours are written out literally for the same reason
-     * the readout exists: our own remix runs on `body > *`, so every `--dsw-alias-*` this
-     * card would inherit is the remixed, half-transparent one, and a readout nobody can
-     * read is worse than no readout.
-     *
-     * The DOM is built once and then *synced*, never rebuilt on a store commit: replacing a
-     * range input mid-drag ends the drag.
-     */
-    function mountTuner() {
-      // `ctx.effect` callbacks run outside the `try` in `apply`, so this one guards itself:
-      // a mount that throws must not take the whole plugin's client half down with it.
-      if (document.body === null || document.body === undefined) return () => {};
-      const lang = currentLang();
-      const text = TEXT[lang];
-      const host = document.createElement('div');
-      host.className = 'dshbg-dock dshbg-tuner';
-
-      const style = document.createElement('style');
-      style.textContent = TUNER_CSS;
-      host.appendChild(style);
-
-      const head = document.createElement('button');
-      head.type = 'button';
-      head.className = 'dshbg-dock-head';
-      const headLabel = document.createElement('span');
-      const caret = document.createElement('span');
-      caret.className = 'dshbg-dock-caret';
-      head.appendChild(headLabel);
-      head.appendChild(caret);
-
-      const body = document.createElement('div');
-      body.className = 'dshbg-dock-body';
-
-      host.appendChild(head);
-      host.appendChild(body);
-
-      let open = false;
-      let timer = 0;
-      let probe = null;
-      let probeBox = null;
-      const rows = [];
-      const toggles = [];
-
-      const settingsNow = () => getSnapshot().settings;
-
-      function buildBody() {
-        body.textContent = '';
-        rows.length = 0;
-        toggles.length = 0;
-        probeBox = null;
-
-        for (const row of DOCK_ROWS) {
-          const line = document.createElement('label');
-          line.className = 'dshbg-dock-row';
-          const name = document.createElement('span');
-          name.textContent = lang === 'zh' ? row.zh : row.en;
-          const input = document.createElement('input');
-          input.type = 'range';
-          input.min = String(row.min);
-          input.max = String(row.max);
-          input.step = '1';
-          input.value = String(settingsNow()[row.key]);
-          const value = document.createElement('span');
-          value.className = 'dshbg-dock-value';
-          line.appendChild(name);
-          line.appendChild(input);
-          line.appendChild(value);
-          body.appendChild(line);
-          // `input`, not `change`: a range has to land on every pixel of the drag. That is
-          // the entire reason this card exists instead of the settings page.
-          input.addEventListener('input', () => patchSettings({ [row.key]: Number(input.value) }));
-          rows.push({ row, input, value });
-        }
-
-        const switches = [
-          {
-            read: () => settingsNow().composerStyle === 'glass',
-            write: (on) => patchSettings({ composerStyle: on ? 'glass' : 'solid' }),
-            caption: text.dockGlass,
-          },
-          {
-            read: () => settingsNow().fullWindow,
-            write: (on) => patchSettings({ fullWindow: on }),
-            caption: text.dockFullWindow,
-          },
-          {
-            read: () => settingsNow().font === 'auto',
-            write: (on) => patchSettings({ font: on ? 'auto' : 'theme' }),
-            caption: text.dockFont,
-          },
-          // The two diagnostic switches used to sit here. They did their job: "no blur at
-          // all" is what pinned the flicker on the panes' backdrop snapshots, and the fix
-          // is in v2.47.0 - `glassPane` / `glassChip` no longer take a snapshot at all.
-          // Nothing is left for them to turn off, and a card that offers a switch which
-          // changes nothing is worse than one that does not offer it.
-          //
-          // The plumbing stays (`flatCss`, the `data-dshbg-flat` / `data-dshbg-noblur`
-          // attributes) because the next flicker report will want it back. To re-arm it:
-          // add the two entries back here, and stop forcing them false in `parseSettings`.
-        ];
-
-        for (const item of switches) {
-          const line = document.createElement('label');
-          line.className = 'dshbg-dock-switch';
-          const input = document.createElement('input');
-          input.type = 'checkbox';
-          input.checked = item.read();
-          const caption = document.createElement('span');
-          caption.textContent = item.caption;
-          line.appendChild(input);
-          line.appendChild(caption);
-          body.appendChild(line);
-          input.addEventListener('change', () => item.write(input.checked));
-          toggles.push({ input, read: item.read });
-        }
-
-        const foot = document.createElement('div');
-        foot.className = 'dshbg-dock-foot';
-        const preset = document.createElement('button');
-        preset.type = 'button';
-        preset.className = 'dshbg-dock-link';
-        preset.textContent = text.dockPreset;
-        preset.addEventListener('click', () => patchSettings({ ...RECOMMENDED }));
-        const reset = document.createElement('button');
-        reset.type = 'button';
-        reset.className = 'dshbg-dock-link';
-        reset.textContent = text.reset;
-        reset.addEventListener('click', () => patchSettings({ ...DEFAULTS, imageId: settingsNow().imageId }));
-        foot.appendChild(preset);
-        foot.appendChild(reset);
-        body.appendChild(foot);
-
-        probeBox = document.createElement('div');
-        probeBox.className = 'dshbg-dock-probe';
-        body.appendChild(probeBox);
-      }
-
-      function paintProbe() {
-        if (probeBox === null) return;
-        probeBox.textContent = '';
-        for (const [key, value] of Object.entries(probe === null ? {} : probe)) {
-          const line = document.createElement('div');
-          line.textContent = `${key} = ${String(value)}`;
-          probeBox.appendChild(line);
-        }
-      }
-
-      function readProbe() {
-        probe = probeSurface();
-        paintProbe();
-      }
-
-      function sync() {
-        const settings = settingsNow();
-        // Switched off from the plugin page: the card is a tool, not part of the product,
-        // so it has to be able to disappear without any code being deleted.
-        host.style.display = settings.showDock === false ? 'none' : '';
-        // Re-read every commit, not once at mount: the card is a `body` child, so our own
-        // remix has already turned every `--dsw-alias-*` it would inherit into the
-        // half-transparent version, and the theme can flip under it while it is open.
-        const dark = document.body.hasAttribute('data-ds-dark-theme');
-        host.style.backgroundColor = dark ? 'rgb(32 33 36 / 97%)' : 'rgb(255 255 255 / 97%)';
-        host.style.color = dark ? '#e8eaed' : '#1a1c1f';
-        headLabel.textContent = `${text.dockTitle}${
-          open ? '' : ` · ${settings.menuFill}% / ${settings.menuBlur}px`
-        }${lastCostReading()}`;
-        caret.textContent = open ? '\u25be' : '\u25b8';
-        for (const { row, input, value } of rows) {
-          // Never write back into the control the pointer is on.
-          if (document.activeElement !== input) input.value = String(settings[row.key]);
-          value.textContent = `${settings[row.key]}${row.suffix}`;
-        }
-        for (const toggle of toggles) {
-          if (document.activeElement !== toggle.input) toggle.input.checked = toggle.read();
-        }
-      }
-
-      function setOpen(next) {
-        open = next;
-        if (timer !== 0) {
-          clearInterval(timer);
-          timer = 0;
-        }
-        if (open) {
-          buildBody();
-          frameMeter.start();
-          readProbe();
-          if (typeof setInterval === 'function') timer = setInterval(readProbe, 800);
-        } else {
-          body.textContent = '';
-          rows.length = 0;
-          toggles.length = 0;
-          probeBox = null;
-          probe = null;
-          // A permanent rAF loop would itself be a cost, and it would be measuring its own
-          // overhead - so it only runs while the readout is on screen.
-          frameMeter.stop();
-        }
-        sync();
-      }
-
-      let suppressClick = false;
-
-      head.addEventListener('click', () => {
-        // A drag ends with a click on the same element. Without this flag, moving the card
-        // would also collapse it - which reads as "the drag did something weird" rather
-        // than "the drag moved it".
-        if (suppressClick) {
-          suppressClick = false;
-          return;
-        }
-        setOpen(!open);
-      });
-
-      // ---- dragging -------------------------------------------------------
-      //
-      // The card has to be movable because there is no corner of the window that is not
-      // already somebody else's: bottom-left is 设置 and the cost meter, top-right is the
-      // session chips, bottom-right is the jump-to-bottom disc. Rather than pick the least
-      // bad one and be wrong for a different window size, it remembers where it was put.
-      const POS_KEY = 'dshbg-tuner-pos';
-      let dragState = null;
-
-      const readPos = () => {
-        try {
-          const raw = window.localStorage.getItem(POS_KEY);
-          if (raw === null) return null;
-          const parsed = JSON.parse(raw);
-          if (typeof parsed !== 'object' || parsed === null) return null;
-          if (typeof parsed.x !== 'number' || typeof parsed.y !== 'number') return null;
-          return parsed;
-        } catch (failure) {
-          return null;
-        }
-      };
-
-      const savePos = (x, y) => {
-        try {
-          window.localStorage.setItem(POS_KEY, JSON.stringify({ x, y }));
-        } catch (failure) {
-          // Private mode / quota. Losing the position is not worth an error.
-        }
-      };
-
-      function place(x, y) {
-        const rect = host.getBoundingClientRect();
-        // Keep at least a sliver on screen: a card dragged past the edge is unreachable, and
-        // `localStorage` would keep it there across restarts.
-        const maxX = Math.max(0, window.innerWidth - rect.width);
-        const maxY = Math.max(0, window.innerHeight - rect.height);
-        host.style.left = `${Math.min(Math.max(0, x), maxX)}px`;
-        host.style.top = `${Math.min(Math.max(0, y), maxY)}px`;
-        host.style.right = 'auto';
-        host.style.bottom = 'auto';
-      }
-
-      const defaultPlace = () => {
-        const rect = host.getBoundingClientRect();
-        place(
-          window.innerWidth - rect.width - 16,
-          Math.max(16, (window.innerHeight - rect.height) / 2),
-        );
-      };
-
-      head.addEventListener('pointerdown', (event) => {
-        if (event.button !== 0) return;
-        const rect = host.getBoundingClientRect();
-        dragState = {
-          id: event.pointerId,
-          offsetX: event.clientX - rect.left,
-          offsetY: event.clientY - rect.top,
-          startX: event.clientX,
-          startY: event.clientY,
-          moved: false,
-        };
-        head.setPointerCapture(event.pointerId);
-      });
-
-      head.addEventListener('pointermove', (event) => {
-        if (dragState === null || event.pointerId !== dragState.id) return;
-        if (!dragState.moved) {
-          // 4px of slack, so a slightly shaky click still opens the card.
-          if (
-            Math.abs(event.clientX - dragState.startX) < 4 &&
-            Math.abs(event.clientY - dragState.startY) < 4
-          ) {
-            return;
-          }
-          dragState.moved = true;
-        }
-        place(event.clientX - dragState.offsetX, event.clientY - dragState.offsetY);
-      });
-
-      const endDrag = (event) => {
-        if (dragState === null || event.pointerId !== dragState.id) return;
-        const moved = dragState.moved;
-        dragState = null;
-        if (head.hasPointerCapture(event.pointerId)) head.releasePointerCapture(event.pointerId);
-        if (!moved) return;
-        suppressClick = true;
-        savePos(parseFloat(host.style.left), parseFloat(host.style.top));
-      };
-      head.addEventListener('pointerup', endDrag);
-      head.addEventListener('pointercancel', endDrag);
-
-      const onResize = () => {
-        // Shrinking the window can leave the card outside it. Re-clamping is enough - the
-        // stored position stays whatever the user chose.
-        if (host.style.left === '') return;
-        place(parseFloat(host.style.left), parseFloat(host.style.top));
-      };
-      window.addEventListener('resize', onResize);
-
-      const unsubscribe = subscribe(sync);
-      document.body.appendChild(host);
-      const saved = readPos();
-      if (saved === null) defaultPlace();
-      else place(saved.x, saved.y);
-      sync();
-
-      return () => {
-        unsubscribe();
-        if (timer !== 0) clearInterval(timer);
-        frameMeter.stop();
-        window.removeEventListener('resize', onResize);
-        host.remove();
-      };
     }
 
     // --------------------------------------------------------------- registration
@@ -3839,18 +2935,6 @@ html[data-dshbg-on][data-dshbg-noblur]::before {
           console.error('[dsh-custom-background] config slot registration failed:', failure);
         }
 
-        // TEMPORARY tuning card. Its own failure path: a broken card must never take the
-        // settings page down with it, and the other way round.
-        //
-        // **Not a slot any more.** It used to register into `sidebar.footer.action` and one
-        // day that seat simply stopped producing it - the store said `showDock: true`, the
-        // component rendered fine on its own, and nothing appeared. `mountTuner` puts the
-        // card on `document.body` instead, so there is no host seat left to fail.
-        try {
-          ctx.effect(() => mountTuner(), 'custom-background: tuning card');
-        } catch (failure) {
-          console.error('[dsh-custom-background] tuner mount failed:', failure);
-        }
       },
     };
   },

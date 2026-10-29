@@ -528,21 +528,12 @@ async function main() {
     /\[class\*="_banner"\][^{]*\{[\s\S]{0,200}?border-top-left-radius: 0 !important/.test(base.css),
   );
   check('the pane ring is an inset shadow', /inset 0 0 0 1px color-mix\(in srgb, var\(--dshbg-raw-label-0\) 16%/.test(base.css));
-  // 诊断开关已经摘掉（v2.48.0，闪烁定位到面板快照并修完之后）。**但它们必须是真的关掉，
-  // 不能只是从界面上消失** —— 当初勾过的人 localStorage 里还留着 `flat: true`，如果
-  // `parseSettings` 继续认这个值，插件就会永久停在「无模糊」状态，而界面上已经没有开关
-  // 能把它关回来。那和 `showDock` 那个早退死锁是同一个形状，只是更难发现。
-  check('the diagnostics are off by default', !base.css.includes('data-dshbg-flat') && !base.css.includes('data-dshbg-noblur'));
-  const forcedOff = (await emit({ flat: true, noWallpaperBlur: true })).css;
+  // 诊断开关 v2.48.0 从界面摘掉，管道 v2.49.0 一起删了（见 README #22）。三件事都测：
+  // 样式表里不许再出现那两个属性名、源码里不许再有 `flatCss`。留下任何一个，都说明
+  // 有代码还在往样式表里写一段永远不会生效的规则。
   check(
-    'stale storage cannot force the diagnostics back on',
-    !forcedOff.includes('data-dshbg-flat') && !forcedOff.includes('data-dshbg-noblur'),
-  );
-  // 管道留着，下一个「还闪」的报告要用。要重新武装：把两行改回 `parsed.x === true`，
-  // 再把两个勾选框加回调参卡。
-  check(
-    'the diagnostic plumbing is still there for the next flicker',
-    CODE.includes('function flatCss') && CODE.includes('data-dshbg-flat') && CODE.includes('data-dshbg-noblur'),
+    'the retired diagnostic plumbing is gone',
+    !base.css.includes('data-dshbg-flat') && !base.css.includes('data-dshbg-noblur') && !CODE.includes('flatCss'),
   );
   // 用户消息气泡画 --dsw-specific-bubble，同样不在重混列表里。它属于转写区内容，
   // 所以跟着文件卡/代码块一起常开，而不是跟输入框的开关。
@@ -672,13 +663,12 @@ async function main() {
     ),
   );
 
-  // 这个比例目前是设置页上的**临时滑块**（settings.menuFill），所以上面几条只校验
-  // 「有填充、带百分号」。这条单独校验滑块真的驱动了样式表 —— 它的意义在于：滑块拆掉、
-  // 数字固化之后，如果谁把 menuSurfaceCss 改回写死字面量，上面几条照样会过（因为
-  // DEFAULTS.menuFill 恰好等于那个数），只有这条会炸。
+  // 这个比例已经固化进 DEFAULTS.menuFill（30），所以上面几条只校验「有填充、带百分号」。
+  // 这条单独校验 menuSurfaceCss 真的读的是 settings —— 意义在于：如果谁把它改回写死字面量，
+  // 上面几条照样会过（因为固化值恰好等于那个数），只有这条会炸。
   const menu88 = await emit({ menuFill: 88 });
   check(
-    'menu fill follows the slider',
+    'menu fill follows the setting, not a literal',
     menu88.css.includes('var(--dshbg-raw-l1) 88%, transparent') &&
       !menu88.css.includes('var(--dshbg-raw-l1) 76%, transparent'),
   );
@@ -970,14 +960,6 @@ async function main() {
   check('marquee distance travels through a custom property', CODE.includes('--dshbg-mq-loop'));
   // 重写自定义属性会让动画从零重新开始 —— 所以只在值真的变了才写。
   check('marquee rewrites the distance only when it changes', CODE.includes("getPropertyValue('--dshbg-mq-loop') !== distance"));
-  check('marquee leaves a trace of the computed indent', CODE.includes('MARQUEE_PROBE}.trace'));
-  // scrollWidth 不随 text-indent 变化，量它等于没量 —— 只有动画对象自己的 currentTime 能
-  // 区分「在滚」「每几帧重启一次」「根本没挂上」。
-  check(
-    'marquee trace reads the running animation',
-    CODE.includes('getAnimations') && CODE.includes('currentTime'),
-  );
-  check('marquee trace survives a re-install', CODE.includes('let marqueeTrace = null'));
   check('marquee dropped the fixed-duration formula', !CODE.includes('7000 + shift * 60'));
   // 头部可能在还没有宽度的时候就挂载了，第一次测量读到 0 会直接放弃。
   check('marquee re-syncs after boot', /const retries = \[[^\]]+\]\.map/.test(CODE));
@@ -994,8 +976,6 @@ async function main() {
   check('turning the wallpaper off restores the host cap', /const reset = \(crumb\) => \{[^}]*max-width/.test(CODE));
   // 跑马灯是这个插件里唯一「坏了也看不出来」的部分：不滚的标题和刚好放得下的标题长得一样。
   // 所以它把最后一次测量留在 localStorage 里，打包后的 App 没有 devtools 也能从磁盘读回来。
-  check('marquee leaves its numbers behind', CODE.includes('MARQUEE_PROBE'));
-  check('marquee probe is namespaced to the plugin', CODE.includes("'dsh.custom-background.marquee.probe'"));
 
   console.log('\nwindow caption buttons');
   // Electron paints min/max/close natively, so no rule on the frame can reach them. The
@@ -1123,7 +1103,6 @@ async function main() {
   // 完整记录）。两边同时上色只会互相盖，而且它的规则永远更靠近宿主，所以这里断言本插件
   // 的样式表**不再提** `.cm-stat-dialog` —— 谁改了这条，都会把弹窗重新推回互相覆盖。
   check('the dialog itself is left to the plugin', !base.css.includes('.cm-stat-dialog'));
-  check('the probe can still read the dialog surface', CODE.includes('function costSurface'));
   let installedCostMeter = null;
   try {
     installedCostMeter = fs.readFileSync(
@@ -1191,117 +1170,6 @@ async function main() {
   check('composer opacity control is on the page', blob.includes('输入框不透明度'));
   check('finish control is on the page', blob.includes('液态玻璃'));
   check('panel opacity control is still there', blob.includes('面板不透明度'));
-  // 临时滑块。它们是要被拆掉的东西，但拆之前必须真的出现在页面上 —— 否则用户找不到。
-  check('temporary glass blur slider is on the page', blob.includes('玻璃模糊（临时）'));
-  check('temporary glass fill slider is on the page', blob.includes('玻璃填充（临时）'));
-  // 调参卡的总开关在插件页：数值定稿后从界面关掉即可，不用删代码。
-  check(
-    'the tuning card can be switched off from the plugin page',
-    blob.includes('显示调参卡') && CODE.includes('showDock: true') && CODE.includes('settings.showDock === false'),
-  );
-
-  console.log('\ntuning card');
-  // 这张卡**不再**注册进宿主的 `sidebar.footer.action` 座位。那个座位有一阵子什么都不
-  // 产出：store 里 `showDock` 明明是 `true`，组件单独调也正常，侧栏就是不见东西。诊断
-  // 工具挂在看不见的座位上，就不是诊断工具了 —— 所以它现在是挂到 `document.body` 上的
-  // 普通 DOM。下面这几条钉住的就是「插件只要跑起来，卡就一定在屏幕上」。
-  const tuner = base.body.children.find(
-    (el) => typeof el.className === 'string' && el.className.includes('dshbg-tuner'),
-  );
-  check('the tuning card mounts itself on <body>', tuner !== undefined, `body has ${base.body.children.length}`);
-  check(
-    'the card does not depend on a host seat',
-    !CODE.includes("inject('sidebar.footer.action'") && CODE.includes('document.body.appendChild(host)'),
-  );
-  if (tuner !== undefined) {
-    const [tunerStyle, tunerHead, tunerBody] = tuner.children;
-    check('the card pins itself out of the host layout', /position:\s*fixed/.test(tunerStyle.textContent));
-    // 左下角正是宿主自己的「设置」按钮和计费器所在的那一行。诊断卡不能把那一下点击吞掉。
-    check('the card clears the host foot', /bottom:\s*64px/.test(tunerStyle.textContent));
-    // 它自己就是 `body > *`，会被本插件自己的重混命中 —— 所以底色必须是写死的，不能读 token。
-    check('the card does not paint with a remixed token', /rgb\(32 33 36 \/ 97%\)/.test(CODE));
-    check('the card opens collapsed', tunerBody.children.length === 0, `got ${tunerBody.children.length}`);
-    check(
-      'the collapsed header names the card',
-      tunerHead.children[0].textContent.includes('调参（临时）'),
-      tunerHead.children[0].textContent,
-    );
-    check(
-      'dock carries every dial',
-      ['blur', 'dim', 'surface', 'chatSurface', 'composerSurface', 'glassBlur', 'menuFill', 'menuBlur', 'sidebarFill'].every(
-        (key) => CODE.includes(`key: '${key}'`),
-      ),
-    );
-
-    tunerHead.fire('click');
-    // 九条滑杆 + 五个开关 + 页脚 + 探针
-    check('clicking the header opens every control', tunerBody.children.length === 14, `got ${tunerBody.children.length}`);
-    const ranges = tunerBody.children.filter((el) => el.tagName === 'label' && el.className === 'dshbg-dock-row');
-    check('every dial is a live range input', ranges.length === 9, `got ${ranges.length}`);
-    // 拖滑杆必须走 `input` 事件：`change` 只在松手时来一次，那就不是「拖到哪儿看到哪儿」了。
-    const dial = ranges[0];
-    check('the dial is wired to the live event', dial !== undefined && dial.children[1]._on !== undefined && dial.children[1]._on.input !== undefined);
-    if (dial !== undefined) {
-      dial.children[1].value = '33';
-      dial.children[1].fire('input');
-      check('dragging a dial writes the setting', dial.children[2].textContent === '33px', dial.children[2].textContent);
-    }
-
-    // 三个产品开关（液态玻璃 / 整窗铺满 / 自动反色）。诊断那两个已经摘掉 —— 它们要关的
-    // 东西在 v2.47.0 已经不存在了，留一个什么都不改的勾选框比没有更糟。
-    const switches = tunerBody.children.filter((el) => el.className === 'dshbg-dock-switch');
-    check('the card carries the three product switches', switches.length === 3, `got ${switches.length}`);
-    const polarity = switches[2];
-    if (polarity !== undefined) {
-      polarity.children[0].checked = true;
-      polarity.children[0].fire('change');
-      check(
-        'flipping polarity reaches the settings',
-        JSON.parse(base.store.get('dsh.custom-background.settings.v3')).font === 'auto',
-        base.store.get('dsh.custom-background.settings.v3'),
-      );
-      polarity.children[0].checked = false;
-      polarity.children[0].fire('change');
-    }
-    // 拖拽：位置要能改、要被记住、要在窗口缩小时被拉回可视区。三条一起测，因为它们
-    // 共用 `place()` —— 只测「能拖」的话，拖出屏幕外就再也找不回来这件事会被漏掉。
-    check('dragging the header moves the card', (() => {
-      tunerHead.fire('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100 });
-      tunerHead.fire('pointermove', { pointerId: 1, clientX: 300, clientY: 260 });
-      tunerHead.fire('pointerup', { pointerId: 1 });
-      return tuner.style.left === '200px' && tuner.style.top === '160px';
-    })(), `${tuner.style.left} / ${tuner.style.top}`);
-    check(
-      'the position is remembered',
-      JSON.parse(base.store.get('dshbg-tuner-pos')).x === 200,
-      base.store.get('dshbg-tuner-pos'),
-    );
-    check('a drag does not also collapse the card', tunerBody.children.length === 14, `got ${tunerBody.children.length}`);
-    check('shrinking the window pulls the card back on screen', (() => {
-      base.window.innerWidth = 300;
-      base.window.innerHeight = 200;
-      base.windowListeners.resize();
-      // 窗口比卡片还小时两个上限都归 0，卡片贴左上角 —— 仍然抓得到。
-      const maxX = Math.max(0, 300 - 248);
-      const maxY = Math.max(0, 200 - 320);
-      return parseFloat(tuner.style.left) <= maxX + 0.5 && parseFloat(tuner.style.top) <= maxY + 0.5;
-    })(), `${tuner.style.left} / ${tuner.style.top}`);
-    check('dock can read back computed values', CODE.includes('function probeSurface') && CODE.includes('getComputedStyle'));
-    // 亮壁纸上最容易翻车的不是玻璃参数，是「白字压亮图」：极性开关必须从卡片就能切。
-    check('dock can flip text polarity', CODE.includes("settings.font === 'auto'") && CODE.includes("font: 'auto'"));
-    check('dock can restore a legible baseline', CODE.includes('const RECOMMENDED') && CODE.includes('...RECOMMENDED'));
-  }
-
-  const hidden = await emit({ showDock: false });
-  const hiddenTuner = hidden.body.children.find(
-    (el) => typeof el.className === 'string' && el.className.includes('dshbg-tuner'),
-  );
-  check(
-    'switching the card off hides it instead of leaking it',
-    hiddenTuner !== undefined && hiddenTuner.style.display === 'none',
-    hiddenTuner === undefined ? 'not mounted' : String(hiddenTuner.style.display),
-  );
-
   console.log('\nslot registration');
   // 只留设置页那一个座位。调参卡已经不是座位了（见上）。
   check('one slot registration', base.registered.length === 1, `got ${base.registered.length}`);
