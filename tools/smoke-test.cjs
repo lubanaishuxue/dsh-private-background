@@ -1170,6 +1170,68 @@ async function main() {
   check('composer opacity control is on the page', blob.includes('输入框不透明度'));
   check('finish control is on the page', blob.includes('液态玻璃'));
   check('panel opacity control is still there', blob.includes('面板不透明度'));
+
+  // The sliders belong to one background now, and the page has to say so - otherwise the
+  // first switch looks like the plugin lost the user's settings.
+  const withImage = await emit({ mode: 'image', imageId: 'img-1', composerStyle: 'glass' });
+  const imageStrings = [];
+  const collect = (node) => {
+    if (node === null || node === undefined || node === false || node === true) return;
+    if (typeof node === 'string' || typeof node === 'number') {
+      imageStrings.push(String(node));
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach(collect);
+      return;
+    }
+    if (typeof node !== 'object') return;
+    if (node.type !== undefined) {
+      if (node.props !== null && typeof node.props === 'object') Object.values(node.props).forEach(collect);
+      if (Array.isArray(node.children)) node.children.forEach(collect);
+      return;
+    }
+    Object.values(node).forEach(collect);
+  };
+  collect(withImage.registered[0].component({ view: 'page' }));
+  const imageBlob = imageStrings.join('\n');
+  check('the page says the sliders belong to the current background', imageBlob.includes('属于当前这张背景'));
+  check('the page says glass blur is global', imageBlob.includes('玻璃模糊、作用范围、字体是全局的'));
+
+  console.log('\nper-background settings');
+  // Every key in DEFAULTS must land in exactly one of the three groups. A key that belongs
+  // to none of them is silently dropped by `applySettingsPatch` - the slider moves, nothing
+  // is stored, and the value snaps back on the next commit. Cheap to assert, expensive to
+  // find by hand.
+  const keysOf = (name) => {
+    const match = new RegExp(`const ${name} = \\[([^\\]]*)\\]`).exec(CODE);
+    return match === null
+      ? []
+      : match[1]
+          .split(',')
+          .map((item) => item.trim().replace(/^['"]|['"]$/g, ''))
+          .filter(Boolean);
+  };
+  const pointers = keysOf('POINTER_KEYS');
+  const perSource = keysOf('PRESENTATION_KEYS');
+  const globals = keysOf('GLOBAL_KEYS');
+  const defaultsBody = /const DEFAULTS = \{([\s\S]*?)\n    \};/.exec(CODE);
+  const defaultKeys = defaultsBody === null ? [] : [...defaultsBody[1].matchAll(/^ {6}([A-Za-z]+):/gm)].map((m) => m[1]);
+  const classified = pointers.concat(perSource, globals);
+  check('DEFAULTS was found', defaultKeys.length >= 15, `got ${defaultKeys.length}`);
+  check(
+    'every default is classified into a group',
+    defaultKeys.every((key) => classified.includes(key)),
+    defaultKeys.filter((key) => !classified.includes(key)).join(', '),
+  );
+  check('no key belongs to two groups', new Set(classified).size === classified.length);
+  check('glass blur stays global, as asked', globals.includes('glassBlur') && globals.includes('menuBlur'));
+  check(
+    'blur and dim are per background',
+    perSource.includes('blur') && perSource.includes('dim') && perSource.includes('surface'),
+  );
+  check('the artwork pointers are not presentation keys', !perSource.some((key) => pointers.includes(key)));
+
   console.log('\nslot registration');
   // 只留设置页那一个座位。调参卡已经不是座位了（见上）。
   check('one slot registration', base.registered.length === 1, `got ${base.registered.length}`);

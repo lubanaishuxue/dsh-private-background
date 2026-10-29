@@ -37,7 +37,8 @@ window.__ModuleLoader__.load({
     const { useCallback, useEffect, useRef, useState, useSyncExternalStore } = React;
 
     const PACKAGE = '@local/dsh-custom-background';
-    const SETTINGS_KEY = 'dsh.custom-background.settings.v3';
+    const SETTINGS_KEY = 'dsh.custom-background.settings.v4';
+    const LEGACY_SETTINGS_KEY = 'dsh.custom-background.settings.v3';
     const DB_NAME = 'dsh-custom-background';
     const DB_STORE = 'images';
     const MAX_EDGE = 2560;
@@ -62,7 +63,7 @@ window.__ModuleLoader__.load({
       // other: the host's 40px flattened the artwork into a wash, which forced the fill up
       // to 76% to keep the text readable, and 76% is what stopped it looking like glass.
       // Settled at 30 / 50. They stay in `settings` rather than becoming constants so that a
-      // value already in storage keeps working and `readSettings` keeps clamping it.
+      // value already in storage keeps working and `parsePreset` keeps clamping it.
       menuFill: 30,
       menuBlur: 50,
       // The sidebar's own density when it is included in the scope. Measured separately
@@ -129,6 +130,8 @@ window.__ModuleLoader__.load({
         customFont: '自选颜色',
         blur: '模糊',
         dim: '压暗',
+        perSourceHint: '下面这些滑杆属于当前这张背景。换一张会自动换成它自己上次调好的样子，不会互相影响。',
+        globalHint: '玻璃模糊、作用范围、字体是全局的，所有背景共用一套。',
         surface: '面板不透明度',
         surfaceHint: '调低背景更明显；文字发虚时把它调高。',
         chatSurface: '对话区不透明度',
@@ -174,6 +177,8 @@ window.__ModuleLoader__.load({
         customFont: 'Custom colour',
         blur: 'Blur',
         dim: 'Dim',
+        perSourceHint: 'The sliders below belong to the current background. Switching to another one brings back its own last values.',
+        globalHint: 'Glass blur, scope and typeface are global - one set for every background.',
         surface: 'Panel opacity',
         surfaceHint: 'Lower values reveal more of the wallpaper; raise it if text gets muddy.',
         chatSurface: 'Conversation opacity',
@@ -212,54 +217,134 @@ window.__ModuleLoader__.load({
 
     // ---------------------------------------------------------------- persistence
 
-    function readSettings() {
-      const fallback = { ...DEFAULTS };
-      let parsed = null;
-      try {
-        const raw = window.localStorage.getItem(SETTINGS_KEY);
-        parsed = raw === null ? null : JSON.parse(raw);
-      } catch {
-        parsed = null;
-      }
-      if (parsed === null || typeof parsed !== 'object') return fallback;
+    /** Which artwork is up. Changing one of these is what "switching background" means. */
+    const POINTER_KEYS = ['mode', 'imageId', 'gradient', 'color'];
 
-      const modes = ['none', 'image', 'gradient', 'color'];
-      const fonts = ['theme', 'auto', 'light', 'dark', 'custom'];
+    /** How the artwork is presented. Every source keeps its own copy of these. */
+    const PRESENTATION_KEYS = [
+      'blur',
+      'dim',
+      'surface',
+      'chatSurface',
+      'composerSurface',
+      'composerStyle',
+      'menuFill',
+      'sidebarFill',
+    ];
+
+    /**
+     * The material, not the artwork.
+     *
+     * Glass blur is one number for the whole app on purpose: a dialog that fogs differently
+     * depending on which picture sits behind it would read as a bug, not as a feature. Same
+     * for the scope, the typeface and its colour - those describe the interface, and the
+     * interface does not change when the wallpaper does.
+     */
+    const GLOBAL_KEYS = ['glassBlur', 'menuBlur', 'fullWindow', 'font', 'fontColor'];
+
+    const DEFAULT_PRESET = (() => {
+      const preset = {};
+      for (const field of PRESENTATION_KEYS) preset[field] = DEFAULTS[field];
+      return preset;
+    })();
+
+    /**
+     * One key per artwork.
+     *
+     * Images and custom colours are keyed by their own identity, so `#1b2233` and `#0d1117`
+     * are two sources with two sets of sliders; gradients are keyed by preset index. "Off"
+     * is a source too - its sliders are worth remembering, otherwise turning the wallpaper
+     * off and back on would cost the user their panel density.
+     */
+    function sourceKeyOf(settings) {
+      if (settings.mode === 'image') return settings.imageId === null ? 'image:-' : `image:${settings.imageId}`;
+      if (settings.mode === 'gradient') return `gradient:${clamp(settings.gradient, 0, GRADIENTS.length - 1)}`;
+      if (settings.mode === 'color') return `color:${String(settings.color).toLowerCase()}`;
+      return 'none';
+    }
+
+    /** One set of presentation values, with every field clamped and defaulted. */
+    function parsePreset(value) {
+      const source = value === null || typeof value !== 'object' ? {} : value;
+      const pick = (field) => (source[field] === undefined ? DEFAULT_PRESET[field] : source[field]);
       return {
-        mode: modes.includes(parsed.mode) ? parsed.mode : fallback.mode,
-        imageId: typeof parsed.imageId === 'string' ? parsed.imageId : null,
-        gradient: clamp(parsed.gradient === undefined ? 0 : parsed.gradient, 0, GRADIENTS.length - 1),
-        color: typeof parsed.color === 'string' && /^#[0-9a-f]{6}$/i.test(parsed.color) ? parsed.color : fallback.color,
-        blur: clamp(parsed.blur === undefined ? fallback.blur : parsed.blur, 0, 40),
-        dim: clamp(parsed.dim === undefined ? fallback.dim : parsed.dim, 0, 80),
-        surface: clamp(parsed.surface === undefined ? fallback.surface : parsed.surface, 0, 100),
-        chatSurface: clamp(
-          parsed.chatSurface === undefined ? fallback.chatSurface : parsed.chatSurface,
-          0,
-          100,
-        ),
-        composerSurface: clamp(
-          parsed.composerSurface === undefined ? fallback.composerSurface : parsed.composerSurface,
-          0,
-          100,
-        ),
-        composerStyle: parsed.composerStyle === 'glass' ? 'glass' : 'solid',
-        glassBlur: clamp(parsed.glassBlur === undefined ? fallback.glassBlur : parsed.glassBlur, 0, 40),
-        menuFill: clamp(parsed.menuFill === undefined ? fallback.menuFill : parsed.menuFill, 20, 100),
-        menuBlur: clamp(parsed.menuBlur === undefined ? fallback.menuBlur : parsed.menuBlur, 0, 320),
-        sidebarFill: clamp(parsed.sidebarFill === undefined ? fallback.sidebarFill : parsed.sidebarFill, 0, 100),
-        fullWindow: parsed.fullWindow === true,
-        font: fonts.includes(parsed.font) ? parsed.font : fallback.font,
-        fontColor:
-          typeof parsed.fontColor === 'string' && /^#[0-9a-f]{6}$/i.test(parsed.fontColor)
-            ? parsed.fontColor
-            : fallback.fontColor,
+        blur: clamp(pick('blur'), 0, 40),
+        dim: clamp(pick('dim'), 0, 80),
+        surface: clamp(pick('surface'), 0, 100),
+        chatSurface: clamp(pick('chatSurface'), 0, 100),
+        composerSurface: clamp(pick('composerSurface'), 0, 100),
+        composerStyle: pick('composerStyle') === 'glass' ? 'glass' : 'solid',
+        menuFill: clamp(pick('menuFill'), 20, 100),
+        sidebarFill: clamp(pick('sidebarFill'), 0, 100),
       };
     }
 
-    function writeSettings(settings) {
+    /**
+     * `raw` is the document that gets persisted: pointers, one preset per source, and the
+     * global keys. It is *not* what the rest of the plugin reads - see `flatten`.
+     */
+    function readRaw() {
+      const parse = (text) => {
+        try {
+          const value = text === null ? null : JSON.parse(text);
+          return value !== null && typeof value === 'object' ? value : null;
+        } catch {
+          return null;
+        }
+      };
+      const stored = parse(window.localStorage.getItem(SETTINGS_KEY));
+      const legacy = parse(window.localStorage.getItem(LEGACY_SETTINGS_KEY));
+
+      // A v3 file has a single flat set of sliders shared by every artwork. It becomes the
+      // base every source falls back to, so an existing user does not watch every picture
+      // except the current one snap back to the factory values on the first switch.
+      const base = parsePreset(legacy);
+
+      const presets = {};
+      if (stored !== null && stored.presets !== null && typeof stored.presets === 'object') {
+        for (const [key, value] of Object.entries(stored.presets)) presets[key] = parsePreset(value);
+      }
+
+      const from = stored === null ? (legacy === null ? {} : legacy) : stored;
+      const modes = ['none', 'image', 'gradient', 'color'];
+      const fonts = ['theme', 'auto', 'light', 'dark', 'custom'];
+      return {
+        mode: modes.includes(from.mode) ? from.mode : DEFAULTS.mode,
+        imageId: typeof from.imageId === 'string' ? from.imageId : null,
+        gradient: clamp(from.gradient === undefined ? DEFAULTS.gradient : from.gradient, 0, GRADIENTS.length - 1),
+        color: /^#[0-9a-f]{6}$/i.test(String(from.color)) ? String(from.color) : DEFAULTS.color,
+        base,
+        presets,
+        glassBlur: clamp(from.glassBlur === undefined ? DEFAULTS.glassBlur : from.glassBlur, 0, 40),
+        menuBlur: clamp(from.menuBlur === undefined ? DEFAULTS.menuBlur : from.menuBlur, 0, 320),
+        fullWindow: from.fullWindow === true,
+        font: fonts.includes(from.font) ? from.font : DEFAULTS.font,
+        fontColor: /^#[0-9a-f]{6}$/i.test(String(from.fontColor)) ? String(from.fontColor) : DEFAULTS.fontColor,
+      };
+    }
+
+    /** The preset a source uses: its own, else the migrated base, else the factory values. */
+    function presetOf(raw, key) {
+      const own = raw.presets[key];
+      if (own !== undefined) return own;
+      return raw.base === undefined ? DEFAULT_PRESET : raw.base;
+    }
+
+    /**
+     * The flat view every consumer reads - `settings.blur` and friends.
+     *
+     * It is recomputed from `raw` on every commit rather than stored beside it. A flat copy
+     * that only some code paths update is precisely the bug `activeImage` had: the value
+     * looked right until you switched, and "reload fixes it" was the fingerprint.
+     */
+    function flatten(raw) {
+      const { presets, base, ...rest } = raw;
+      return { ...rest, ...presetOf(raw, sourceKeyOf(raw)) };
+    }
+
+    function writeRaw(raw) {
       try {
-        window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+        window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(raw));
       } catch {
         // A full or disabled store only costs persistence; the session keeps working.
       }
@@ -404,14 +489,6 @@ window.__ModuleLoader__.load({
 
     // -------------------------------------------------------------------- store
 
-    let state = {
-      settings: readSettings(),
-      activeImage: null,
-      images: null,
-      luma: null,
-    };
-    const listeners = new Set();
-
     /**
      * The artwork on screen is a *function* of the gallery and the selected id — never a
      * second copy of it.
@@ -428,7 +505,15 @@ window.__ModuleLoader__.load({
       return record === undefined ? null : record.dataUrl;
     }
 
-    const derive = (next) => ({ ...next, activeImage: activeImageOf(next.images, next.settings) });
+    /** Both flat views are derived from `raw`; neither is stored next to it. */
+    const derive = (next) => ({
+      ...next,
+      settings: flatten(next.raw),
+      activeImage: activeImageOf(next.images, next.raw),
+    });
+
+    let state = derive({ raw: readRaw(), settings: null, activeImage: null, images: null, luma: null });
+    const listeners = new Set();
 
     function subscribe(listener) {
       listeners.add(listener);
@@ -446,14 +531,46 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Fold a settings patch into the raw document.
+     *
+     * Pointers go first so that a patch which switches source *and* moves a slider in one
+     * call lands the slider on the source being switched to. A presentation key never
+     * touches a source other than the current one — that is the whole feature.
+     *
+     * `presets` is the one escape hatch: `addImage` uses it to hand a new picture the
+     * look that is on screen, `removeImage` uses `null` to drop a picture's set.
+     */
+    function applySettingsPatch(raw, patch) {
+      const next = { ...raw };
+      for (const field of POINTER_KEYS) if (patch[field] !== undefined) next[field] = patch[field];
+      if (patch.presets !== undefined) {
+        next.presets = { ...next.presets };
+        for (const [key, value] of Object.entries(patch.presets)) {
+          if (value === null) delete next.presets[key];
+          else next.presets[key] = { ...value };
+        }
+      }
+      const key = sourceKeyOf(next);
+      let preset = null;
+      for (const field of PRESENTATION_KEYS) {
+        if (patch[field] === undefined) continue;
+        if (preset === null) preset = { ...presetOf(next, key) };
+        preset[field] = patch[field];
+      }
+      if (preset !== null) next.presets = { ...next.presets, [key]: preset };
+      for (const field of GLOBAL_KEYS) if (patch[field] !== undefined) next[field] = patch[field];
+      return next;
+    }
+
+    /**
      * `settingsPatch` is optional and applied in the *same* commit as `patch`. Two separate
      * commits would paint twice: once with the new gallery and the old selection, once with
      * both — a visible flash of the wrong wallpaper.
      */
     function commit(patch, settingsPatch) {
-      const settings = settingsPatch === undefined ? state.settings : { ...state.settings, ...settingsPatch };
-      state = derive({ ...state, ...patch, settings });
-      if (settingsPatch !== undefined) writeSettings(state.settings);
+      const raw = settingsPatch === undefined ? state.raw : applySettingsPatch(state.raw, settingsPatch);
+      state = derive({ ...state, ...patch, raw });
+      if (settingsPatch !== undefined) writeRaw(state.raw);
       emit();
     }
 
@@ -478,7 +595,13 @@ window.__ModuleLoader__.load({
       const record = { id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, dataUrl, addedAt: Date.now() };
       await putImageRecord(record);
       const images = (state.images === null ? [] : state.images).concat(record);
-      commit({ images }, { mode: 'image', imageId: record.id });
+      // A new picture inherits the look that is on screen right now. Uploading is meant to
+      // change the artwork, not to throw away the sliders the user just dialled in.
+      const inherited = { ...presetOf(state.raw, sourceKeyOf(state.raw)) };
+      commit(
+        { images },
+        { mode: 'image', imageId: record.id, presets: { [`image:${record.id}`]: inherited } },
+      );
       return record;
     }
 
@@ -490,21 +613,26 @@ window.__ModuleLoader__.load({
      * to the tile that takes its place (or to the new last one, when the deleted tile was
      * last), which keeps the eye where it already was. Only an empty gallery — nothing left
      * to show — falls back to "no background".
+     *
+     * The deleted picture's preset goes with it, otherwise the store grows a set of sliders
+     * for an id nothing can ever select again.
      */
     async function removeImage(id) {
       await deleteImageRecord(id);
       const before = state.images === null ? [] : state.images;
       const images = before.filter((record) => record.id !== id);
-      const wasActive = state.settings.imageId === id;
-      let settingsPatch;
+      const wasActive = state.raw.imageId === id;
+      const settingsPatch = { presets: { [`image:${id}`]: null } };
       if (wasActive) {
         const index = before.findIndex((record) => record.id === id);
         const at = index < 0 ? images.length - 1 : Math.min(index, images.length - 1);
         const successor = images.length === 0 ? null : images[at];
-        settingsPatch =
-          successor === null
-            ? { imageId: null, mode: state.settings.mode === 'image' ? 'none' : state.settings.mode }
-            : { imageId: successor.id };
+        if (successor === null) {
+          settingsPatch.imageId = null;
+          if (state.raw.mode === 'image') settingsPatch.mode = 'none';
+        } else {
+          settingsPatch.imageId = successor.id;
+        }
       }
       commit({ images }, settingsPatch);
     }
@@ -2788,6 +2916,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
           h(
             'div',
             { key: 'sliders', className: 'dshbg-section', style: { gap: '12px' } },
+            h('p', { className: 'dshbg-hint' }, text.perSourceHint),
             h(Slider, {
               label: text.blur,
               value: settings.blur,
@@ -2846,7 +2975,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
                   onChange: (value) => patchSettings({ composerSurface: value }),
                 }),
             settings.composerStyle === 'glass'
-              ? null
+              ? h('p', { className: 'dshbg-hint' }, text.globalHint)
               : h('p', { className: 'dshbg-hint' }, text.composerSurfaceHint),
           ),
         );
@@ -2910,7 +3039,15 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
               className: 'dshbg-link',
               onClick: () => {
                 setError(null);
-                patchSettings({ ...DEFAULTS, imageId: settings.imageId });
+                // Reset the look of *this* background, not the app. Spreading `DEFAULTS`
+                // wholesale also carried `mode: 'none'`, so "restore defaults" used to turn
+                // the wallpaper off; and once every source has its own set, the sliders
+                // have to land on the current source rather than on whichever one `mode`
+                // happened to name.
+                const patch = {};
+                for (const field of PRESENTATION_KEYS) patch[field] = DEFAULTS[field];
+                for (const field of GLOBAL_KEYS) patch[field] = DEFAULTS[field];
+                patchSettings(patch);
               },
             },
             text.reset,
