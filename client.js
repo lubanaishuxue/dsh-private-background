@@ -462,6 +462,24 @@ window.__ModuleLoader__.load({
     };
     const listeners = new Set();
 
+    /**
+     * The artwork on screen is a *function* of the gallery and the selected id — never a
+     * second copy of it.
+     *
+     * Keeping a stored `activeImage` next to `settings.imageId` is exactly how "clicking
+     * another picture does nothing" happened: the gallery tile wrote the id, `paint()` read
+     * the stale copy, and the only place that ever set both was `addImage()` — so the
+     * wallpaper was frozen on the newest upload until a reload re-derived it in `boot()`.
+     * Deriving it on every commit makes that class of drift impossible to reintroduce.
+     */
+    function activeImageOf(images, settings) {
+      if (!Array.isArray(images)) return null;
+      const record = images.find((item) => item.id === settings.imageId);
+      return record === undefined ? null : record.dataUrl;
+    }
+
+    const derive = (next) => ({ ...next, activeImage: activeImageOf(next.images, next.settings) });
+
     function subscribe(listener) {
       listeners.add(listener);
       return () => {
@@ -477,15 +495,20 @@ window.__ModuleLoader__.load({
       for (const listener of listeners) listener();
     }
 
-    function commit(patch) {
-      state = { ...state, ...patch };
+    /**
+     * `settingsPatch` is optional and applied in the *same* commit as `patch`. Two separate
+     * commits would paint twice: once with the new gallery and the old selection, once with
+     * both — a visible flash of the wrong wallpaper.
+     */
+    function commit(patch, settingsPatch) {
+      const settings = settingsPatch === undefined ? state.settings : { ...state.settings, ...settingsPatch };
+      state = derive({ ...state, ...patch, settings });
+      if (settingsPatch !== undefined) writeSettings(state.settings);
       emit();
     }
 
     function patchSettings(patch) {
-      state = { ...state, settings: { ...state.settings, ...patch } };
-      writeSettings(state.settings);
-      emit();
+      commit({}, patch);
     }
 
     let booted = false;
@@ -495,11 +518,9 @@ window.__ModuleLoader__.load({
       listImageRecords()
         .then((records) => {
           const images = Array.isArray(records) ? records : [];
-          const settings = state.settings;
-          const active = images.find((record) => record.id === settings.imageId) || null;
-          commit({ images, activeImage: active === null ? null : active.dataUrl, ready: true });
+          commit({ images, ready: true });
         })
-        .catch(() => commit({ images: [], activeImage: null, ready: true }));
+        .catch(() => commit({ images: [], ready: true }));
     }
 
     async function addImage(file) {
@@ -507,8 +528,7 @@ window.__ModuleLoader__.load({
       const record = { id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, dataUrl, addedAt: Date.now() };
       await putImageRecord(record);
       const images = (state.images === null ? [] : state.images).concat(record);
-      commit({ images, activeImage: dataUrl });
-      patchSettings({ mode: 'image', imageId: record.id });
+      commit({ images }, { mode: 'image', imageId: record.id });
       return record;
     }
 
@@ -516,10 +536,12 @@ window.__ModuleLoader__.load({
       await deleteImageRecord(id);
       const wasActive = state.settings.imageId === id;
       const images = (state.images === null ? [] : state.images).filter((record) => record.id !== id);
-      commit({ images, activeImage: wasActive ? null : state.activeImage });
-      if (wasActive) {
-        patchSettings({ imageId: null, mode: state.settings.mode === 'image' ? 'none' : state.settings.mode });
-      }
+      commit(
+        { images },
+        wasActive
+          ? { imageId: null, mode: state.settings.mode === 'image' ? 'none' : state.settings.mode }
+          : undefined,
+      );
     }
 
     // ------------------------------------------------------------------ selectors

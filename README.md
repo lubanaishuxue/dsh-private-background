@@ -489,7 +489,7 @@ client.js
 ├─ 持久化      readSettings / writeSettings（localStorage）
 ├─ 图片库      openDb / dbRun / ingestFile（IndexedDB + 降采样到 2560px）
 ├─ 亮度        lumaOfCss / lumaOfImage / measureLuma / toneOf
-├─ 状态        state + subscribe / commit / patchSettings
+├─ 状态        state + subscribe / commit / patchSettings（activeImage 每次 commit 从 images + imageId 重算）
 ├─ 选择器      frameSelector / workAreaColumns / bottomRowSelector
 ├─ 样式        wallpaper / token / chatSurface / composer / glass / chrome / caption / bottomRow / font / configPage / costMeter
 ├─ 安装        installStyles（apply 内注入 <style>，ctx.effect 托管清理）
@@ -743,10 +743,47 @@ html[data-dshbg-on] .md-code-block [class*="_header_"] {
 
 实测对照图：`diag/banner-corner-fix.png`（左/右上角 × 改前/改后四格，60 行代码块滚到表头吸顶）。改前右上角一块方块，改后干净。
 
+**21. 屏幕上那张图必须是「图库 + 选中的 id」算出来的，不能另存一份。**
+
+用户报的现象：往图库里传了几张图，点其中一张想切过去，**壁纸纹丝不动，永远停在新传的那张**。
+
+原因是 `activeImage` 被当成了一个**独立的 state 字段**，而它其实是 `images` + `settings.imageId` 的函数。全项目只有三处给它赋值：`boot()`（按 imageId 反查）、`addImage()`（直接给新图）、`removeImage()`（给 null）。而点图库那一格走的是 `patchSettings({ imageId })` —— **它只改了 id 和 localStorage，没碰 `activeImage`**。`paint()` 读的是 `activeImage`，于是：
+
+| 操作 | `settings.imageId` | `activeImage`（旧） | 屏幕 |
+|---|---|---|---|
+| 传图 A | A | A | A ✅ |
+| 传图 B | B | B | B ✅ |
+| **点 A** | **A** | **B** | **B** ❌ |
+| 刷新页面 | A | A（boot 重算） | A ✅ |
+
+**「刷新就好了」是这个 bug 的指纹** —— 它说明写进去的数据是对的，只有内存里那份副本没跟上。顺带还有个更狠的：**删掉正在用的那张之后，再点任何一张都不生效，直到刷新**（`removeImage` 把 `activeImage` 置 null，之后再没人给它赋值）。
+
+```js
+function activeImageOf(images, settings) {
+  if (!Array.isArray(images)) return null;
+  const record = images.find((item) => item.id === settings.imageId);
+  return record === undefined ? null : record.dataUrl;
+}
+const derive = (next) => ({ ...next, activeImage: activeImageOf(next.images, next.settings) });
+function commit(patch, settingsPatch) { /* …derive… */ }
+```
+
+⚠️ **`commit` 必须能同时改 `images` 和 `settings`。** 拆成两次 commit 会画两遍：先「新图库 + 旧选择」，再「新图库 + 新选择」—— 中间那一帧是错的壁纸，肉眼可见地闪一下。
+
+⚠️ **别再把它改回「存一份」。** 这类 bug 的复现条件很窄（必须先有第二张图、再点第一张），正常点一遍设置页看不出来，所以它能活很久。**凡是「B 是 A 的函数」的地方都按这个写：算出来，别存。**
+
+回归测试：`node tools/store-test.cjs`（13 项）。它**不是**把 store 重写一遍 —— 那样测的是测试本身 —— 而是从 `client.js` 里把 store 那一段切出来，配桩驱动。可以指到旧版本上验证它真的会红：
+
+```bash
+git show v2.48.2:client.js > /tmp/old.js && node tools/store-test.cjs /tmp/old.js
+# FAIL clicking an older picture repaints with it — data:new   （6 项红）
+```
+
 ## 九、改了代码之后
 
 ```bash
-node tools/smoke-test.cjs
+node tools/smoke-test.cjs     # 样式表：266 项
+node tools/store-test.cjs       # 状态层：13 项
 ```
 
 266 项检查，覆盖：模块契约、样式表注入、壁纸层、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、液态玻璃五档归属与四套配方（面板 / 芯片 / 悬浮控件 / 深色玻璃）、底部状态栏、头部胶囊、用户气泡、费用明细胶囊与头部那颗的隐藏、回到最下面圆钮、侧栏历史块（随内容收缩、行一条规则都没有、三处边缘对齐、关掉宿主 `_fade`、**和计费器共用同一个 `paneFill()`**）、计费器宽度与 Windows 下的按钮内缩、悬停预览卡的玻璃与 50% 填充下限（外加「别再钉回不透明」）、菜单的玻璃画在表面而非材料层、材料层让位、**输入框的玻璃画在卡片自己身上、菜单开着时由 `installComposerMenuGuard` 让出模糊、浓度走 `composerSurface`**（伪元素那条路试过两次，填充上屏、模糊从未上屏）、右侧侧边栏的玻璃（**只在打开时**）与下层停止画底色、悬停卡的填充下限、两条临时滑块是否真的驱动样式表及其上下限、**菜单模糊能一路进到样式表、上限 320**、**侧栏自己的浓度档与「列不再重复画底」**、**弹窗打开时背后几乎不压暗（0.95，不是 0.52）**、**费用明细弹窗的玻璃由打过补丁的它自己负责，本插件不再插手**、悬停卡与 tooltip 的深色玻璃（描边不用 border）、团队面板（portal 与内层 token 重混）、代码块三处底色与标题栏、**没有表头的代码块（.md-code-block 兜底）**、**表头壳是盖子不是窗口（借对话框的 composerSurface + menuBlur，断言比对的是「两处相等」而不是某个常数）**、**代码块的模糊挂在 `pre` 上而不是块上（块带 backdrop-filter 会让表头采不到 `pre`）**、**弹窗打开时 `#root` 只压暗不模糊、`::backdrop` 只压暗不磨（两条否定断言，滑杆够不到的整窗 filter 一律不许有）**、**配方里一次真 `border` 都不许有、面板的环必须是 inset 阴影（真 border 在 content-box 上撑宽 2px，2px 就够起一条横向滚动条）**、**诊断开关默认关闭、旧存储也强制不了它们、管道仍在**、标题的「放得下就不滚」与 `max-width` 还原时机、选择器 / 测量方式 / 无缝循环 / 自激防护 / 声明式动效与关键帧、配置页实际渲染、五种字体模式、cost-meter 兼容层、**壁纸层的盒子走 vw/vh 而不是 inset（滚动条进出它不动）、且带 will-change: filter**、**「底下只有糊过的壁纸」的表面一律不许有 backdrop-filter（六个选择器逐个查规则体）、侧栏 pane 同样不许**、**调参卡（自己挂到 body 上、不依赖任何座位、固定定位、底色不用被重混的 token、折叠头、九条滑杆走 input 事件、三个产品开关、**拖拽移动 / 记住位置 / 缩窗拉回可视区 / 拖拽不误触折叠**、关掉时是隐藏而不是泄漏）**、**诊断开关已摘除但 `parseSettings` 强制 false —— 旧存储里的 `flat: true` 不能把插件永久打回无模糊**、**代码块用 overflow: clip 自己裁圆角（不是 hidden，那会杀掉 sticky 表头）**、**表头一个角都不许自己声明（扫出所有 border*radius 声明，非零值一个都不许有，且显式压平上两角）**、生命周期、CSS 语法与选择器前缀。
