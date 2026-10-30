@@ -43,6 +43,9 @@ window.__ModuleLoader__.load({
     const DB_STORE = 'images';
     const MAX_EDGE = 2560;
     const MAX_DATA_URL = 3_600_000;
+    // How long one wallpaper takes to trade places with the next. Long enough to read as a
+    // dissolve, short enough that clicking through a gallery does not feel sticky.
+    const FADE_MS = 600;
 
     // ------------------------------------------------------------------ defaults
 
@@ -519,7 +522,71 @@ window.__ModuleLoader__.load({
       activeImage: activeImageOf(next.images, next.raw),
     });
 
+    /** The CSS string for a source, or `null` when nothing should be painted at all. */
+    function backgroundValue(settings, activeImage) {
+      if (settings.mode === 'image') return activeImage === null ? null : `url("${activeImage}")`;
+      if (settings.mode === 'gradient') return GRADIENTS[settings.gradient].css;
+      if (settings.mode === 'color') return `linear-gradient(${settings.color}, ${settings.color})`;
+      return null;
+    }
+
+    /**
+     * Two wallpaper boxes, one per pseudo-element, so a switch can dissolve instead of cut.
+     *
+     * `background-image` is not an animatable property: writing a new URL onto the element
+     * that is on screen swaps the pixels in a single frame. The way out is not to animate the
+     * image but to stack two boxes - `::before` keeps the picture that is on screen at full
+     * opacity, `::after` carries the incoming one and fades in on top of it.
+     *
+     * ⚠️ **The outgoing side must stay at `opacity: 1`.** Fading both at once looks like the
+     * obvious symmetric thing to do and it is wrong: `::after` composites over `::before`, so
+     * a half-faded pair covers `a2 + a1 * (1 - a2)` of the background - 75% at the midpoint -
+     * and the wallpaper visibly dips dark for the length of the fade. Holding the bottom
+     * layer at 1 makes it `a2 + (1 - a2)` = 1 all the way through. Measured: see
+     * `diag/fade-harness.html`.
+     *
+     * A slot records `blur` and `dim` **as they were when it was painted**, not as the
+     * settings read now. Both are per-background, so the picture being covered has to keep
+     * its own blur underneath; reading the live settings would make it morph mid-fade.
+     *
+     * ⚠️ Do not try to collapse this back into one element with `cross-fade()`: support is
+     * uneven and the syntax wants two `<image>` tokens, which the colour source cannot supply.
+     */
+    const EMPTY_LAYER = { current: null, incoming: null };
+
+    function layerOf(settings, activeImage) {
+      const value = backgroundValue(settings, activeImage);
+      return value === null ? null : { value, blur: settings.blur, dim: settings.dim };
+    }
+
+    /**
+     * Advance the stack by one commit.
+     *
+     * Moving a slider keeps the same picture and only rewrites its numbers - that path must
+     * not dissolve, or every drag would fade the wallpaper against itself. Only a different
+     * `value` counts as a switch.
+     */
+    function advanceLayer(layer, next) {
+      const want = layerOf(next.settings, next.activeImage);
+      if (want === null) {
+        return layer.current === null && layer.incoming === null ? layer : EMPTY_LAYER;
+      }
+      const same = (slot) =>
+        slot !== null && slot.value === want.value && slot.blur === want.blur && slot.dim === want.dim;
+      // Nothing on screen to dissolve from: put it up in one frame. Same rule as switching the
+      // wallpaper off - there is only a fade when one picture replaces another.
+      if (layer.current === null && layer.incoming === null) return { current: want, incoming: null };
+      if (same(layer.current)) {
+        // Back to what is already on screen: drop any fade that was in flight.
+        return layer.incoming === null ? layer : { current: want, incoming: null };
+      }
+      // Already fading this one in. Rebuilding the object would restart the timer for nothing.
+      if (same(layer.incoming)) return layer;
+      return { current: layer.current, incoming: want };
+    }
+
     let state = derive({ raw: readRaw(), settings: null, activeImage: null, images: null, luma: null });
+    state = { ...state, layer: advanceLayer(EMPTY_LAYER, state) };
     const listeners = new Set();
 
     function subscribe(listener) {
@@ -574,11 +641,52 @@ window.__ModuleLoader__.load({
      * commits would paint twice: once with the new gallery and the old selection, once with
      * both — a visible flash of the wrong wallpaper.
      */
+    /**
+     * After the fade, promote the incoming picture to "on screen" so the next switch starts
+     * from a clean stack.
+     *
+     * This has to be scheduled by hand: the promotion writes a new `background-image` onto the
+     * bottom layer *while* the top one is still opaque, and CSS has no way to sequence that.
+     * It runs when the top layer has finished fading in, so the swap underneath is never
+     * visible - the same picture is already covering it.
+     */
+    let settleTimer = null;
+
+    function scheduleSettle() {
+      if (settleTimer !== null) {
+        clearTimeout(settleTimer);
+        settleTimer = null;
+      }
+      if (state.layer.incoming === null) return;
+      settleTimer = setTimeout(() => {
+        settleTimer = null;
+        if (state.layer.incoming === null) return;
+        state = { ...state, layer: { current: state.layer.incoming, incoming: null } };
+        emit();
+        // A little past `FADE_MS`: the promotion clears the top box with `transition: none`,
+        // so if it ever ran while the fade was still on screen the last fraction would snap.
+        // Late is harmless - the top box is already opaque by then, and swapping underneath it
+        // is invisible.
+      }, FADE_MS + 60);
+    }
+
     function commit(patch, settingsPatch) {
       const raw = settingsPatch === undefined ? state.raw : applySettingsPatch(state.raw, settingsPatch);
-      state = derive({ ...state, ...patch, raw });
+      const next = derive({ ...state, ...patch, raw });
+      // `layer` is history, not a derivation: it has to see what the *previous* commit put on
+      // screen, which no function of the new state alone can recover.
+      state = { ...next, layer: advanceLayer(state.layer, next) };
       if (settingsPatch !== undefined) writeRaw(state.raw);
+      scheduleSettle();
       emit();
+    }
+
+    /** Stop the pending fade bookkeeping; the stylesheet is going away with it. */
+    function stop() {
+      if (settleTimer !== null) {
+        clearTimeout(settleTimer);
+        settleTimer = null;
+      }
     }
 
     function patchSettings(patch) {
@@ -729,15 +837,8 @@ window.__ModuleLoader__.load({
 
     // ------------------------------------------------------------------------ css
 
-    function backgroundValue(settings, activeImage) {
-      if (settings.mode === 'image') return activeImage === null ? null : `url("${activeImage}")`;
-      if (settings.mode === 'gradient') return GRADIENTS[settings.gradient].css;
-      if (settings.mode === 'color') return `linear-gradient(${settings.color}, ${settings.color})`;
-      return null;
-    }
-
     /**
-     * The wallpaper, one fixed layer behind everything.
+     * Two fixed boxes behind everything, one per wallpaper slot, dissolving into each other.
      *
      * **The geometry is deliberately `vw`/`vh` and not `inset: -Npx`.** They look identical
      * - same box, same `cover` crop - but they do not react to the same things. `inset`
@@ -752,15 +853,42 @@ window.__ModuleLoader__.load({
      * scrollbar came and went, the wallpaper re-blurred, and the backdrop snapshot the
      * transcript's glass was waiting on was not ready in time. `will-change: filter` keeps
      * the blurred result cached across the repaints that remain.
+     *
+     * `bleed` is shared by both slots and sized from the **larger** of the two blurs. Each
+     * slot could size its own - a box only has to outgrow its own blur radius - but the box
+     * is what `background-size: cover` scales against, so two sizes mean the same picture is
+     * cropped differently on each side of a dissolve. One size, one crop, no drift.
+     *
+     * The dim is folded into `brightness()` instead of laid over as a black sheet. The two
+     * are the same arithmetic - `image * (1 - alpha)` either way - but a sheet has to sit
+     * *above* both slots, and `html` only has two pseudo-elements. Folding it in frees the
+     * second one for the incoming picture; a brightness filter on each side still composites
+     * to the right value while the two are half-transparent.
      */
-    function wallpaperCss(settings, value) {
-      const bleed = Math.round(settings.blur * 2 + 12);
+    function wallpaperCss(layer) {
+      const slots = [layer.current, layer.incoming].filter((slot) => slot !== null);
+      if (slots.length === 0) return '';
+      const bleed = Math.round(Math.max(...slots.map((slot) => slot.blur)) * 2 + 12);
+      const paint = (slot) => {
+        if (slot === null) return '';
+        // `brightness(1)` is a no-op filter that still costs a pass; drop it at zero dim.
+        const filter = slot.dim === 0
+          ? `blur(${slot.blur}px)`
+          : `blur(${slot.blur}px) brightness(${(1 - slot.dim / 100).toFixed(3)})`;
+        return `\n  background-image: ${slot.value};\n  filter: ${filter};`;
+      };
+      // Only the top box animates, and only while something is coming in. With `none` the
+      // promotion in `scheduleSettle` - which clears the top box in the same frame it rewrites
+      // the bottom one - lands in a single frame instead of fading out the picture that was
+      // just promoted.
+      const fade = layer.incoming === null ? 'none' : `opacity ${FADE_MS}ms ease`;
       return `
 html[data-dshbg-on] { background: transparent !important; }
 html[data-dshbg-on] body,
 html[data-dshbg-on] #root,
 html[data-dshbg-on] ${frameSelector()} { background: transparent !important; }
-html[data-dshbg-on]::before {
+html[data-dshbg-on]::before,
+html[data-dshbg-on]::after {
   content: "";
   position: fixed;
   top: -${bleed}px;
@@ -769,21 +897,22 @@ html[data-dshbg-on]::before {
   height: calc(100vh + ${bleed * 2}px);
   z-index: -1;
   pointer-events: none;
-  background-image: ${value};
   background-position: center;
   background-repeat: no-repeat;
   background-size: cover;
-  filter: blur(${settings.blur}px);
   transform: translateZ(0);
+}
+html[data-dshbg-on]::before {${paint(layer.current)}
+  opacity: 1;
   will-change: filter;
 }
-html[data-dshbg-on]::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background-color: rgb(0 0 0 / ${(settings.dim / 100).toFixed(3)});
+html[data-dshbg-on]::after {${paint(layer.incoming)}
+  opacity: ${layer.incoming === null ? 0 : 1};
+  transition: ${fade};
+  will-change: ${layer.incoming === null ? 'auto' : 'filter, opacity'};
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-dshbg-on]::after { transition: none; }
 }
 `;
     }
@@ -1806,11 +1935,9 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
 `;
     }
 
-    function buildCss(settings, activeImage, tone) {
-      const value = backgroundValue(settings, activeImage);
-      if (value === null) return '';
+    function buildCss(settings, layer, tone) {
       return [
-        wallpaperCss(settings, value),
+        wallpaperCss(layer),
         tokenCss(settings),
         chatSurfaceCss(settings),
         composerCss(settings),
@@ -2150,7 +2277,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
 
       const paint = () => {
         if (disposed) return;
-        const { settings, activeImage, luma } = state;
+        const { settings, activeImage, luma, layer } = state;
         const on = backgroundValue(settings, activeImage) !== null;
         const root = document.documentElement;
         if (on) root.setAttribute('data-dshbg-on', '');
@@ -2159,7 +2286,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         // every CSS animation the sheet defines - including the title marquee. `paint()` is
         // called on each store commit, so writing an identical sheet would reset the scroll
         // to the beginning for no reason.
-        const next = on ? buildCss(settings, activeImage, toneOf(luma)) : '';
+        const next = on ? buildCss(settings, layer, toneOf(luma)) : '';
         if (next !== lastCss) {
           lastCss = next;
           tag.textContent = next;
@@ -2207,6 +2334,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         ctx.effect(
           () => () => {
             disposed = true;
+            stop();
             unsubscribe();
             marquee.dispose();
             composerMenu.dispose();

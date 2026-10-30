@@ -271,7 +271,32 @@ async function main() {
 
   console.log('\nwallpaper');
   check('paints the wallpaper layer', base.css.includes('html[data-dshbg-on]::before'));
-  check('adds the dimming layer', base.css.includes('html[data-dshbg-on]::after'));
+  // 两层壁纸：`::before` 放正在显示的那张（永远不透明），`::after` 放正在淡入的那张。
+  // 只有一个槽就做不了过渡 —— `background-image` 不是可动画属性，往可见元素上写新 URL
+  // 是一帧换完的。
+  check(
+    'the steady state is one opaque picture under one empty box',
+    /html\[data-dshbg-on\]::before \{[\s\S]{0,200}?opacity: 1;/.test(base.css) &&
+      /html\[data-dshbg-on\]::after \{\s*opacity: 0;\s*transition: none;/.test(base.css),
+    base.css.match(/html\[data-dshbg-on\]::after \{[^}]*\}/)?.[0],
+  );
+  check('both slots share one box', /html\[data-dshbg-on\]::before,\s*html\[data-dshbg-on\]::after \{/.test(base.css));
+  // 过渡本身（两层 opacity 真的在动、且总不透明度不掉）由 tools/store-test.cjs 的状态机
+  // 和 diag/fade-harness.html 的无头实测覆盖。这里只钉住时长常量没被换成别的数字 ——
+  // 稳态样式表里看不到它。
+  check('the fade duration is a single constant', CODE.includes('const FADE_MS = 600;'));
+  check(
+    'the fade yields to prefers-reduced-motion',
+    /@media \(prefers-reduced-motion: reduce\) \{[\s\S]{0,220}?transition: none;/.test(base.css),
+  );
+  // 压暗走 `brightness()` 而不是盖一层黑：黑层必须压在两个槽之上，而 html 只有两个伪元素。
+  // 两条路径实测逐像素相同（最大差 2/255，8 位舍入），见 diag/brightness-equivalence.html。
+  const dimmed = await emit({ dim: 15 });
+  check(
+    'the dim is a brightness filter, not a black sheet',
+    /filter: blur\(16px\) brightness\(0\.850\)/.test(dimmed.css),
+  );
+  check('no black sheet is painted over the wallpaper', !dimmed.css.includes('background-color: rgb(0 0 0 / 0.'));
   check('uses the gradient preset', base.css.includes('linear-gradient(135deg, #ff9a9e'));
   check('blur value present', base.css.includes('filter: blur(16px)'));
   // 壁纸层的几何必须走 vw/vh，不能走 inset。两者画出来的盒子一模一样，但对什么变化敏感
@@ -1288,7 +1313,10 @@ async function main() {
   while ((match = headerRe.exec(withoutKeyframes)) !== null) {
     for (const part of splitSelectors(match[1])) {
       const selector = part.trim();
-      if (selector.length > 0) selectors.push(selector);
+      // An at-rule header (`@media (prefers-reduced-motion: reduce)`) is not a selector. Its
+      // *contents* still are, and they reach this loop on their own because the block's
+      // closing brace puts them at the start of a header.
+      if (selector.length > 0 && !selector.startsWith('@')) selectors.push(selector);
     }
   }
   const unscoped = selectors.filter((selector) => !selector.startsWith('html[data-dshbg-on]'));

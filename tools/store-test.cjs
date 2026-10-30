@@ -63,6 +63,7 @@ const prelude = [
   grab('const DEFAULTS = {', '\n    };\n'),
   grab('const GRADIENTS = [', '\n    ];\n'),
   grab('function clamp(', '\n    }\n'),
+  grab('const FADE_MS =', '\n'),
 ].join('');
 
 const persistence = between(
@@ -166,6 +167,93 @@ const presetFor = (win, key) => {
 
   api.patchSettings({ imageId: a.id });
   check('clicking an older picture repaints with it', snap().activeImage === a.dataUrl, snap().activeImage);
+
+  // -------------------------------------------------------------- the cross-fade stack
+  // 换图不能改写正在显示的那个盒子：`background-image` 不是可动画属性，往可见元素上写新 URL
+  // 是一帧换完的。新图必须叠在上面那个盒子里淡入，旧图原样留在下面。
+  // 用独立实例，免得把上面那串「点击顺序」的历史带进来。
+  const FADE_MS = Number((source.match(/const FADE_MS = (\d+);/) || [])[1] || 600);
+  const fade = makeStore(makeWindow(), [a, b, c]);
+  fade.boot();
+  await tick();
+  const slots = () => fade.getSnapshot().layer || { current: null, incoming: null };
+  const has = (slot) => Boolean(slot) && typeof slot.value === 'string';
+
+  // A revision without the stack would throw on every line below instead of reporting. One
+  // clear failure beats a stack trace.
+  check('the store keeps a two-deep wallpaper stack', fade.getSnapshot().layer !== undefined, 'no `layer` in the snapshot');
+
+  if (fade.getSnapshot().layer !== undefined) {
+    fade.patchSettings({ mode: 'image', imageId: a.id });
+    const first = slots();
+    check(
+      'the first picture goes up in one frame, with nothing to dissolve from',
+      has(first.current) && first.current.value.includes('data:a') && first.incoming === null,
+      JSON.stringify(first),
+    );
+
+    fade.patchSettings({ imageId: b.id });
+    const second = slots();
+    check(
+      'switching leaves the old picture underneath',
+      has(second.current) && second.current.value.includes('data:a'),
+      JSON.stringify(second.current),
+    );
+    check(
+      'and stacks the new one on top, where it can fade in',
+      has(second.incoming) && second.incoming.value.includes('data:b'),
+      JSON.stringify(second.incoming),
+    );
+
+    fade.patchSettings({ blur: 3 });
+    const third = slots();
+    check(
+      'moving a slider does not start a second fade',
+      has(third.incoming) && third.incoming.value.includes('data:b'),
+      JSON.stringify(third),
+    );
+    check('the slider lands on the picture coming in', third.incoming.blur === 3, third.incoming.blur);
+    check(
+      'the picture underneath keeps the blur it was painted with',
+      third.current.blur === 20,
+      JSON.stringify(third.current),
+    );
+
+    // The fade itself is CSS; what happens afterwards is this store's job. Wait it out, with
+    // room for the settle timer's own margin.
+    await new Promise((resolve) => setTimeout(resolve, FADE_MS + 250));
+    const settled = slots();
+    check(
+      'after the fade the new picture is the one underneath',
+      has(settled.current) && settled.current.value.includes('data:b'),
+      JSON.stringify(settled),
+    );
+    check('and the top box is free again', settled.incoming === null, JSON.stringify(settled.incoming));
+
+    fade.patchSettings({ imageId: c.id });
+    check(
+      'the next switch uses the free top box',
+      has(slots().incoming) && slots().incoming.value.includes('data:c'),
+      JSON.stringify(slots().incoming),
+    );
+
+    fade.patchSettings({ imageId: b.id });
+    check(
+      'going back to the picture underneath cancels the fade instead of stacking a third',
+      slots().incoming === null && slots().current.value.includes('data:b'),
+      JSON.stringify(slots()),
+    );
+
+    fade.patchSettings({ imageId: b.id });
+    check('re-selecting the picture on screen changes nothing', slots().incoming === null);
+
+    fade.patchSettings({ mode: 'none' });
+    check(
+      'turning the wallpaper off clears the stack',
+      slots().current === null && slots().incoming === null,
+      JSON.stringify(slots()),
+    );
+  }
 
   // ------------------------------------------------------- one set of sliders each
   const blurOf = () => snap().settings.blur;
