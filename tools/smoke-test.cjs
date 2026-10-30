@@ -528,7 +528,7 @@ async function main() {
     /\[class\*="_banner"\][^{]*\{[\s\S]{0,200}?border-top-left-radius: 0 !important/.test(base.css),
   );
   check('the pane ring is an inset shadow', /inset 0 0 0 1px color-mix\(in srgb, var\(--dshbg-raw-label-0\) 16%/.test(base.css));
-  // 诊断开关 v2.48.0 从界面摘掉，管道 v2.49.0 一起删了（见 README #22）。三件事都测：
+  // 诊断开关 v2.48.0 从界面摘掉，管道 v2.49.0 一起删了（见 ENGINEERING.md #22）。三件事都测：
   // 样式表里不许再出现那两个属性名、源码里不许再有 `flatCss`。留下任何一个，都说明
   // 有代码还在往样式表里写一段永远不会生效的规则。
   check(
@@ -1099,8 +1099,8 @@ async function main() {
 
   console.log('\ncost-meter shim');
   check('panels retargeted', base.css.includes('html[data-dshbg-on] body .cm-section'));
-  // 弹窗玻璃**不再由本插件负责**：费用明细自己的样式表在安装时已经打了补丁（README 里有
-  // 完整记录）。两边同时上色只会互相盖，而且它的规则永远更靠近宿主，所以这里断言本插件
+  // 弹窗玻璃**不再由本插件负责**：费用明细自己的样式表在安装时已经打了补丁（ENGINEERING.md
+  // 里有完整记录）。两边同时上色只会互相盖，而且它的规则永远更靠近宿主，所以这里断言本插件
   // 的样式表**不再提** `.cm-stat-dialog` —— 谁改了这条，都会把弹窗重新推回互相覆盖。
   check('the dialog itself is left to the plugin', !base.css.includes('.cm-stat-dialog'));
   let installedCostMeter = null;
