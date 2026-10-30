@@ -210,6 +210,13 @@ window.__ModuleLoader__.load({
       return Math.min(high, Math.max(low, number));
     }
 
+    // The two menu-glass numbers, with their bounds stated once. They are read at a dozen
+    // call sites across the recipes; a bound written twelve times is a bound that drifts on
+    // the twelfth edit. Every menu-derived surface goes through these two functions.
+    const menuFillOf = (settings) => clamp(settings.menuFill, 20, 100);
+    const menuBlurOf = (settings) => clamp(settings.menuBlur, 0, 320);
+    const surfaceOf = (settings) => clamp(settings.surface, 0, 100);
+
     function currentLang() {
       const raw = (typeof navigator !== 'undefined' && navigator.language) || 'zh';
       return String(raw).toLowerCase().startsWith('zh') ? 'zh' : 'en';
@@ -477,7 +484,7 @@ window.__ModuleLoader__.load({
       if (base === null) return null;
 
       const dimFactor = 1 - clamp(settings.dim, 0, 80) / 100;
-      const panelMix = clamp(settings.surface, 0, 100) / 100;
+      const panelMix = surfaceOf(settings) / 100;
       return base * dimFactor * (1 - panelMix) + PANEL_LUMA * panelMix;
     }
 
@@ -805,7 +812,7 @@ html[data-dshbg-on]::after {
           // the panels beside it. A separate number is the only way to tune it by eye.
           const alpha = entry.sidebarOnly === true
             ? clamp(settings.sidebarFill, 0, 100)
-            : Math.min(100, clamp(settings.surface, 0, 100) + entry.lift);
+            : Math.min(100, surfaceOf(settings) + entry.lift);
           return `  ${entry.token}: color-mix(in srgb, var(--dshbg-raw-${entry.raw}) ${alpha}%, transparent) !important;`;
         })
         .join('\n');
@@ -890,30 +897,17 @@ html[data-dshbg-on] [data-composer-card] {
     /**
      * The frosted-pane recipe, shared by every surface that gets the liquid-glass look.
      *
-     * The wallpaper is already blurred at the `html::before` layer, so the pane's own
-     * `backdrop-filter` mostly adds saturation and edge definition rather than doing the
-     * blurring work. That is deliberate: it keeps the GPU cost of a long transcript with
-     * many blocks low while still reading as glass.
+     * ⚠️ **Never put this on an ancestor of a menu.** `backdrop-filter` creates a backdrop
+     * root, and a menu hanging outside that ancestor's box samples an empty area - its blur
+     * silently does nothing. That is exactly what the composer card used to do to the `/`
+     * menu, which is why `composerGlassCss` hand-rolls the pane. Leaves are fine;
+     * containers that own popovers are not.
+     * ⚠️ **No `backdrop-filter` here at all** (v2.47.0). The wallpaper is already blurred at
+     * the `html::before` layer, so this element would pay for a full backdrop snapshot per
+     * frame to re-blur something already blurred - and the frame that lost the race showed
+     * bare wallpaper. That was the flicker.
      *
-     * **Never put this on an ancestor of a menu.** `backdrop-filter` creates a backdrop
-     * root, and a menu that hangs outside its ancestor's box then samples an empty area -
-     * its blur silently does nothing. That is exactly what the composer card used to do to
-     * the `/` command menu, which is why `composerGlassCss` hand-rolls the pane instead of
-     * calling this. The rule of thumb: leaves are fine, containers that own popovers are
-     * not.
-     *
-     * **No `backdrop-filter` at all** (v2.47.0). A pane's backdrop is the wallpaper, and
-     * the wallpaper is already blurred at the `html::before` layer - so this element used
-     * to pay for a full backdrop snapshot to re-blur something that was already blurred.
-     * The saturation that snapshot did buy now lives on the wallpaper layer itself, which
-     * costs one pass per wallpaper change instead of one per pane per frame.
-     *
-     * What it cost was not just GPU time. Chromium renders each `backdrop-filter` element
-     * into a surface sized by its backdrop root, and a surface that is not ready in a frame
-     * shows as nothing at all. Streaming a reply repaints the transcript every frame, the
-     * pane's snapshot has to be retaken every frame, and the one frame that lost the race
-     * showed the transcript column as bare wallpaper while the left column - whose panes
-     * were not repainting - stayed intact. That is the flicker.
+     * ENGINEERING.md 附录 A.11 has the full derivation.
      */
     function glassPane() {
       return `  background-color: ${paneFill()} !important;
@@ -925,33 +919,17 @@ html[data-dshbg-on] [data-composer-card] {
     }
 
     /**
-     * The small-pane variant, for inline code.
+     * The small-pane variant, for inline code and the cost-detail pills.
      *
-     * Same idea, three differences, all of them about being 20px tall and appearing dozens
-     * of times in one screen:
+     * 45% fill against the pane's 22%: inline code has to stay distinguishable from prose,
+     * and 45% is where 12px monospace still clears 5:1 on a mid-bright wallpaper. No drop
+     * shadow (fifteen shadows in a paragraph is noise). Blur capped at 10px. `border` is a
+     * parameter because the pills already carry the host's 1px and thinning them is visible.
      *
-     * - More fill (45% against the pane's 22%). Inline code has to stay distinguishable
-     *   from the prose around it; at 22% it dissolves into the wallpaper and the monospace
-     *   run stops reading as a token. 45% is where 12px monospace in the light label colour
-     *   still clears 5:1 against a mid-bright wallpaper - below that the chips are pretty
-     *   but unreadable, which is the one thing a code token cannot be.
-     * - No drop shadow, only the top inner highlight. Fifteen floating shadows in a
-     *   paragraph is noise, and the hairline border already lifts the chip off the page.
-     * - The border stays at the host's `.5px`, only its colour changes. Going to 1px would
-     *   add 1px to every chip's box, and these are inline elements - a hundred of them in
-     *   one paragraph is a hundred little reflows of the line they sit on.
-     * - Blur capped at 10px. The backdrop is already blurred at the `html::before` layer,
-     *   so a bigger radius buys nothing visually while multiplying the cost by the number
-     *   of chips on screen.
+     * ⚠️ No `backdrop-filter`, for the same reason as `glassPane`: a paragraph with a dozen
+     * chips used to take a dozen backdrop snapshots per frame while a reply streamed in.
      *
-     * `border` is a parameter rather than a constant because the same recipe is reused on
-     * block-level buttons (the cost-detail pills), where the host already draws a 1px
-     * border and shrinking it to .5px would visibly thin an edge that is not inline.
-     *
-     * No `backdrop-filter`, for the same reason as `glassPane`: the chips sit on the
-     * transcript's own fill with wallpaper behind it, and that wallpaper is already blurred
-     * at the `html::before` layer. A paragraph with a dozen chips used to take a dozen
-     * backdrop snapshots per frame while a reply streamed in.
+     * ENGINEERING.md 附录 A.12 has the full derivation.
      */
     function glassChip(border = '.5px') {
       return `  background-color: color-mix(in srgb, var(--dshbg-raw-base) 45%, transparent) !important;
@@ -981,41 +959,22 @@ html[data-dshbg-on] [data-composer-card] {
     }
 
     /**
-     * The turn navigator's hover preview - the card that pops out to the left of the little
-     * marks down the right edge of the transcript.
+     * The turn navigator's hover preview.
      *
-     * It is `xpvNua_preview`: `width: min(300px, 100cqw - 120px)`, one 13px bold prompt line
-     * plus up to three 12px caption lines, `--dsw-radius-lg`, `--dsw-elevation-panel`, and
-     * `background: var(--dsw-alias-bg-layer-1)`.
+     * It sits on top of body text, not beside it, so it needs a hard 50% fill floor: at the
+     * slider's low end the 12px caption fights blurred glyphs for the same pixels. Same floor
+     * as the workspace hover card, because it is the same kind of surface.
      *
-     * That token *is* in the remix list, so before this rule existed the card simply
-     * followed the wallpaper and fell to ~28% - and at that fill the paragraph it is
-     * covering read straight through it, so neither the preview nor the paragraph was
-     * legible. Version 2.16 pinned it back to the captured, un-remixed layer value, i.e.
-     * fully opaque. That fixed the reading and left the one flat black rectangle in an
-     * otherwise frosted window - which is what the user spotted.
+     * ⚠️ Matched on the response line rather than bare `_preview`, which several other
+     * modules use for things that are not popovers.
+     * ⚠️ No ancestor of it may carry a `backdrop-filter` - if the blur ever stops working,
+     * check that chain first (see `menuSurfaceCss`).
      *
-     * So it becomes glass like everything else: the shared fill and blur from the two
-     * trial sliders, over the captured layer colour. Two things make it work here:
-     *
-     * - **No ancestor of it carries a `backdrop-filter`.** The card is a sibling of
-     *   `_scroller`, not a child (`<nav> > [scroller][marks] + [preview]`), and neither
-     *   `_slot` nor `_frame` paints one - `contain: layout` and `container-type` only
-     *   create a containing block, not a backdrop root. If the blur ever stops working
-     *   again, check that chain first (see the note on `menuSurfaceCss`).
-     * - **A hard fill floor.** This is a card lying on top of body text, not a pane beside
-     *   it: at the slider's low end the 12px caption would be fighting blurred glyphs for
-     *   the same pixels. It never goes below 50%, the same floor the workspace hover card
-     *   uses, because both are the same kind of surface. The slider moves it only in its
-     *   upper half; that is deliberate, and the blur is still shared outright.
-     *
-     * Matched on the response line rather than the bare `_preview` class, which several
-     * other modules also use for things that are not popovers (`QueueDock`'s inline
-     * preview, the file-diff hover card, the plan viewer).
+     * ENGINEERING.md 附录 A.10 has the full derivation.
      */
     function previewCardCss(settings) {
-      const blur = clamp(settings.menuBlur, 0, 320);
-      const shared = clamp(settings.menuFill, 20, 100);
+      const blur = menuBlurOf(settings);
+      const shared = menuFillOf(settings);
       const fill = Math.max(shared, 50);
       return `
 ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewResponse"])'])} {
@@ -1027,52 +986,27 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewRes
     }
 
     /**
-     * Menus.
+     * Menus - the `/` command menu and every popover built on the same primitive.
      *
-     * **The blur was never working, and the reason was upstream.**
+     * ⚠️ The glass goes on the **surface**, not on the `_material` child: that child is
+     * `z-index: -1`, so any background the host puts on the surface covers it, and one layer
+     * doing fill + blur is one compositing layer instead of two. The material layer is stood
+     * down to `transparent` / `none`.
+     * ⚠️ `backdrop-filter` creates a backdrop root, and the `/` menu hangs *outside* the
+     * composer card. If any ancestor of it carries a blur, the menu samples an empty area and
+     * its blur silently does nothing - no fill ratio can compensate. See `composerGlassCss`:
+     * the card gives its backdrop-filter up.
+     * ⚠️ Fill and radius are a pair, not two knobs: more radius flattens the backdrop harder,
+     * so less fill is needed.
+     * ⚠️ The `[data-overflow-below]` fade is re-stated, or the host's opaque gradient shows
+     * as a solid band across the menu's bottom.
      *
-     * The primitive puts a `[data-menu-material]` surface on the menu, with a
-     * `[class*="_material"]` layer inside it that draws `--dsw-menu-surface-fill`
-     * (`rgba(67, 69, 74, .45)` in the dark theme) plus
-     * `backdrop-filter: var(--dsw-menu-backdrop-filter)` = `blur(40px) saturate(150%)`.
-     *
-     * `backdrop-filter` creates a *backdrop root*, and a descendant that also has one may
-     * only sample what has been painted **inside** that root. The `/` command menu is a
-     * descendant of `[data-composer-card]`, which used to get `glassPane`'s blur - so the
-     * card was a backdrop root, and the menu hangs at `bottom: calc(100% + 4px)`,
-     * *entirely outside the card*. Its sample area was empty. The menu has been behaving
-     * like a flat 45% plate all along, which is why the transcript read straight through
-     * it; no fill ratio can compensate for a blur that is not there. That is what the 76%
-     * was patching over. See `composerGlassCss` for the fix - the card gives its
-     * backdrop-filter up.
-     *
-     * Note what is *not* the cause: the surface's own `isolation: isolate` looked like the
-     * culprit, but a control page with the same structure blurs fine, so Chromium does not
-     * treat it as a backdrop root here. The ancestor's backdrop-filter is the whole story.
-     *
-     * The glass is still painted on the **surface** rather than on the material child, for
-     * two mundane reasons: the material layer is `z-index: -1`, so any background the host
-     * puts on the surface would cover it, and one layer doing fill + blur is one
-     * compositing layer instead of two. The material layer is stood down to
-     * `background: transparent` / `backdrop-filter: none` so nothing double-paints.
-     *
-     * **The `/` command menu** also carries no background and no backdrop-filter of its
-     * own - its rule is `max-height:400px; box-shadow; padding:4px; position:absolute;
-     * overflow:hidden` - so it needs both given to it explicitly.
-     *
-     * Fill and radius are a *pair*, not two independent knobs: more radius flattens the
-     * backdrop harder, so less fill is needed to hold the text up - and less fill is what
-     * makes it look like glass rather than a tinted panel. Both are on trial together; see
-     * the note on `settings.menuFill` / `menuBlur`.
-     *
-     * The `[data-overflow-below]` fade is re-stated because the host paints it with the
-     * *opaque* `--dsw-specific-menu`; over a translucent panel that gradient shows up as a
-     * solid band across the bottom of the menu.
+     * ENGINEERING.md 附录 A.5 has the full derivation.
      */
     function menuSurfaceCss(settings) {
       const menu = '[class*="_menu"]:has([class*="_itemDescription"])';
-      const fill = clamp(settings.menuFill, 20, 100);
-      const blur = clamp(settings.menuBlur, 0, 320);
+      const fill = menuFillOf(settings);
+      const blur = menuBlurOf(settings);
       // The glass goes on the *surface*, not on the `_material` child, and this is the whole
       // fix for "the menu blur does nothing".
       //
@@ -1121,38 +1055,25 @@ ${prefixed('html[data-dshbg-on]', [`${menu}[data-overflow-below]::after`])} {
     /**
      * Tooltips and the workspace hover card.
      *
-     * Both are dark on purpose: the host hardcodes `--dsw-hovercard-bg: #2C2C2E` on the
-     * card element itself and paints that card's text `#fff` / `#cfd3d6`, and the simple
-     * tooltip bubble draws `--dsw-alias-tooltip-bg`, which resolves to a *static* neutral.
-     * Neither token is in `SURFACE_TOKENS`, so neither ever followed the wallpaper - they
-     * stayed flat black rectangles floating over a frosted window.
+     * Both are dark by necessity: the host hardcodes `--dsw-hovercard-bg` and paints white
+     * text on it, and the tooltip bubble draws a static neutral. Neither token is in
+     * `SURFACE_TOKENS`, so neither followed the wallpaper. They cannot go light - the label
+     * colours are hardcoded white - so they become dark *glass*: keep the host's own colour
+     * through `color-mix(<host var> N%, transparent)` rather than a literal, drop the alpha,
+     * blur what is behind.
      *
-     * They cannot be turned light, because their label colours are hardcoded white. What
-     * they can be is dark *glass*: keep the host's own colour, drop its alpha, and blur
-     * whatever is behind it. That is the whole recipe, and it is written as
-     * `color-mix(<host var> N%, transparent)` rather than as a literal, so the surface
-     * keeps tracking the host's palette in both themes instead of pinning a hex here.
+     * ⚠️ Hard fill floors, 50% card / 58% bubble. This surface is *inverted*: white glyphs on
+     * a possibly bright backdrop disappear at the slider's low end.
+     * ⚠️ The card is `body > [class*="_card_"]` because the primitive portals it onto
+     * `<body>`; the bubble is `[data-side]`, which the message bubble does not carry.
+     * ⚠️ The ring is an inset shadow: the card is border-box at a fixed 244px, so a border
+     * would eat into its own text box.
      *
-     * The fill follows the shared `menuFill` slider so the hover card moves with the rest
-     * of the glass - but with a hard floor, because this surface is *inverted*: the host
-     * paints white text on it and the wallpaper behind can be bright. At the slider's low
-     * end (20%) white glyphs would disappear into the backdrop entirely, so the card never
-     * goes below 50% and the bubble never below 58% (it is a single line of 13px text).
-     * In practice the slider moves these two only in its upper half; that is deliberate.
-     * The blur, on the other hand, is shared outright: more radius buys back fill here too.
-     *
-     * The hover card is matched as `body > [class*="_card_"]` because the `HoverCard`
-     * primitive portals it straight onto `<body>`; `_card_` on its own would also catch
-     * cards that are not tooltips. The bubble is matched on `[data-side]`, which the
-     * tooltip primitive always sets for its placement rules and which the message bubble
-     * does not carry.
-     *
-     * The ring is an inset shadow, not a border: the card is `box-sizing: border-box` at a
-     * fixed 244px, so a 1px border would eat into its own text box.
+     * ENGINEERING.md 附录 A.7 has the full derivation.
      */
     function tooltipGlassCss(settings) {
-      const blur = clamp(settings.menuBlur, 0, 320);
-      const shared = clamp(settings.menuFill, 20, 100);
+      const blur = menuBlurOf(settings);
+      const shared = menuFillOf(settings);
       // Inverted surfaces: hard floors, see the note above.
       const cardFill = Math.max(shared, 50);
       const bubbleFill = Math.max(shared, 58);
@@ -1173,64 +1094,22 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
     }
 
     /**
-     * Glass inside the transcript - file cards and code blocks. Always on.
+     * Glass inside the transcript: code blocks, file cards, deliverable cards, inline code.
+     * Always on - these are content, not chrome, so they ignore the composer's finish switch.
      *
-     * These are content, not chrome: they sit in the middle of the work area on top of the
-     * wallpaper, and a flat opaque block there reads as a hole punched in the artwork. So
-     * they do not follow the composer switch - turning the message box back to solid is a
-     * statement about the box, not about every code block in the transcript.
+     * Hooks, never hashed classes: `[class*="_block_"]:has([data-code-block-banner])` with
+     * `.md-code-block` as the fallback when no banner is rendered (no language, still
+     * streaming), `[class*="_fileCard"]`, `[data-presented-file]`, and
+     * `[class*="_markdown_"] :not(pre)>code`.
      *
-     * Three shapes, three hooks, none of them a hashed class guess:
+     * ⚠️ `_bannerWrap` is a *lid*, not a surface: it is `sticky; top: 0` and must keep a
+     * fill, or code scrolls under the language label. It borrows the composer's material.
+     * ⚠️ `[class*="_banner"]` matches `_bannerWrap` **and** `_banner` - separate rules, that
+     * order.
+     * ⚠️ Three things paint the block colour (`_block`, `pre`, `_banner`); clearing the two
+     * custom properties on the wrapper covers all three, since both are inherited.
      *
-     * - Code blocks expose `[data-code-block-banner]`. Their wrapper class is
-     *   `_block_<hash>_<line>` and the banner lives two levels down
-     *   (`_bannerWrap` > `_banner[data-code-block-banner]`), so the wrapper is found with
-     *   `[class*="_block_"]:has([data-code-block-banner])` - the `_block_` prefix survives a
-     *   rebuild, the hash does not. Note the host also puts a plain `md-code-block` class on
-     *   that same div, which is the one non-hashed hook in the whole transcript, but it only
-     *   carries a margin, so the hashed prefix is still what has to be matched.
-     *
-     *   **The banner is not always there.** When it is missing - a fenced block with no
-     *   language, a block still streaming in, the trajectory/preview renderers - the
-     *   `:has()` half fails and that block keeps painting nothing at all, which shows the
-     *   wallpaper through the code as a bare gradient. So `.md-code-block` is matched
-     *   directly as a second alternative: it is on every one of these wrappers, banner or
-     *   not, and it is stable across rebuilds.
-     *
-     *   Three things paint the block's colour, and clearing two of them is what left the
-     *   header bar solid: `_block` paints `var(--dsl-code-block-background)`, `pre` paints
-     *   the same variable (with `!important` for shiki), and `_banner` paints
-     *   `var(--dsl-code-block-banner-background-color)` - a *different* token that an
-     *   earlier version never touched, because it only cleared `_bannerWrap`. Clearing the
-     *   two custom properties on the wrapper handles all three at once, since both are
-     *   inherited and every one of those rules reads them through `var()`. The explicit
-     *   transparent rules stay as a belt-and-braces for `pre` and the `_banner` row, which
-     *   paint their own backgrounds.
-     *
-     *   **`_bannerWrap` is the exception, and it is the opposite of everything above.** The
-     *   host makes it `position: sticky; top: 0; z-index: 6` and paints it with
-     *   `var(--dsw-alias-bg-base)` - it is a *lid* for the code scrolling underneath, not a
-     *   surface on wallpaper. Clearing it (which every version up to 2.44.0 did) turned the
-     *   lid into a window: two lines of code ended up overlapping the language label and the
-     *   copy button, which reads as "the sticky is broken". It now takes the composer's
-     *   material instead - see `bannerFill` / `bannerBlur` at the top of this function.
-     *
-     *   Note the near-miss: `[class*="_banner"]` matches `_bannerWrap` **and** `_banner`, so
-     *   a rule written for the row silently hits the lid too. The two need separate rules,
-     *   in this order.
-     * - Attachment chips are `cJsG2q_fileCard` - hash first, then the local name, so
-     *   `[class*="_fileCard"]` is the stable half.
-     * - Deliverable cards are `flL80G_file`, and they paint `var(--deliverable-fill)` - a
-     *   *static neutral*, not one of the semantic tokens, which is why the token remix
-     *   never reached them. The card also carries `data-presented-file`, which is the
-     *   primary hook; `_file` alone would also catch the 24px composer chip and the
-     *   changed-files row, so the class fallback requires the card's own `_fileBody` child.
-     *   Both halves of that fallback are local names, so a rebuild does not move them.
-     * - Inline code is `._markdown_<hash>_<line> :not(pre)>code`, painting
-     *   `--dsw-alias-markdown-inline-code`. `_markdown_` is the stable half - note the
-     *   trailing underscore, which keeps it away from `_markdownPreview`. The `:not(pre)`
-     *   half is the host's own guard: it is what separates inline code from block code,
-     *   and reproducing it means a block-level `pre` is never turned into a chip.
+     * ENGINEERING.md 附录 A.1 has the full derivation.
      */
     function transcriptGlassCss(settings) {
       // The banner borrows the *composer's* material rather than inventing its own number.
@@ -1248,7 +1127,7 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
       //
       // Same defaults as `composerGlassCss`, so the two cannot drift apart.
       const bannerFill = clamp(settings.composerSurface, 0, 100);
-      const bannerBlur = clamp(settings.menuBlur, 0, 320);
+      const bannerBlur = menuBlurOf(settings);
       // A comma inside one item would leave its tail unprefixed, so these stay separate
       // entries and are spread into every rule that needs them.
       const blocks = [`[class*="_block_"]:has([data-code-block-banner])`, `.md-code-block`];
@@ -1379,7 +1258,7 @@ ${glassChip()}
      */
     function composerGlassCss(settings) {
       if (settings.composerStyle !== 'glass') return '';
-      const blur = clamp(settings.menuBlur, 0, 320);
+      const blur = menuBlurOf(settings);
       const fill = clamp(settings.composerSurface, 0, 100);
       return `
 ${prefixed('html[data-dshbg-on]', ['[data-composer-card]'])} {
@@ -1421,8 +1300,8 @@ ${prefixed('html[data-dshbg-on][data-dshbg-menu]', ['[data-composer-card]'])} {
      * out to `<body>` by the host's menu primitive.
      */
     function rightPanelGlassCss(settings) {
-      const blur = clamp(settings.menuBlur, 0, 320);
-      const fill = clamp(settings.menuFill, 20, 100);
+      const blur = menuBlurOf(settings);
+      const fill = menuFillOf(settings);
       const panel = '[data-sidebar-right-panel]';
       return `
 ${prefixed('html[data-dshbg-on]', [`${panel}[data-sidebar-right-open]`])} {
@@ -1443,46 +1322,19 @@ ${prefixed('html[data-dshbg-on]', [
     /**
      * The block behind the sidebar's history list.
      *
-     * It is sized by its content, not by the column: `flex: 0 1 auto` on the wrapper and
-     * `flex: 0 1 auto` on the scroller inside it, so the block grows one row per session
-     * and stops at the bottom of the column when the list gets long. The host's own
-     * `flex: 1` on both would stretch the block to the full remaining height, which leaves
-     * a large empty pane under a short list.
+     * ⚠️ Shrink-wraps its content (`flex: 0 1 auto` on wrapper and scroller), not `flex: 1` -
+     * a `0%` basis inside an auto-height parent collapses the block to its padding.
+     * ⚠️ Insets are measured, not guessed: 2px left, 2px + the list area's cancelled edge on
+     * the right, so the block lines up with the new-session button and the cost meter.
+     * ⚠️ The 6px vertical padding keeps a hovered row's square corner out of the rounded one.
+     * ⚠️ The host's `_fade` is switched off - it is pinned to the column bottom and would dim
+     * the last session.
+     * ⚠️ The fill is `paneFill()`, the same expression the meter and the button use. Sharing
+     * the expression is the only version of "same blackness" that cannot drift.
+     * ⚠️ The ring is an inset shadow, not a border: these boxes are content-box, so a real
+     * 1px border grows the block 2px per axis and the edges stop lining up.
      *
-     * The inner scroller has to have its flex-basis put back to `auto` as well. `flex: 1`
-     * is `1 1 0%`, and a `0%` basis inside an auto-height parent resolves to zero height -
-     * the block would collapse to its padding.
-     *
-     * Width: the block lines up with the new-session button above it and the cost meter
-     * below it. Those three were all different widths. The button sits at `margin: 0 2px`
-     * inside the sidebar's 12px padding; the list area's box is *wider* than the sidebar's
-     * content box, because the host cancels `_root`'s 12px right padding with a negative
-     * margin so the scrollbar can hug the window edge; and the meter takes the full content
-     * box. So the left inset is the button's 2px, and the right inset is that same 2px plus
-     * the edge inset the list area just cancelled - measured, not guessed: 2px alone leaves
-     * the block exactly 12px wider than the button on the right.
-     *
-     * The vertical padding is not decoration: `_list` clips its content to a rectangle, so
-     * a row painted at the block's edge would show its own square corner through the
-     * rounded one, and a hovered row is exactly when that is visible. 6px is past the point
-     * where an 8px corner still has curvature left (at y=6 the arc is 0.25px in).
-     *
-     * The host's `_fade` is switched off here. It is a 24px gradient pinned to the bottom of
-     * `_treeBody`, which in the host's layout is the bottom of the whole column - far away
-     * from the last row. Once the block shrink-wraps, that gradient lands on top of the last
-     * session and dims it for no reason. The block's own edge is the boundary instead.
-     *
-     * **The fill is `paneFill()`, the same expression the cost meter and the new-session
-     * button use.** It used to be 52% of `--dshbg-raw-l1`, which is a different token at
-     * more than twice the ratio - so the block read as a dark slab with a light meter
-     * directly underneath it, which is what the user flagged. Sharing the expression is the
-     * only version of "same blackness" that cannot drift on the next edit.
-     *
-     * The ring stays an *inset shadow* rather than a `border`. That is not taste: the host
-     * does not put `box-sizing: border-box` on these sidebar boxes (its rows are
-     * content-box), so a real 1px border would grow the block by 2px in each axis and the
-     * right edge would stop lining up with the new-session button. An inset ring draws
-     * inside the box and costs no layout.
+     * ENGINEERING.md 附录 A.4 has the full derivation.
      */
     function historyBlockCss(settings) {
       const block = '[class*="_treeBody"]';
@@ -1510,37 +1362,16 @@ ${prefixed('html[data-dshbg-on]', [`${block} [class*="_fade"]`])} {
     /**
      * Glass inside the sidebar - the new-session button and the cost meter.
      *
-     * Gated on whole-window scope, because in work-area scope the sidebar is deliberately
-     * left exactly as the theme paints it. Frosting a button that sits on an opaque panel
-     * buys nothing: there is no artwork behind it to refract, and it would be the one
-     * touched element in a column that is supposed to stay untouched.
+     * Gated on whole-window scope: in work-area scope the sidebar is deliberately left as the
+     * theme paints it, and frosting a button on an opaque panel refracts nothing.
      *
-     * The button paints `--dsw-alias-button-elevated-fill` and the meter card paints
-     * `--dsw-alias-bg-layer-1`, neither of which is glass by itself, so both get the full
-     * recipe rather than a token nudge.
+     * ⚠️ The meter keeps an explicit `width` (a percentage of the same containing block the
+     * button uses) plus `calc` for the button's margins. `width: auto` hands it back to the
+     * flex algorithm and it shrinks to its longest line - that was the 28px shortfall.
+     * ⚠️ `[class$=...]`, not `[class*=...]`: every child is named `_newSessionContent`,
+     * `_newSessionLabel`, … and would get its own border and shadow.
      *
-     * The meter is given a width instead of a margin, and the width is a percentage, so
-     * it lands on the button's edges without this file ever knowing their pixel values.
-     *
-     * Two facts make that work. The meter is a *row* flex item - the cost meter plugin
-     * registers into `sidebar.footer.action`, whose wrapper the host styles as
-     * `_footerActions { display: flex; width: 100% }` - so its width is content-driven
-     * unless something states one. The plugin states `width: 100%` itself, which is why
-     * the card is full width out of the box. Saying `width: auto` here (2.17.0 did) hands
-     * it back to the flex algorithm and the card shrinks to its longest line, which is
-     * what left it 28px short on the right. So: keep a width, and take the button's
-     * margins off it with `calc`.
-     *
-     * The percentage resolves against the same containing block the button uses - the
-     * sidebar's content box - so `100% - 2px` plus a 2px right margin is the button's box
-     * exactly. The button's own margin is `0 2px`, except on Windows, where the host
-     * overrides it to `margin-left: 0` to sit flush under the title bar; the second rule
-     * mirrors that so both edges agree on both platforms.
-     *
-     * The button is matched with `[class$=...]`, not `[class*=...]`: its children are
-     * `_newSessionContent`, `_newSessionLabel`, `_newSessionLabelMask` and
-     * `_newSessionShortcut`, every one of which contains `_newSession` as a substring and
-     * would get a border and a drop shadow of its own.
+     * ENGINEERING.md 附录 A.6 has the full derivation.
      */
     function sidebarGlassCss(settings) {
       if (!settings.fullWindow) return '';
@@ -1564,36 +1395,16 @@ ${historyBlockCss(settings)}`;
     /**
      * Glass on the composer's status row, the session-header chips, and the cost entries.
      *
-     * The row is `[data-composer-dock]`, the host's `InputBar` dock. It carries the
-     * `conversation.composer.dock` slot plus the context meter, and it paints no background
-     * of its own - which is why the transcript scrolls straight through it and the row reads
-     * as loose text sitting on the window edge rather than as a status bar.
+     * Gated on the finish switch with the composer: the status row is composer chrome sitting
+     * directly under the message box, so "solid" has to mean solid here too.
      *
-     * The header chips all live in one slot. `_headerActions` renders nothing but
-     * `renderSlot("conversation.session.header.actions")`, so "every button in that slot" is
-     * exactly "the chips next to the title" - 智能体团队, 标准模式, 4 个子智能体, and the cost
-     * entry. All of them are `<button>`s the host draws with `background: 0 0; border: 0`,
-     * i.e. bare text; frosting them is what turns that strip into one row of panes.
+     * ⚠️ `:not([class*="_trigger"])` keeps popover openers bare - a permanent pill around a
+     * dropdown reads as a button that never unpresses. The popover that opens is where the
+     * glass belongs.
+     * ⚠️ The `.cm-btn` cost entries keep the host's `1px` border width, only the colour
+     * moves; the other chips have no border and get the `.5px` hairline.
      *
-     * The two `费用明细` entries are the cost meter's own `.cm-btn`s, one in that header slot
-     * and one in this dock. They paint `--dsw-alias-button-elevated-fill`, which is not in
-     * `SURFACE_TOKENS`, and in the dark theme that token resolves to the static `#43454a`. A
-     * static neutral is invisible to a remix that only rewrites tokens, so these stayed black
-     * pills while everything around them went frosted.
-     *
-     * Gated on the finish switch with the composer, not always on: the status row is composer
-     * chrome sitting directly under the message box, and the header row has to match it, so
-     * "solid" has to mean solid here too.
-     *
-     * The `.cm-btn`s keep their host border width (`1px`) - only the colour moves. The other
-     * chips have no border at all, so they get the chip's `.5px` hairline; a full pixel on
-     * both sides would visibly fatten a 28px-tall control.
-     *
-     * `:not([class*="_trigger"])` keeps the popover triggers bare. 智能体团队 and 4 个子智能体
-     * are `<button class="..._trigger">` / `<button class="..._switcherTrigger">`, and a
-     * permanent pill around a dropdown opener reads as a pressed button that never unpresses -
-     * the popover that opens is where the glass belongs. 标准模式 is a filled chip in the
-     * host's own design (`--dsw-alias-state-business-tertiary`), so it stays filled here too.
+     * ENGINEERING.md 附录 A.8 has the full derivation.
      */
     function statusGlassCss(settings) {
       if (settings.composerStyle !== 'glass') return '';
@@ -1629,34 +1440,15 @@ ${prefixed('html[data-dshbg-on]', [`${toBottom}:hover`])} {
     /**
      * Glass inside the team popover.
      *
-     * The panel itself is already frosted - the host paints it with `--dsw-specific-menu`
-     * plus `--dsw-menu-backdrop-filter` on a `::before` - and it matches the subagent panel
-     * exactly. What did not match was the contents: the member cards paint
-     * `--dsw-alias-bg-layer-2`, the theme's own opaque layer, so inside a see-through panel
-     * they read as dark blocks.
+     * ⚠️ `[data-team-panel]`, not the header slot: the panel is portalled into
+     * `document.body`, so a slot-scoped selector silently matches nothing.
+     * ⚠️ Member cards get **no fill at all**. The chip recipe was tried and failed: its fill
+     * derives from the wallpaper's tone, so over a dark wallpaper the "chip" came out as a
+     * dark navy block. No fill has no such failure mode.
+     * ⚠️ `button[class*="_member"]`: the children are `_memberName`, `_memberText`,
+     * `_memberDot`, `_memberModel`, so neither `$=` nor a bare `*=` picks out the card alone.
      *
-     * The subagent panel is the reference the user pointed at: its rows are completely
-     * transparent, with a hover tint and nothing else. So the member card keeps no fill at
-     * all. An earlier version gave it the chip recipe and it still looked wrong - the chip's
-     * fill is `color-mix(--dshbg-raw-base 45%)`, and `--dshbg-raw-base` is derived from the
-     * wallpaper's tone, so over a dark wallpaper the "chip" came out as a dark navy block.
-     * No fill has no such failure mode.
-     *
-     * `[data-team-panel]`, not the header slot: the panel is rendered through
-     * `createPortal` into `document.body`, so it is **not** a descendant of
-     * `conversation.session.header.actions` - a slot-scoped selector silently matches
-     * nothing. The host puts `data-team-panel` on the panel root precisely as a hook, and
-     * unlike a hashed class it survives rebuilds.
-     *
-     * Task cards keep a light tint (the panel re-mixes `--dsw-alias-bg-layer-2` for
-     * everything inside it) because they are blocks of prose, not rows - but they lose the
-     * opacity that made them black holes.
-     *
-     * `button[class*="_member"]` and not `[class*="_member"]`: the card's children are
-     * `_memberName`, `_memberNameText`, `_memberText`, `_memberDot` and `_memberModel`, and
-     * the card for the current session also carries `_memberCurrent` - so neither `$=` nor a
-     * bare `*=` picks out the card alone. Only the card itself is a button, which also keeps
-     * the workflow-run panel's `_memberButton` out of reach.
+     * ENGINEERING.md 附录 A.9 has the full derivation.
      */
     function menuGlassCss(settings) {
       if (settings.composerStyle !== 'glass') return '';
@@ -1742,50 +1534,21 @@ ${prefixed('html[data-dshbg-on]', [`${CRUMB}[data-dshbg-mq]`])} {
     }
 
     /**
-     * Window chrome.
+     * Window chrome: the drag strip and the title-bar buttons.
      *
-     * The layout paints the drag strip as a `::before` over the frame's top padding, filled
-     * with the sidebar colour. That strip is window chrome, not work area, so in work-area
-     * scope it is left exactly as the layout paints it: one solid slice of the sidebar fill
-     * across the full width.
+     * In work-area scope the strip is left exactly as the layout paints it - one solid slice
+     * of sidebar colour across the full width. In whole-window scope it clears, because the
+     * wallpaper is meant to run behind the whole window.
      *
-     * It used to be cleared and replaced with a gradient that ended at
-     * `--dsh-windows-sidebar-width`, so the wallpaper continued above the work area while
-     * the sidebar kept its own fill. That only holds while the sidebar is open. The layout
-     * publishes the sidebar *track* width, and the track collapses to `0px` the moment the
-     * sidebar closes - so the gradient's stop landed at zero and the entire strip turned
-     * back into the full-width band of wallpaper it was introduced to remove. Closing the
-     * sidebar reproduced the original complaint exactly.
+     * ⚠️ The strip carries colour, never `backdrop-filter`. It sits *above* the columns, and
+     * the columns' glass is a token remix with no blur - a blurring strip is sharper or
+     * blurrier than what it borders and stands out either way.
+     * ⚠️ Do not derive geometry from `--dsh-windows-sidebar-width`: it is the *track* width
+     * and collapses to 0px when the sidebar closes.
+     * ⚠️ The sidebar column stops painting its own fill in whole-window scope; two layers of
+     * the same 40% land as 64% and read as a black column.
      *
-     * The band was already wrong in a second, quieter way: over a page that forces itself
-     * opaque - the settings page does - a wallpaper strip sits directly on top of a dark
-     * sheet, so it reads as a bright bar even with the sidebar open.
-     *
-     * Whole-window scope is the one case where the strip has to clear: there the chrome is
-     * glass like everything else, and the wallpaper is meant to run behind the whole window.
-     *
-     * Both markers live on <html>, so they share one compound selector; a descendant
-     * combinator between them never matches.
-     *
-     * **The sidebar column also stops painting in whole-window scope.** The host fills that
-     * column with `--dsw-specific-sidebar-fill` *and* its inner root fills itself with the
-     * same token, so a declared 40% lands as `1-(1-0.4)²` = 64% - the column is always
-     * darker than the panels beside it, which is the "left sidebar is black" report. Letting
-     * **The top strip: tint, not frost.** The strip sits *above* the columns rather than
-     * inside one, so it has to fake the surface that continues below it. Two things went
-     * wrong when it tried:
-     *
-     * - leaving it transparent made it brighter than the frosted columns (a band);
-     * - giving it a `backdrop-filter` made it *sharper or blurrier* than the columns, whose
-     *   glass is a token remix - colour only, no blur. Blur cannot match a surface that has
-     *   none, so the strip still stood out.
-     *
-     * So it only carries the same colour: a hard-stop gradient that uses the sidebar density
-     * over the sidebar column and the conversation density over the work area, sampled at
-     * `--dsh-windows-sidebar-width`. With the sidebar collapsed that variable is 0px and the
-     * whole strip correctly takes the work-area colour. If the variable is missing the
-     * gradient is invalid, the rule drops out, and the strip falls back to the theme colour -
-     * a quiet failure rather than a bright bar.
+     * ENGINEERING.md 附录 A.3 has the full derivation.
      */
     function chromeCss(settings) {
       const sidebar = clamp(settings.sidebarFill, 0, 100);
@@ -1945,8 +1708,8 @@ ${restores}
      * silently.
      */
     function dialogCss(settings) {
-      const fill = Math.max(clamp(settings.menuFill, 20, 100), 46);
-      const blur = clamp(settings.menuBlur, 0, 320);
+      const fill = Math.max(menuFillOf(settings), 46);
+      const blur = menuBlurOf(settings);
       return `
 ${prefixed('html[data-dshbg-on]', ['[role="dialog"][aria-modal="true"]'])} {
   background-color: color-mix(in srgb, var(--dshbg-raw-base) ${fill}%, transparent) !important;
@@ -2032,7 +1795,7 @@ html[data-dshbg-on]:has(dialog[open]) ${frameSelector()}::before {
     const CM_HEADER_ENTRY = '[data-slot="conversation.session.header.actions"] .cm-btn';
 
     function costMeterCss(settings) {
-      const alpha = clamp(settings.surface, 0, 100);
+      const alpha = surfaceOf(settings);
       return `
 ${prefixed('html[data-dshbg-on] body', CM_PANELS)} {
   background: color-mix(in srgb, var(--dshbg-raw-l2) ${alpha}%, transparent) !important;
@@ -2079,54 +1842,21 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
     /**
      * Drives the session-title marquee.
      *
-     * Pure CSS cannot do this: the distance to scroll is "however much is hidden", and no
-     * length unit expresses that. So the distance is measured here and handed to a Web
-     * Animation.
+     * The distance to scroll is "however much is hidden", which no CSS length expresses, so
+     * it is measured here and handed to a CSS animation through `--dshbg-mq-loop` /
+     * `--dshbg-mq-dur`.
      *
-     * Measurement uses a `Range` over the title's contents instead of `scrollWidth`. The
-     * range reports the text's own width - the thing that actually has to travel - and it
-     * stays correct while an animation is running. `scrollWidth` is read off the content
-     * edge that `text-indent` is moving, so a live animation makes every re-measure read
-     * its own output.
+     * ⚠️ Measure with a `Range`, never `scrollWidth`: the range reports the text's own
+     * width and stays correct while the animation runs, whereas `scrollWidth` is read off
+     * the content edge the animation is moving - every re-measure would read its own output.
+     * ⚠️ `min-width` is pinned while scrolling, or the shrink-to-fit box narrows as the text
+     * leaves and re-fires the observer that restarted it.
+     * ⚠️ The motion is a CSS animation, not WAAPI: the host re-renders the header, and a
+     * JS-owned animation dies with the detached node.
+     * ⚠️ Re-sync is driven by the crumbs' own observers, never a global one - the transcript
+     * mutates on every streamed token.
      *
-     * The box is pinned with `min-width` while the animation runs. An inline-block is
-     * shrink-to-fit, and `text-indent` contributes to the first line's max-content width,
-     * so pulling the text left also narrows the box - which re-fires the ResizeObserver and
-     * restarts the very animation that caused it. Pinning removes that feedback path. The
-     * pin is cleared before every measure so a real resize still lands.
-     *
-     * Travel is one-directional and continuous: the title slides left at a constant speed
-     * and the loop point lands on a frame identical to the one it started from. Two pieces
-     * make that seamless. A `::after` repeats the text (its content comes from the
-     * `data-dshbg-mq` attribute, so no DOM surgery on a React-owned node), and the animation
-     * travels exactly `text width + MARQUEE_GAP` - the distance from "first copy starts at
-     * the left edge" to "second copy starts at the left edge". Anything shorter shows a
-     * blank box for part of every cycle; anything longer stutters at the seam.
-     *
-     * The distance was previously driven by the *overflow* and the motion was a there-and-back
-     * pass on a fixed formula, "7s + 60ms/px". A title 22px too long got the same 8s pass as
-     * one 200px too long: 2.6px/s, which reads as a title that does not move at all. Speed is
-     * now a constant, so the overflow only decides whether it scrolls, not how long it takes.
-     *
-     * Re-measuring is driven by the title's own signals - a ResizeObserver on the crumbs nav
-     * plus a MutationObserver filtered to the crumbs - not by a global observer. The
-     * transcript mutates on every streamed token, and a global observer would restart the
-     * marquee dozens of times a second. A few timed re-syncs after boot cover the case where
-     * the header has not been laid out yet when the plugin starts.
-     *
-     * The motion itself is a **CSS animation**, not a Web Animation. That is deliberate: a
-     * WAAPI animation is a JS-owned object, so anything that re-runs `sync()` can cancel or
-     * replace it - and the host re-renders the header, which detaches and re-attaches the
-     * title and silently kills whatever animation was attached to it. Declarative CSS is
-     * re-applied by the style engine whenever the element comes back, so the scroll survives
-     * every re-render. JS only writes three things: the `data-dshbg-mq` attribute that turns
-     * the animation on, and the `--dshbg-mq-loop` / `--dshbg-mq-dur` custom properties that
-     * set its distance and duration. Those are written only when they actually change,
-     * because re-writing a custom property restarts the animation from zero.
-     *
-     * Everything is dropped when the wallpaper is off, because the matching
-     * `text-overflow: clip` lives in the activation-scoped stylesheet. Left running without
-     * it, a scrolling title would still pin its ellipsis to the right edge.
+     * ENGINEERING.md 附录 A.2 has the full derivation.
      */
     function installTitleMarquee() {
       // The marquee is an enhancement, not a load-bearing part of the plugin: if the host
