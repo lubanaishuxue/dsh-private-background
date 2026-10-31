@@ -43,9 +43,24 @@ window.__ModuleLoader__.load({
     const DB_STORE = 'images';
     const MAX_EDGE = 2560;
     const MAX_DATA_URL = 3_600_000;
+    // A photo is re-encoded down to `MAX_DATA_URL`, so it can never get near this. Moving
+    // pictures are kept byte-for-byte - re-encoding a GIF through a canvas would flatten it to
+    // one frame - which means the only ceiling left is a deliberate one on the file itself.
+    const MAX_MEDIA_BYTES = 96 * 1024 * 1024;
+    // Wide enough for a thumbnail, small enough that a gallery of them is still a few hundred
+    // kilobytes of base64 in IndexedDB.
+    const POSTER_EDGE = 1280;
     // How long one wallpaper takes to trade places with the next. Long enough to read as a
     // dissolve, short enough that clicking through a gallery does not feel sticky.
     const FADE_MS = 600;
+    // `prefers-reduced-motion` is honoured by not animating at all, not by animating faster.
+    const reducedMotion = () => {
+      try {
+        return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      } catch (failure) {
+        return false;
+      }
+    };
 
     // ------------------------------------------------------------------ defaults
 
@@ -56,6 +71,11 @@ window.__ModuleLoader__.load({
       color: '#1b2233',
       blur: 20,
       dim: 15,
+      // Which part of the picture sits in the middle of the window. `50 / 50` is the same
+      // centre crop the wallpaper always had; the other values exist because a portrait's
+      // subject is often near an edge and `cover` was cutting them out of the frame.
+      focusX: 50,
+      focusY: 50,
       surface: 50,
       chatSurface: 0,
       composerSurface: 50,
@@ -119,8 +139,17 @@ window.__ModuleLoader__.load({
         modes: { none: '关闭', image: '图片', gradient: '渐变', color: '纯色' },
         gallery: '背景图库',
         galleryHint: '点一张图立即切换；图库里的图都保存在本机。',
-        add: '添加图片',
-        empty: '还没有图片。点「添加图片」选一张。',
+        add: '添加图片或动图',
+        empty: '还没有图片。点「添加图片或动图」选一张。',
+        framing: '取景位置',
+        focusX: '左右',
+        focusY: '上下',
+        recenter: '居中',
+        framingHint: '图比窗口宽或高的时候，只有一部分能露出来。在这里拖动预览图，把人物挪回画面里；每张图各自记住自己的位置。',
+        kindVideo: '视频',
+        kindAnimated: '动图',
+        tooLargeMedia: '这个文件太大（上限 96 MB），换一个小一点的。',
+        videoFail: '这个视频播不出来，可能是编码不被支持。换一个试试。',
         gradient: '渐变',
         color: '纯色',
         customColor: '自选颜色',
@@ -166,8 +195,17 @@ window.__ModuleLoader__.load({
         modes: { none: 'Off', image: 'Image', gradient: 'Gradient', color: 'Solid' },
         gallery: 'Gallery',
         galleryHint: 'Click an image to switch to it. Everything is stored locally.',
-        add: 'Add image',
-        empty: 'No images yet. Use "Add image" to pick one.',
+        add: 'Add image or clip',
+        empty: 'No images yet. Use "Add image or clip" to pick one.',
+        framing: 'Framing',
+        focusX: 'Horizontal',
+        focusY: 'Vertical',
+        recenter: 'Centre',
+        framingHint: 'When the picture is wider or taller than the window only part of it shows. Drag the preview to bring the subject back into frame; every picture remembers its own position.',
+        kindVideo: 'Video',
+        kindAnimated: 'Animated',
+        tooLargeMedia: 'That file is too large (96 MB limit). Try a smaller one.',
+        videoFail: 'That video will not play - the codec is probably unsupported. Try another one.',
         gradient: 'Gradient',
         color: 'Solid colour',
         customColor: 'Custom colour',
@@ -234,6 +272,8 @@ window.__ModuleLoader__.load({
     const PRESENTATION_KEYS = [
       'blur',
       'dim',
+      'focusX',
+      'focusY',
       'surface',
       'chatSurface',
       'composerSurface',
@@ -280,6 +320,8 @@ window.__ModuleLoader__.load({
       return {
         blur: clamp(pick('blur'), 0, 40),
         dim: clamp(pick('dim'), 0, 80),
+        focusX: clamp(pick('focusX'), 0, 100),
+        focusY: clamp(pick('focusY'), 0, 100),
         surface: clamp(pick('surface'), 0, 100),
         chatSurface: clamp(pick('chatSurface'), 0, 100),
         composerSurface: clamp(pick('composerSurface'), 0, 100),
@@ -391,38 +433,116 @@ window.__ModuleLoader__.load({
     const putImageRecord = (record) => dbRun('readwrite', (store) => store.put(record));
     const deleteImageRecord = (id) => dbRun('readwrite', (store) => store.delete(id));
 
-    /** Read a picked file and shrink it so a 4K photo does not blow the local quota. */
-    function ingestFile(file) {
+    // ---------------------------------------------------------------- ingesting
+
+    /** Decode an image URL into an element that has `width` / `height`. */
+    function decodeImage(url) {
+      return new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onerror = () => reject(new Error('decode'));
+        image.onload = () => resolve(image);
+        image.src = url;
+      });
+    }
+
+    function decodeVideo(url) {
+      return new Promise((resolve, reject) => {
+        const video = document.createElement('video');
+        video.muted = true;
+        video.playsInline = true;
+        video.preload = 'auto';
+        video.onerror = () => reject(new Error('decode'));
+        // `loadeddata` is the first moment there is a frame to draw. Waiting for `canplay`
+        // would mean waiting for a decoder the poster does not need.
+        video.onloadeddata = () => resolve(video);
+        video.src = url;
+      });
+    }
+
+    /** One still frame, downscaled - the thumbnail, the preview and the luminance source. */
+    function posterOf(source, width, height) {
+      const scale = Math.min(1, POSTER_EDGE / Math.max(width, height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(width * scale));
+      canvas.height = Math.max(1, Math.round(height * scale));
+      canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/jpeg', 0.82);
+    }
+
+    /** Shrink a photo so a 4K file does not blow the local quota. */
+    function ingestPhoto(file) {
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onerror = () => reject(new Error('read'));
         reader.onload = () => {
-          const source = String(reader.result);
-          const image = new Image();
-          image.onerror = () => reject(new Error('decode'));
-          image.onload = () => {
-            try {
-              const scale = Math.min(1, MAX_EDGE / Math.max(image.width, image.height));
-              const canvas = document.createElement('canvas');
-              canvas.width = Math.max(1, Math.round(image.width * scale));
-              canvas.height = Math.max(1, Math.round(image.height * scale));
-              canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
-              let quality = 0.88;
-              let dataUrl = canvas.toDataURL('image/jpeg', quality);
-              while (dataUrl.length > MAX_DATA_URL && quality > 0.42) {
-                quality -= 0.1;
-                dataUrl = canvas.toDataURL('image/jpeg', quality);
+          decodeImage(String(reader.result)).then(
+            (image) => {
+              try {
+                const scale = Math.min(1, MAX_EDGE / Math.max(image.width, image.height));
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.max(1, Math.round(image.width * scale));
+                canvas.height = Math.max(1, Math.round(image.height * scale));
+                canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+                let quality = 0.88;
+                let dataUrl = canvas.toDataURL('image/jpeg', quality);
+                while (dataUrl.length > MAX_DATA_URL && quality > 0.42) {
+                  quality -= 0.1;
+                  dataUrl = canvas.toDataURL('image/jpeg', quality);
+                }
+                if (dataUrl.length > MAX_DATA_URL) reject(new Error('too-large'));
+                else resolve({ kind: 'photo', dataUrl, width: image.width, height: image.height });
+              } catch (failure) {
+                reject(failure);
               }
-              if (dataUrl.length > MAX_DATA_URL) reject(new Error('too-large'));
-              else resolve(dataUrl);
-            } catch (failure) {
-              reject(failure);
-            }
-          };
-          image.src = source;
+            },
+            reject,
+          );
         };
         reader.readAsDataURL(file);
       });
+    }
+
+    /** A GIF (or animated WebP / APNG) keeps its bytes: a canvas round-trip freezes it. */
+    async function ingestAnimation(file) {
+      const url = window.URL.createObjectURL(file);
+      try {
+        const image = await decodeImage(url);
+        const width = image.width || 16;
+        const height = image.height || 9;
+        return { kind: 'animated', blob: file, poster: posterOf(image, width, height), width, height };
+      } finally {
+        window.URL.revokeObjectURL(url);
+      }
+    }
+
+    /** A video keeps its bytes too, and its first frame becomes the poster. */
+    async function ingestVideo(file) {
+      const url = window.URL.createObjectURL(file);
+      try {
+        const video = await decodeVideo(url);
+        const width = video.videoWidth || 16;
+        const height = video.videoHeight || 9;
+        return { kind: 'video', blob: file, poster: posterOf(video, width, height), width, height };
+      } finally {
+        window.URL.revokeObjectURL(url);
+      }
+    }
+
+    /**
+     * Route a picked file to the right pipeline.
+     *
+     * The test is on the MIME type, not on the frame count: a still GIF and an animated one are
+     * the same file to this code, and re-encoding the still one as JPEG would cost nothing - but
+     * there is no cheap way to ask "is this animated" without decoding it, and keeping the bytes
+     * is correct for both.
+     */
+    function ingestFile(file) {
+      const type = String((file && file.type) || '').toLowerCase();
+      const isVideo = type.indexOf('video/') === 0;
+      const isAnimated = type === 'image/gif' || type === 'image/apng' || type === 'image/webp';
+      if (!isVideo && !isAnimated) return ingestPhoto(file);
+      if (file.size > MAX_MEDIA_BYTES) return Promise.reject(new Error('too-large-media'));
+      return isVideo ? ingestVideo(file) : ingestAnimation(file);
     }
 
     // ---------------------------------------------------------------- luminance
@@ -483,7 +603,12 @@ window.__ModuleLoader__.load({
       let base = null;
       if (settings.mode === 'gradient') base = lumaOfCss(GRADIENTS[settings.gradient].css);
       else if (settings.mode === 'color') base = lumaOfCss(settings.color);
-      else if (settings.mode === 'image' && activeImage !== null) base = await lumaOfImage(activeImage);
+      // Moving pictures are measured from their poster frame. A video's first frame is not a
+      // perfect proxy for its average brightness, but the alternative is sampling the live
+      // element every time a slider moves, and the tone only drives black-vs-white text.
+      else if (settings.mode === 'image' && activeImage !== null && activeImage.poster !== null) {
+        base = await lumaOfImage(activeImage.poster);
+      }
       if (base === null) return null;
 
       const dimFactor = 1 - clamp(settings.dim, 0, 80) / 100;
@@ -500,6 +625,41 @@ window.__ModuleLoader__.load({
     // -------------------------------------------------------------------- store
 
     /**
+     * What a record is, for the code that has to paint it.
+     *
+     * Records written before moving pictures existed carry no `kind` at all, and every one of
+     * them is a still - so a missing kind is not an error, it is the original shape.
+     */
+    function kindOf(record) {
+      const kind = record === null || record === undefined ? null : record.kind;
+      return kind === 'video' || kind === 'animated' ? kind : 'photo';
+    }
+
+    /**
+     * Object URLs for the records whose pixels live in a blob.
+     *
+     * Created once per record per session and never revoked while the plugin is loaded. A URL
+     * revoked while a box still holds it leaves that box blank mid-fade, and there is no moment
+     * during a burst where revoking is provably safe - the box holding it may be three layers
+     * down and still contributing. The browser releases them when the page goes away, which is
+     * the only lifetime this needs.
+     */
+    const mediaUrls = new Map();
+
+    function mediaUrlOf(record) {
+      const known = mediaUrls.get(record.id);
+      if (known !== undefined) return known;
+      let url = null;
+      try {
+        url = window.URL.createObjectURL(record.blob);
+      } catch (failure) {
+        url = null;
+      }
+      mediaUrls.set(record.id, url);
+      return url;
+    }
+
+    /**
      * The artwork on screen is a *function* of the gallery and the selected id — never a
      * second copy of it.
      *
@@ -508,11 +668,26 @@ window.__ModuleLoader__.load({
      * the stale copy, and the only place that ever set both was `addImage()` — so the
      * wallpaper was frozen on the newest upload until a reload re-derived it in `boot()`.
      * Deriving it on every commit makes that class of drift impossible to reintroduce.
+     *
+     * It returns a *source*, not a URL string: `css` is always a still (the poster frame, for
+     * anything that moves) and `src` is what the wallpaper actually paints. Splitting the two
+     * is what lets the preview and the gallery stay cheap while the wallpaper runs a video.
      */
     function activeImageOf(images, settings) {
       if (!Array.isArray(images)) return null;
       const record = images.find((item) => item.id === settings.imageId);
-      return record === undefined ? null : record.dataUrl;
+      if (record === undefined) return null;
+      const kind = kindOf(record);
+      const poster = typeof record.poster === 'string' ? record.poster : kind === 'photo' ? record.dataUrl : null;
+      const width = typeof record.width === 'number' ? record.width : 0;
+      const height = typeof record.height === 'number' ? record.height : 0;
+      if (kind === 'photo') {
+        if (typeof record.dataUrl !== 'string') return null;
+        return { kind, css: `url("${record.dataUrl}")`, src: record.dataUrl, poster, width, height };
+      }
+      const src = mediaUrlOf(record);
+      if (src === null) return null;
+      return { kind, css: poster === null ? 'none' : `url("${poster}")`, src, poster, width, height };
     }
 
     /** Both flat views are derived from `raw`; neither is stored next to it. */
@@ -522,67 +697,107 @@ window.__ModuleLoader__.load({
       activeImage: activeImageOf(next.images, next.raw),
     });
 
-    /** The CSS string for a source, or `null` when nothing should be painted at all. */
+    /** The source to paint, or `null` when nothing should be painted at all. */
     function backgroundValue(settings, activeImage) {
-      if (settings.mode === 'image') return activeImage === null ? null : `url("${activeImage}")`;
-      if (settings.mode === 'gradient') return GRADIENTS[settings.gradient].css;
-      if (settings.mode === 'color') return `linear-gradient(${settings.color}, ${settings.color})`;
+      if (settings.mode === 'image') return activeImage;
+      if (settings.mode === 'gradient') {
+        const css = GRADIENTS[settings.gradient].css;
+        return { kind: 'gradient', css, src: css, poster: null, width: 0, height: 0 };
+      }
+      if (settings.mode === 'color') {
+        const css = `linear-gradient(${settings.color}, ${settings.color})`;
+        return { kind: 'color', css, src: css, poster: null, width: 0, height: 0 };
+      }
       return null;
     }
 
     /**
-     * Two wallpaper boxes, one per pseudo-element, so a switch can dissolve instead of cut.
+     * A stack of wallpaper boxes, one per picture in flight.
      *
-     * `background-image` is not an animatable property: writing a new URL onto the element
-     * that is on screen swaps the pixels in a single frame. The way out is not to animate the
-     * image but to stack two boxes - `::before` keeps the picture that is on screen at full
-     * opacity, `::after` carries the incoming one and fades in on top of it.
+     * `background-image` is not an animatable property: writing a new URL onto the element that
+     * is on screen swaps the pixels in a single frame. The way out is not to animate the image
+     * but to put the new picture on its own box and fade that box in.
      *
-     * ⚠️ **The outgoing side must stay at `opacity: 1`.** Fading both at once looks like the
-     * obvious symmetric thing to do and it is wrong: `::after` composites over `::before`, so
-     * a half-faded pair covers `a2 + a1 * (1 - a2)` of the background - 75% at the midpoint -
-     * and the wallpaper visibly dips dark for the length of the fade. Holding the bottom
-     * layer at 1 makes it `a2 + (1 - a2)` = 1 all the way through. Measured: see
+     * ⚠️ **Every box below the top one must stay fully opaque once it has arrived.** A pair of
+     * half-faded boxes covers `a2 + a1 * (1 - a2)` of the background - 75% at the midpoint - and
+     * the wallpaper visibly dips dark for the length of the fade. Fading a box *in* over
+     * something already at 1 makes it `a2 + (1 - a2)` = 1 the whole way. Measured: see
      * `diag/fade-harness.html`.
      *
-     * A slot records `blur` and `dim` **as they were when it was painted**, not as the
-     * settings read now. Both are per-background, so the picture being covered has to keep
-     * its own blur underneath; reading the live settings would make it morph mid-fade.
+     * ⚠️ **Nothing is ever interrupted, so nothing ever jumps.** A click while a fade is running
+     * does not redirect it - it just puts one more box on top. Compositing is associative, so
+     * the stack still covers the screen exactly once and the newest picture is the one that ends
+     * up visible. The alternative - retargeting or re-timing the fade already in flight - moves
+     * the picture on screen in a single frame, which is the ghost this design exists to avoid.
      *
-     * ⚠️ Do not try to collapse this back into one element with `cross-fade()`: support is
-     * uneven and the syntax wants two `<image>` tokens, which the colour source cannot supply.
+     * ⚠️ **This is why the wallpaper is real elements and not `html::before`/`::after`.** Two
+     * pseudo-elements are exactly enough for one dissolve and not one more; a burst needs an
+     * unbounded number. `syncWalls` owns the DOM for that reason - see the note there about
+     * keeping the element list stable across renders.
+     *
+     * A slot records `blur` and `dim` **as they were when it was painted**, not as the settings
+     * read now. Both are per-background, so the picture being covered has to keep its own blur
+     * underneath; reading the live settings would make it morph mid-fade.
      */
-    const EMPTY_LAYER = { current: null, incoming: null };
+    const EMPTY_LAYER = { walls: [], seq: 0 };
+
+    /**
+     * A runaway guard, not a tuning knob. Dropping the oldest box is itself a change to what is
+     * on screen - it is only invisible once the ones above it have finished fading, which takes
+     * FADE_MS. Twelve boxes in is far enough that the oldest is behind a dozen fades and its
+     * contribution is down in the 1e-11 range, so the guard never has to be the thing that
+     * decides how the burst looks. Six was too tight: a burst on top of a half-finished stack
+     * dropped a box that was still 2-5% visible, and that reads as a flicker.
+     */
+    const MAX_WALLS = 12;
 
     function layerOf(settings, activeImage) {
-      const value = backgroundValue(settings, activeImage);
-      return value === null ? null : { value, blur: settings.blur, dim: settings.dim };
+      const source = backgroundValue(settings, activeImage);
+      if (source === null) return null;
+      // `value` is the still frame, so it doubles as the identity of the artwork: two boxes
+      // hold the same picture exactly when their `value` matches, whatever the source kind.
+      return {
+        value: source.css,
+        kind: source.kind,
+        src: source.src,
+        blur: settings.blur,
+        dim: settings.dim,
+        focusX: settings.focusX,
+        focusY: settings.focusY,
+      };
     }
 
     /**
      * Advance the stack by one commit.
      *
-     * Moving a slider keeps the same picture and only rewrites its numbers - that path must
-     * not dissolve, or every drag would fade the wallpaper against itself. Only a different
-     * `value` counts as a switch.
+     * Moving a slider keeps the same picture and only rewrites its numbers - that path must not
+     * put another box up, or every drag would fade the wallpaper against itself. Only a
+     * different `value` counts as a switch.
+     *
+     * `seq` numbers the boxes and counts them; the settle timer keys off it, because a burst
+     * only ever appends and must not be able to push the deadline out.
      */
     function advanceLayer(layer, next) {
       const want = layerOf(next.settings, next.activeImage);
       if (want === null) {
-        return layer.current === null && layer.incoming === null ? layer : EMPTY_LAYER;
+        return layer.walls.length === 0 ? layer : { walls: [], seq: layer.seq + 1 };
       }
-      const same = (slot) =>
-        slot !== null && slot.value === want.value && slot.blur === want.blur && slot.dim === want.dim;
-      // Nothing on screen to dissolve from: put it up in one frame. Same rule as switching the
-      // wallpaper off - there is only a fade when one picture replaces another.
-      if (layer.current === null && layer.incoming === null) return { current: want, incoming: null };
-      if (same(layer.current)) {
-        // Back to what is already on screen: drop any fade that was in flight.
-        return layer.incoming === null ? layer : { current: want, incoming: null };
+      if (layer.walls.length === 0) {
+        // Nothing on screen to dissolve from: the first picture goes up in one frame. Same rule
+        // as switching the wallpaper off - a fade needs one picture to replace another.
+        return { walls: [{ ...want, id: layer.seq + 1 }], seq: layer.seq + 1 };
       }
-      // Already fading this one in. Rebuilding the object would restart the timer for nothing.
-      if (same(layer.incoming)) return layer;
-      return { current: layer.current, incoming: want };
+      const top = layer.walls[layer.walls.length - 1];
+      if (top.value === want.value) {
+        const same =
+          top.blur === want.blur && top.dim === want.dim && top.focusX === want.focusX && top.focusY === want.focusY;
+        if (same) return layer;
+        // Same artwork, new numbers: rewrite the box in place. Spreading `want` over `top`
+        // keeps the id, which is what stops a slider drag from renumbering a box on screen.
+        return { ...layer, walls: layer.walls.slice(0, -1).concat([{ ...top, ...want }]) };
+      }
+      const walls = layer.walls.concat([{ ...want, id: layer.seq + 1 }]);
+      return { walls: walls.length > MAX_WALLS ? walls.slice(1) : walls, seq: layer.seq + 1 };
     }
 
     let state = derive({ raw: readRaw(), settings: null, activeImage: null, images: null, luma: null });
@@ -651,23 +866,38 @@ window.__ModuleLoader__.load({
      * visible - the same picture is already covering it.
      */
     let settleTimer = null;
+    let settleSeq = -1;
 
     function scheduleSettle() {
-      if (settleTimer !== null) {
-        clearTimeout(settleTimer);
+      const layer = state.layer;
+      if (layer.walls.length < 2) {
+        if (settleTimer !== null) clearTimeout(settleTimer);
         settleTimer = null;
+        settleSeq = -1;
+        return;
       }
-      if (state.layer.incoming === null) return;
-      settleTimer = setTimeout(() => {
-        settleTimer = null;
-        if (state.layer.incoming === null) return;
-        state = { ...state, layer: { current: state.layer.incoming, incoming: null } };
-        emit();
-        // A little past `FADE_MS`: the promotion clears the top box with `transition: none`,
-        // so if it ever ran while the fade was still on screen the last fraction would snap.
-        // Late is harmless - the top box is already opaque by then, and swapping underneath it
-        // is invisible.
-      }, FADE_MS + 60);
+      // Re-arm on a *new box*, and only then. Appending is the only thing a burst does, so a
+      // burst does push the deadline out - by one fade, which is exactly right: the last click
+      // gets its own full fade and the ones before it are already covered by then.
+      if (settleTimer !== null && settleSeq === layer.seq) return;
+      if (settleTimer !== null) clearTimeout(settleTimer);
+      settleSeq = layer.seq;
+      settleTimer = setTimeout(settle, FADE_MS + 60);
+    }
+
+    /**
+     * Once the top box has finished fading in it is the only one visible, so every box under it
+     * can go. This is the moment the stack returns to one, and it is invisible by construction.
+     */
+    function settle() {
+      settleTimer = null;
+      settleSeq = -1;
+      const layer = state.layer;
+      if (layer.walls.length < 2) return;
+      const top = layer.walls[layer.walls.length - 1];
+      state = { ...state, layer: { walls: [top], seq: layer.seq + 1 } };
+      scheduleSettle();
+      emit();
     }
 
     function commit(patch, settingsPatch) {
@@ -683,10 +913,9 @@ window.__ModuleLoader__.load({
 
     /** Stop the pending fade bookkeeping; the stylesheet is going away with it. */
     function stop() {
-      if (settleTimer !== null) {
-        clearTimeout(settleTimer);
-        settleTimer = null;
-      }
+      if (settleTimer !== null) clearTimeout(settleTimer);
+      settleTimer = null;
+      settleAt = 0;
     }
 
     function patchSettings(patch) {
@@ -706,13 +935,21 @@ window.__ModuleLoader__.load({
     }
 
     async function addImage(file) {
-      const dataUrl = await ingestFile(file);
-      const record = { id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, dataUrl, addedAt: Date.now() };
+      const ingested = await ingestFile(file);
+      const record = {
+        id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        addedAt: Date.now(),
+        ...ingested,
+      };
       await putImageRecord(record);
       const images = (state.images === null ? [] : state.images).concat(record);
       // A new picture inherits the look that is on screen right now. Uploading is meant to
       // change the artwork, not to throw away the sliders the user just dialled in.
       const inherited = { ...presetOf(state.raw, sourceKeyOf(state.raw)) };
+      // The framing, on the other hand, is a property of the picture: inheriting a 12% offset
+      // from the previous one would crop the new upload against a composition it never had.
+      inherited.focusX = DEFAULTS.focusX;
+      inherited.focusY = DEFAULTS.focusY;
       commit(
         { images },
         { mode: 'image', imageId: record.id, presets: { [`image:${record.id}`]: inherited } },
@@ -838,7 +1075,7 @@ window.__ModuleLoader__.load({
     // ------------------------------------------------------------------------ css
 
     /**
-     * Two fixed boxes behind everything, one per wallpaper slot, dissolving into each other.
+     * The box the wallpaper boxes live in: one fixed, oversized element behind everything.
      *
      * **The geometry is deliberately `vw`/`vh` and not `inset: -Npx`.** They look identical
      * - same box, same `cover` crop - but they do not react to the same things. `inset`
@@ -854,42 +1091,24 @@ window.__ModuleLoader__.load({
      * transcript's glass was waiting on was not ready in time. `will-change: filter` keeps
      * the blurred result cached across the repaints that remain.
      *
-     * `bleed` is shared by both slots and sized from the **larger** of the two blurs. Each
-     * slot could size its own - a box only has to outgrow its own blur radius - but the box
-     * is what `background-size: cover` scales against, so two sizes mean the same picture is
-     * cropped differently on each side of a dissolve. One size, one crop, no drift.
+     * `bleed` is sized from the **largest blur on the stack**, not per box. Each box could
+     * size its own - a box only has to outgrow its own blur radius - but the box is what
+     * `background-size: cover` scales against, so two sizes mean the same picture is cropped
+     * differently on each side of a dissolve. One size, one crop, no drift.
      *
-     * The dim is folded into `brightness()` instead of laid over as a black sheet. The two
-     * are the same arithmetic - `image * (1 - alpha)` either way - but a sheet has to sit
-     * *above* both slots, and `html` only has two pseudo-elements. Folding it in frees the
-     * second one for the incoming picture; a brightness filter on each side still composites
-     * to the right value while the two are half-transparent.
+     * The dim is folded into `brightness()` instead of laid over as a black sheet. The two are
+     * the same arithmetic - `image * (1 - alpha)` either way - but a sheet would have to sit
+     * above every box on the stack, and there is no element to put it on.
      */
     function wallpaperCss(layer) {
-      const slots = [layer.current, layer.incoming].filter((slot) => slot !== null);
-      if (slots.length === 0) return '';
-      const bleed = Math.round(Math.max(...slots.map((slot) => slot.blur)) * 2 + 12);
-      const paint = (slot) => {
-        if (slot === null) return '';
-        // `brightness(1)` is a no-op filter that still costs a pass; drop it at zero dim.
-        const filter = slot.dim === 0
-          ? `blur(${slot.blur}px)`
-          : `blur(${slot.blur}px) brightness(${(1 - slot.dim / 100).toFixed(3)})`;
-        return `\n  background-image: ${slot.value};\n  filter: ${filter};`;
-      };
-      // Only the top box animates, and only while something is coming in. With `none` the
-      // promotion in `scheduleSettle` - which clears the top box in the same frame it rewrites
-      // the bottom one - lands in a single frame instead of fading out the picture that was
-      // just promoted.
-      const fade = layer.incoming === null ? 'none' : `opacity ${FADE_MS}ms ease`;
+      if (layer.walls.length === 0) return '';
+      const bleed = Math.round(Math.max(...layer.walls.map((wall) => wall.blur)) * 2 + 12);
       return `
 html[data-dshbg-on] { background: transparent !important; }
 html[data-dshbg-on] body,
 html[data-dshbg-on] #root,
 html[data-dshbg-on] ${frameSelector()} { background: transparent !important; }
-html[data-dshbg-on]::before,
-html[data-dshbg-on]::after {
-  content: "";
+html[data-dshbg-on] [data-dshbg-stack] {
   position: fixed;
   top: -${bleed}px;
   left: -${bleed}px;
@@ -897,24 +1116,134 @@ html[data-dshbg-on]::after {
   height: calc(100vh + ${bleed * 2}px);
   z-index: -1;
   pointer-events: none;
+}
+html[data-dshbg-on] [data-dshbg-stack] > [data-dshbg-wall] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
   background-position: center;
   background-repeat: no-repeat;
   background-size: cover;
   transform: translateZ(0);
-}
-html[data-dshbg-on]::before {${paint(layer.current)}
-  opacity: 1;
   will-change: filter;
 }
-html[data-dshbg-on]::after {${paint(layer.incoming)}
-  opacity: ${layer.incoming === null ? 0 : 1};
-  transition: ${fade};
-  will-change: ${layer.incoming === null ? 'auto' : 'filter, opacity'};
-}
-@media (prefers-reduced-motion: reduce) {
-  html[data-dshbg-on]::after { transition: none; }
+html[data-dshbg-on] [data-dshbg-stack] > [data-dshbg-wall] > video {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  border: 0;
 }
 `;
+    }
+
+    /**
+     * Write one wall's source onto its box.
+     *
+     * A still is a `background-image`; a clip has to be an element, because no CSS property
+     * plays one. Both are cropped the same way - `cover` for the still, `object-fit: cover` for
+     * the video - and both take their crop from the same `focusX` / `focusY`, so the composition
+     * does not move when the same framing is applied to a photo and to a clip.
+     *
+     * The still frame is always written first, even for a video. It is what shows for the frame
+     * or two before the first decoded frame lands, and it is the whole picture when reduced
+     * motion says nothing should be moving.
+     */
+    function paintWall(box, wall) {
+      const position = `${wall.focusX}% ${wall.focusY}%`;
+      const still = reducedMotion();
+      const image = wall.kind === 'animated' && !still ? `url("${wall.src}")` : wall.value;
+      // Re-assigning the same string is not free for an animated image: some engines restart
+      // the sequence, and `paint()` runs on every slider tick. Only write when it changes.
+      if (box.style.backgroundImage !== image) box.style.backgroundImage = image;
+      box.style.backgroundPosition = position;
+
+      const wants = wall.kind === 'video' && !still ? 'video' : 'still';
+      const had = String(box.getAttribute('data-dshbg-media') || '');
+      if (had !== wants) {
+        for (const child of Array.from(box.children)) child.remove();
+        box.setAttribute('data-dshbg-media', wants);
+      }
+      if (wants !== 'video') return;
+
+      let video = box.children.length === 0 ? null : box.children[0];
+      if (video === null) {
+        video = document.createElement('video');
+        video.muted = true;
+        video.loop = true;
+        video.autoplay = true;
+        video.setAttribute('muted', '');
+        video.setAttribute('playsinline', '');
+        box.appendChild(video);
+      }
+      // Tracked on a data attribute rather than on `src`: assigning `.src` reflects to the
+      // attribute in a browser but not in every environment this runs in, and a needless
+      // re-assignment restarts the clip from zero.
+      if (video.getAttribute('data-src') !== wall.src) {
+        video.setAttribute('data-src', wall.src);
+        video.src = wall.src;
+        const started = video.play();
+        if (started !== undefined && typeof started.catch === 'function') started.catch(() => {});
+      }
+      video.style.objectPosition = position;
+    }
+
+    /**
+     * Keep the DOM in step with `layer.walls`.
+     *
+     * The elements are **stable by id, never by index**: rewriting a box's `background-image`
+     * while it is partly visible is the exact jump the whole design avoids, so a box may only
+     * be written to at the two moments it is invisible - when it is created, and when it is
+     * dropped. Keying on the index would renumber every box when the oldest one goes, and the
+     * renumbering would be visible.
+     *
+     * The fade itself is a Web Animation, not a CSS `transition` or `animation`. That is not a
+     * style choice: `paint()` rewrites the whole `<style>` element on every settings change, and
+     * replacing a sheet's text restarts every animation it defines - a burst would reset the
+     * boxes it had already put up. An animation attached to the element is untouched by that.
+     */
+    function syncWalls(host, layer) {
+      if (host === null) return;
+      const walls = layer.walls;
+      const keep = new Set(walls.map((wall) => String(wall.id)));
+      for (const child of Array.from(host.children)) {
+        if (!keep.has(child.getAttribute('data-dshbg-wall'))) child.remove();
+      }
+      walls.forEach((wall, index) => {
+        const key = String(wall.id);
+        let box = host.querySelector(`[data-dshbg-wall="${key}"]`);
+        if (box === null) {
+          box = document.createElement('div');
+          box.setAttribute('data-dshbg-wall', key);
+          host.appendChild(box);
+          // A single box is the first picture of a fresh stack - there is nothing to dissolve
+          // from, so it lands in one frame. Only a box arriving on top of another fades.
+          if (walls.length > 1 && !reducedMotion()) {
+            box.animate([{ opacity: 0 }, { opacity: 1 }], { duration: FADE_MS, easing: 'ease', fill: 'forwards' });
+          } else {
+            box.style.opacity = '1';
+          }
+        }
+        paintWall(box, wall);
+        // `brightness(1)` is a no-op filter that still costs a pass; drop it at zero dim.
+        box.style.filter = wall.dim === 0
+          ? `blur(${wall.blur}px)`
+          : `blur(${wall.blur}px) brightness(${(1 - wall.dim / 100).toFixed(3)})`;
+        // The bottom box is the floor: there is nothing under it, so it must never be
+        // see-through. Two ways it can be caught mid-fade down there - it is the survivor of a
+        // collapse, or the cap just dropped the box below it - and both have to be pinned.
+        // Leaving the second one alone lets a burst show a sliver of the desktop through the
+        // whole stack (measured: 0.7% uncovered for a few frames).
+        if (index === 0) {
+          for (const animation of box.getAnimations()) animation.cancel();
+          box.style.opacity = '1';
+        }
+      });
     }
 
     /**
@@ -1533,11 +1862,30 @@ ${historyBlockCss(settings)}`;
      * ⚠️ The `.cm-btn` cost entries keep the host's `1px` border width, only the colour
      * moves; the other chips have no border and get the `.5px` hairline.
      *
+     * ⚠️ **The dock is the one pane that keeps a real `backdrop-filter`.** Everything else
+     * goes through `glassPane()`, which deliberately has none: the wallpaper is already
+     * blurred at the `html::before` layer, so re-blurring it pays for a full backdrop
+     * snapshot per frame and buys nothing. The dock is the exception because of what sits
+     * *under* it, not because it is more important - it floats over the transcript, so once
+     * the conversation is scrolled to the bottom there is text behind it, and a fill alone
+     * lets that text read through as smudge. The composer card is the same case, which is
+     * why the two now share `menuBlurOf` and the same `saturate(160%)`.
+     *
+     * ⚠️ **That is only safe because the dock is a *sibling* of `[data-composer-card]`, not
+     * a descendant.** The card is a backdrop root; anything inside it would sample the
+     * card's own interior and the blur would silently do nothing - the exact failure the
+     * `/` menu hit. If the host ever moves the dock inside the card, this rule stops
+     * working without an error, and the symptom is "the slider does nothing".
+     *
      * ENGINEERING.md 附录 A.8 has the full derivation.
      */
     function statusGlassCss(settings) {
       if (settings.composerStyle !== 'glass') return '';
       const blur = clamp(settings.glassBlur, 0, 40);
+      // The dock is the one pane that also gets a real `backdrop-filter`, and the reason is
+      // in the comment on the rule below - it is a deliberate exception to the "already
+      // blurred wallpaper does not get blurred again" rule, not an oversight.
+      const frost = menuBlurOf(settings);
       const dock = '[data-composer-dock]';
       const headerSlot = '[data-slot="conversation.session.header.actions"]';
       // The jump-to-bottom disc. `_toBottomSlot` is the zero-height sticky wrapper the host
@@ -1549,6 +1897,8 @@ ${prefixed('html[data-dshbg-on]', [dock])} {
   box-sizing: border-box !important;
   padding: 3px 8px !important;
   border-radius: 12px !important;
+  -webkit-backdrop-filter: blur(${frost}px) saturate(160%) !important;
+  backdrop-filter: blur(${frost}px) saturate(160%) !important;
 ${glassPane()}
 }
 ${prefixed('html[data-dshbg-on]', [`${headerSlot} button:not([class*="_trigger"])`])} {
@@ -2260,6 +2610,9 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       };
     }
 
+    const STACK_SELECTOR = '[data-dshbg-stack]';
+    const STACK_ATTRIBUTE = 'data-dshbg-stack';
+
     function installStyles(ctx) {
       const stale = document.querySelector(`style[data-dshbg-css="${PACKAGE}"]`);
       if (stale !== null) stale.remove();
@@ -2273,7 +2626,19 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
 
       let disposed = false;
       let measureToken = 0;
+      let measureKey = null;
       let lastCss = null;
+
+      /** The wallpaper boxes live here. Created on demand, gone again the moment it is off. */
+      const stackHost = () => {
+        let host = document.querySelector(`body > ${STACK_SELECTOR}`);
+        if (host === null) {
+          host = document.createElement('div');
+          host.setAttribute(STACK_ATTRIBUTE, '');
+          document.body.appendChild(host);
+        }
+        return host;
+      };
 
       const paint = () => {
         if (disposed) return;
@@ -2290,6 +2655,13 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         if (next !== lastCss) {
           lastCss = next;
           tag.textContent = next;
+        }
+        // The boxes are reconciled after the sheet so that a box never exists unstyled for a
+        // frame. Turning the wallpaper off takes the whole container with it.
+        if (on) syncWalls(stackHost(), layer);
+        else {
+          const stale = document.querySelector(`body > ${STACK_SELECTOR}`);
+          if (stale !== null) stale.remove();
         }
         // Turning the wallpaper off also drops the `text-overflow: clip` that the marquee
         // depends on, so the animations have to follow the stylesheet, not the setting.
@@ -2315,9 +2687,16 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         paint();
         const { settings, activeImage } = state;
         if (settings.mode === 'none') {
+          measureKey = null;
           if (state.luma !== null) commit({ luma: null });
           return;
         }
+        // The measurement is a function of the artwork, the dim and the panel mix - not of the
+        // blur, and not of the framing. Dragging the picture re-commits on every pointer move,
+        // and decoding the poster each time is the one thing that would make that stutter.
+        const key = `${settings.mode}|${activeImage === null ? '' : activeImage.src}|${settings.dim}|${surfaceOf(settings)}`;
+        if (key === measureKey) return;
+        measureKey = key;
         const token = ++measureToken;
         measureLuma(settings, activeImage).then((luma) => {
           if (disposed || token !== measureToken) return;
@@ -2339,6 +2718,8 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
             marquee.dispose();
             composerMenu.dispose();
             tag.remove();
+            const stack = document.querySelector(`body > ${STACK_SELECTOR}`);
+            if (stack !== null) stack.remove();
             document.documentElement.removeAttribute('data-dshbg-on');
           },
           'custom-background: stylesheet',
@@ -2426,6 +2807,11 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
 .dshbg-sub { font-size: 12px; line-height: 17px; margin: 0; color: var(--dsw-alias-label-tertiary, #6b7280); }
 .dshbg-preview { position: relative; height: 136px; border-radius: 10px; overflow: hidden; border: 0.5px solid var(--dsw-alias-border-l2, rgb(0 0 0 / 12%)); background: var(--dsw-alias-bg-layer-2, #eef0f3); }
 .dshbg-preview-art { position: absolute; inset: -28px; background-position: center; background-size: cover; background-repeat: no-repeat; }
+.dshbg-preview-art > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center; border: 0; }
+/* Dragging the preview is how the framing is aimed, so it must not scroll the page on touch
+   and it must not select the mock text on the way past. */
+.dshbg-preview-grab { cursor: grab; touch-action: none; user-select: none; }
+.dshbg-preview-grab:active { cursor: grabbing; }
 .dshbg-preview-dim { position: absolute; inset: 0; }
 .dshbg-preview-row { position: relative; height: 100%; display: flex; }
 .dshbg-preview-side { flex: 0 0 34%; background: var(--dsw-specific-sidebar-fill, #eceef1); display: flex; align-items: center; padding: 0 12px; }
@@ -2444,6 +2830,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
 .dshbg-tile { position: relative; display: block; box-sizing: border-box; aspect-ratio: 16 / 10; border-radius: 8px; overflow: hidden; padding: 0; cursor: pointer; border: 1.5px solid transparent; background: var(--dsw-alias-bg-layer-2, #eef0f3); background-size: cover; background-position: center; }
 .dshbg-tile[data-active="true"] { border-color: var(--dsw-alias-state-business-primary, #4176e6); }
 .dshbg-tile-x { position: absolute; top: 4px; right: 4px; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 9px; cursor: pointer; font-size: 12px; line-height: 1; color: #fff; background: rgb(0 0 0 / 55%); }
+.dshbg-tile-kind { position: absolute; left: 4px; bottom: 4px; padding: 1px 5px; border-radius: 6px; font-size: 10px; line-height: 1.4; color: #fff; background: rgb(0 0 0 / 55%); pointer-events: none; }
 .dshbg-add { border: 1px dashed var(--dsw-alias-border-l2, rgb(0 0 0 / 18%)); border-radius: 8px; background: transparent; cursor: pointer; color: var(--dsw-alias-label-secondary, #4b5563); font-size: 12px; aspect-ratio: 16 / 10; }
 .dshbg-add:hover { border-color: var(--dsw-alias-state-business-primary, #4176e6); color: var(--dsw-alias-label-primary, #0f1115); }
 .dshbg-switch { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
@@ -2511,15 +2898,82 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       const pickFile = useCallback((file) => {
         if (!file) return;
         setError(null);
+        const isVideo = String((file && file.type) || '').indexOf('video/') === 0;
         addImage(file).catch((failure) => {
-          setError(failure && failure.message === 'too-large' ? text.tooLarge : text.readFail);
+          const code = failure && failure.message;
+          if (code === 'too-large') setError(text.tooLarge);
+          else if (code === 'too-large-media') setError(text.tooLargeMedia);
+          else if (isVideo && code === 'decode') setError(text.videoFail);
+          else setError(text.readFail);
         });
-      }, [text.readFail, text.tooLarge]);
+      }, [text.readFail, text.tooLarge, text.tooLargeMedia, text.videoFail]);
 
       const palette = fontPalette(settings, tone);
       const previewColor = palette === null ? null : palette.primary;
       const previewValue = backgroundValue(settings, activeImage);
+      const gallery = images === null ? [] : images;
+      const activeRecord = gallery.find((record) => record.id === settings.imageId) || null;
       const sections = [];
+
+      /**
+       * Dragging the preview is the whole point of the framing control: the numbers are hard to
+       * aim with, and "move that person back into the frame" is a gesture, not a percentage.
+       *
+       * The mapping is one-to-one, not a fixed sensitivity. With `background-size: cover` the
+       * picture is scaled until it covers the box, so the distance it can travel is
+       * `scaled - box`, and dragging by exactly that distance has to move it by exactly 100%.
+       * The sign is inverted because `X%` aligns X% of the picture with X% of the box - a
+       * larger X slides the picture left, which is the opposite of the pointer.
+       *
+       * An axis with no slack (a tall picture on a wide preview) simply does not move, which is
+       * the truth of the situation rather than a dead control.
+       */
+      const drag = useRef(null);
+
+      const dragStart = useCallback((event) => {
+        if (settings.mode !== 'image' || event.button === 2) return;
+        const box = event.currentTarget.getBoundingClientRect();
+        const width = activeRecord === null ? 0 : activeRecord.width || 0;
+        const height = activeRecord === null ? 0 : activeRecord.height || 0;
+        let slackX = box.width;
+        let slackY = box.height;
+        if (width > 0 && height > 0) {
+          const scale = Math.max(box.width / width, box.height / height);
+          slackX = Math.max(0, width * scale - box.width);
+          slackY = Math.max(0, height * scale - box.height);
+        }
+        drag.current = {
+          x: event.clientX,
+          y: event.clientY,
+          focusX: settings.focusX,
+          focusY: settings.focusY,
+          slackX,
+          slackY,
+        };
+        if (event.currentTarget.setPointerCapture) {
+          try {
+            event.currentTarget.setPointerCapture(event.pointerId);
+          } catch (failure) {
+            /* capture is a nicety; the drag still works without it */
+          }
+        }
+        event.preventDefault();
+      }, [settings.mode, settings.focusX, settings.focusY, activeRecord]);
+
+      const dragMove = useCallback((event) => {
+        const started = drag.current;
+        if (started === null) return;
+        const shift = (slack, from, to) =>
+          slack === 0 ? from : clamp(from - (to / slack) * 100, 0, 100);
+        patchSettings({
+          focusX: Math.round(shift(started.slackX, started.focusX, event.clientX - started.x)),
+          focusY: Math.round(shift(started.slackY, started.focusY, event.clientY - started.y)),
+        });
+      }, []);
+
+      const dragEnd = useCallback(() => {
+        drag.current = null;
+      }, []);
 
       sections.push(
         h(
@@ -2528,14 +2982,34 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
           h('div', { className: 'dshbg-label' }, text.preview),
           h(
             'div',
-            { className: 'dshbg-preview' },
-            h('div', {
-              className: 'dshbg-preview-art',
-              style: {
-                backgroundImage: previewValue === null ? 'none' : previewValue,
-                filter: `blur(${Math.round(settings.blur / 2)}px)`,
+            {
+              className: settings.mode === 'image' ? 'dshbg-preview dshbg-preview-grab' : 'dshbg-preview',
+              onPointerDown: dragStart,
+              onPointerMove: dragMove,
+              onPointerUp: dragEnd,
+              onPointerCancel: dragEnd,
+            },
+            h(
+              'div',
+              {
+                className: 'dshbg-preview-art',
+                style: {
+                  backgroundImage: previewValue === null ? 'none' : previewValue.css,
+                  backgroundPosition: `${settings.focusX}% ${settings.focusY}%`,
+                  filter: `blur(${Math.round(settings.blur / 2)}px)`,
+                },
               },
-            }),
+              activeRecord !== null && kindOf(activeRecord) === 'video'
+                ? h('video', {
+                    src: mediaUrlOf(activeRecord),
+                    muted: true,
+                    loop: true,
+                    autoPlay: true,
+                    playsInline: true,
+                    style: { objectPosition: `${settings.focusX}% ${settings.focusY}%` },
+                  })
+                : null,
+            ),
             h('div', {
               className: 'dshbg-preview-dim',
               style: { backgroundColor: `rgba(0, 0, 0, ${(settings.dim / 100).toFixed(3)})` },
@@ -2593,7 +3067,6 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       );
 
       if (settings.mode === 'image') {
-        const gallery = images === null ? [] : images;
         sections.push(
           h(
             'div',
@@ -2611,7 +3084,11 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
                     tabIndex: 0,
                     className: 'dshbg-tile',
                     'data-active': String(record.id === settings.imageId),
-                    style: { backgroundImage: `url("${record.dataUrl}")` },
+                    'data-kind': kindOf(record),
+                    // A clip has no `dataUrl`; its poster frame is what the tile shows. That is
+                    // also why the poster exists - the gallery, the preview and the luminance
+                    // probe all read one still image instead of decoding a video three times.
+                    style: { backgroundImage: `url("${record.poster || record.dataUrl || ''}")` },
                     onClick: () => patchSettings({ imageId: record.id }),
                     onKeyDown: (event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
@@ -2620,6 +3097,13 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
                       }
                     },
                   },
+                  kindOf(record) === 'video' || kindOf(record) === 'animated'
+                    ? h(
+                        'span',
+                        { className: 'dshbg-tile-kind' },
+                        kindOf(record) === 'video' ? text.kindVideo : text.kindAnimated,
+                      )
+                    : null,
                   h(
                     'button',
                     {
@@ -2650,6 +3134,44 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
             h('p', { className: 'dshbg-hint' }, text.galleryHint),
           ),
         );
+
+        if (activeRecord !== null) {
+          sections.push(
+            h(
+              'div',
+              { key: 'framing', className: 'dshbg-section', style: { gap: '10px' } },
+              h('div', { className: 'dshbg-label' }, text.framing),
+              h(Slider, {
+                label: text.focusX,
+                value: settings.focusX,
+                min: 0,
+                max: 100,
+                step: 1,
+                suffix: '%',
+                onChange: (value) => patchSettings({ focusX: value }),
+              }),
+              h(Slider, {
+                label: text.focusY,
+                value: settings.focusY,
+                min: 0,
+                max: 100,
+                step: 1,
+                suffix: '%',
+                onChange: (value) => patchSettings({ focusY: value }),
+              }),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'dshbg-add',
+                  onClick: () => patchSettings({ focusX: DEFAULTS.focusX, focusY: DEFAULTS.focusY }),
+                },
+                text.recenter,
+              ),
+              h('p', { className: 'dshbg-hint' }, text.framingHint),
+            ),
+          );
+        }
       }
 
       if (settings.mode === 'gradient') {
@@ -2869,7 +3391,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
           {
             ref: fileInput,
             type: 'file',
-            accept: 'image/*',
+            accept: 'image/*,video/*',
             style: { display: 'none' },
             onChange: (event) => {
               const file = event.target.files && event.target.files[0];

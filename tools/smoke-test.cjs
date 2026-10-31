@@ -67,6 +67,26 @@ function makeElement(tag) {
     },
     contains() { return false; },
     closest() { return null; },
+    // One attribute selector is all `syncWalls` asks for, and it asks by id on purpose - see
+    // the note there about never keying a box on its index.
+    querySelector(selector) {
+      const match = /^\[([\w-]+)="([^"]*)"\]$/.exec(selector);
+      if (match === null) return null;
+      return el.children.find((child) => child.getAttribute(match[1]) === match[2]) || null;
+    },
+    // The fade is a Web Animation because a sheet rewrite would restart a CSS one. The stub
+    // only has to record that something was asked to move.
+    animate(keyframes, options) {
+      const animation = { keyframes, options, cancelled: false, cancel() { animation.cancelled = true; } };
+      if (el._animations === undefined) el._animations = [];
+      el._animations.push(animation);
+      return animation;
+    },
+    getAnimations() { return el._animations === undefined ? [] : el._animations.slice(); },
+    // A video wallpaper is a real <video> child; `play()` is what starts it and it must not
+    // throw when the browser refuses (autoplay policy), which is why the plugin swallows it.
+    play() { return { catch() {} } },
+    pause() {},
     // The tuning card is draggable, so it reads and writes real geometry. A fixed 248x320
     // box is enough for the clamp arithmetic to be checkable; anything more faithful would
     // be a layout engine.
@@ -115,9 +135,38 @@ const ReactStub = {
   useSyncExternalStore: (subscribe, getSnapshot) => getSnapshot(),
 };
 
+/**
+ * An IndexedDB just real enough for `openDb` + `dbRun`: `open()` succeeds on a timer, a
+ * transaction hands back the seeded records, and `oncomplete` fires after the caller has had
+ * a chance to attach it.
+ */
+function seededOpen(records) {
+  const request = { result: null, onsuccess: null, onerror: null, onupgradeneeded: null };
+  request.result = {
+    objectStoreNames: { contains: () => true },
+    transaction() {
+      const transaction = { oncomplete: null, onerror: null, onabort: null };
+      transaction.objectStore = () => ({
+        getAll: () => {
+          const read = { result: records.slice() };
+          setTimeout(() => { if (transaction.oncomplete) transaction.oncomplete(); }, 0);
+          return read;
+        },
+        put: (record) => { records.push(record); return { result: record }; },
+        delete: () => ({}),
+      });
+      return transaction;
+    },
+  };
+  setTimeout(() => { if (request.onsuccess) request.onsuccess(); }, 0);
+  return request;
+}
+
 /** One isolated plugin instance. Returns the CSS it emitted plus the DOM it touched. */
-function harness(settingsOverride) {
+function harness(settingsOverride, extra) {
   const settings = { ...BASE_SETTINGS, ...settingsOverride };
+  const seed = extra === undefined || extra.images === undefined ? null : extra.images;
+  const reduced = extra !== undefined && extra.reducedMotion === true;
   const head = makeElement('head');
   const documentElement = makeElement('html');
   const body = makeElement('body');
@@ -137,6 +186,11 @@ function harness(settingsOverride) {
       const match = /^style\[data-dshbg-(?:css|page)="(.+)"\]$/.exec(selector);
       if (match) {
         return head.children.find((el) => el.attributes['data-dshbg-css'] === match[1]) || null;
+      }
+      // The wallpaper boxes hang off <body>. Nothing else in the plugin is looked up from the
+      // document root, so one extra case is enough.
+      if (selector === 'body > [data-dshbg-stack]') {
+        return body.children.find((el) => el.hasAttribute('data-dshbg-stack')) || null;
       }
       return null;
     },
@@ -166,8 +220,18 @@ function harness(settingsOverride) {
       };
     },
     // A never-resolving open() keeps boot() pending, which is what the host looks like
-    // before the first image read lands.
-    indexedDB: { open() { return {}; } },
+    // before the first image read lands. The gallery tests need the read to land, so they
+    // ask for a seeded store instead - the default path stays exactly as it was.
+    indexedDB: seed === null ? { open() { return {}; } } : { open() { return seededOpen(seed); } },
+    // `mediaUrlOf` mints one object URL per record per session. A blob stub with a name is
+    // enough to tell two clips apart.
+    URL: {
+      createObjectURL: (blob) => `blob:${blob && blob.name ? blob.name : 'x'}`,
+      revokeObjectURL() {},
+    },
+    // Reduced motion is honoured by not animating at all, and by showing a clip's poster
+    // instead of playing it. Both branches read this.
+    matchMedia: () => ({ matches: reduced }),
     setTimeout,
     clearTimeout,
   };
@@ -228,8 +292,8 @@ function check(name, condition, detail) {
 }
 
 /** Apply the plugin with the given settings and return the emitted stylesheet. */
-async function emit(settingsOverride) {
-  const run = harness(settingsOverride);
+async function emit(settingsOverride, extra) {
+  const run = harness(settingsOverride, extra);
   const { definition, ctx, registered, documentElement, head, body, window, windowListeners, store } = run;
 
   const exported = definition.factory((name) => {
@@ -240,6 +304,15 @@ async function emit(settingsOverride) {
 
   // The auto-contrast measurement lands on a microtask; let it commit before reading.
   await new Promise((resolve) => setTimeout(resolve, 12));
+  // A seeded gallery has to travel openDb -> transaction -> boot -> commit before the first
+  // box exists, and that is more timer hops than a fixed wait is worth guessing at.
+  if (extra !== undefined && extra.images !== undefined) {
+    for (let waited = 0; waited < 800; waited += 10) {
+      const host = body.children.find((el) => el.hasAttribute('data-dshbg-stack'));
+      if (host !== undefined && host.children.length > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
 
   const tags = head.children.filter((el) => el.attributes['data-dshbg-css']);
   return {
@@ -270,46 +343,119 @@ async function main() {
   check('css is non-empty', base.css.length > 500, `length ${base.css.length}`);
 
   console.log('\nwallpaper');
-  check('paints the wallpaper layer', base.css.includes('html[data-dshbg-on]::before'));
-  // 两层壁纸：`::before` 放正在显示的那张（永远不透明），`::after` 放正在淡入的那张。
-  // 只有一个槽就做不了过渡 —— `background-image` 不是可动画属性，往可见元素上写新 URL
-  // 是一帧换完的。
+  const boxesOf = (run) => {
+    const host = run.body.children.find((el) => el.hasAttribute('data-dshbg-stack'));
+    return host === undefined ? [] : host.children;
+  };
+  // 壁纸是一个容器 + 每张图一个盒子。`::before`/`::after` 只有两个，做不了一次连点 —— 那需要
+  // 无上限的层数，所以这里必须是真的元素。
+  check('paints a container behind everything', base.css.includes('html[data-dshbg-on] [data-dshbg-stack]'));
+  check('the container is a real element, not a pseudo-element', !base.css.includes('data-dshbg-on]::before'));
   check(
-    'the steady state is one opaque picture under one empty box',
-    /html\[data-dshbg-on\]::before \{[\s\S]{0,200}?opacity: 1;/.test(base.css) &&
-      /html\[data-dshbg-on\]::after \{\s*opacity: 0;\s*transition: none;/.test(base.css),
-    base.css.match(/html\[data-dshbg-on\]::after \{[^}]*\}/)?.[0],
+    'the container holds one absolutely positioned box per picture',
+    /\[data-dshbg-stack\] > \[data-dshbg-wall\] \{[^}]*position: absolute;/.test(base.css),
+    base.css.match(/\[data-dshbg-stack\] > \[data-dshbg-wall\] \{[^}]*\}/)?.[0],
   );
-  check('both slots share one box', /html\[data-dshbg-on\]::before,\s*html\[data-dshbg-on\]::after \{/.test(base.css));
-  // 过渡本身（两层 opacity 真的在动、且总不透明度不掉）由 tools/store-test.cjs 的状态机
-  // 和 diag/fade-harness.html 的无头实测覆盖。这里只钉住时长常量没被换成别的数字 ——
-  // 稳态样式表里看不到它。
+  // 稳态只有一张图、一个盒子，而且它不透明 —— 没有任何「空着的槽」需要维护。
+  check('the steady state is one box', boxesOf(base).length === 1, `${boxesOf(base).length} boxes`);
+  check(
+    'and it carries the picture itself',
+    String(boxesOf(base)[0].style.backgroundImage).includes('linear-gradient(135deg, #ff9a9e'),
+    boxesOf(base)[0].style.backgroundImage,
+  );
+  check('with its own blur', boxesOf(base)[0].style.filter === 'blur(16px)', boxesOf(base)[0].style.filter);
+  // 淡入本身（总不透明度不掉、换图只发生在盒子不可见时、底层恒为全不透明）由
+  // tools/store-test.cjs 的状态机和 diag/burst-replica.html 的逐帧探针覆盖 —— 它们取决于动画
+  // 进度，在假 DOM 里量不出来。这里钉住两件样式表能证明的事。
   check('the fade duration is a single constant', CODE.includes('const FADE_MS = 600;'));
   check(
     'the fade yields to prefers-reduced-motion',
-    /@media \(prefers-reduced-motion: reduce\) \{[\s\S]{0,220}?transition: none;/.test(base.css),
+    CODE.includes("matchMedia('(prefers-reduced-motion: reduce)')") &&
+      /if \(walls\.length > 1 && !reducedMotion\(\)\)/.test(CODE),
   );
-  // 压暗走 `brightness()` 而不是盖一层黑：黑层必须压在两个槽之上，而 html 只有两个伪元素。
+  // ⚠️ 淡入必须是 Web Animation，不能是 CSS `animation`/`transition`：`paint()` 每次改设置都
+  // 重写整个 `<style>`，替换样式表文本会让表里定义的每条动画重启 —— 连点时会把它刚叠上去的
+  // 盒子重置回 0。
+  check(
+    'the fade is attached to the box, not to the stylesheet',
+    /\.animate\(\[\{ opacity: 0 \}, \{ opacity: 1 \}\]/.test(CODE),
+  );
+  check(
+    'and nothing in the sheet transitions the boxes',
+    !/\[data-dshbg-wall\][^}]*transition:/.test(base.css),
+  );
+  // 压暗走 `brightness()` 而不是盖一层黑：黑层得压在整摞之上，而那上面没有元素可放。
   // 两条路径实测逐像素相同（最大差 2/255，8 位舍入），见 diag/brightness-equivalence.html。
   const dimmed = await emit({ dim: 15 });
   check(
     'the dim is a brightness filter, not a black sheet',
-    /filter: blur\(16px\) brightness\(0\.850\)/.test(dimmed.css),
+    boxesOf(dimmed)[0].style.filter === 'blur(16px) brightness(0.850)',
+    boxesOf(dimmed)[0].style.filter,
   );
   check('no black sheet is painted over the wallpaper', !dimmed.css.includes('background-color: rgb(0 0 0 / 0.'));
-  check('uses the gradient preset', base.css.includes('linear-gradient(135deg, #ff9a9e'));
-  check('blur value present', base.css.includes('filter: blur(16px)'));
-  // 壁纸层的几何必须走 vw/vh，不能走 inset。两者画出来的盒子一模一样，但对什么变化敏感
+  // 容器的几何必须走 vw/vh，不能走 inset。两者画出来的盒子一模一样，但对什么变化敏感
   // 完全相反：inset 相对视口解析，滚动条一出现整屏 filter 就得重做一次；vw/vh 相对初始
   // 包含块（含滚动条槽）解析，滚动条进出它不动。流式输出时正文列闪一帧就是这么来的。
   check(
     'the wallpaper box does not resize when a scrollbar comes and goes',
     /width: calc\(100vw \+ \d+px\)/.test(base.css) && /height: calc\(100vh \+ \d+px\)/.test(base.css),
   );
-  check('the wallpaper box never uses inset', !/html\[data-dshbg-on\]::before \{[^}]*inset:/.test(base.css));
+  check('the wallpaper box never uses inset', !/\[data-dshbg-stack\] \{[^}]*inset:/.test(base.css));
   check('the wallpaper blur is a cached layer', /will-change: filter/.test(base.css));
   check('clears html background', base.css.includes('html[data-dshbg-on] { background: transparent !important; }'));
   check('clears body background', base.css.includes('html[data-dshbg-on] body,'));
+
+  // ------------------------------------------------------- moving pictures, framing
+  // 三种来源画在同一套盒子里，但落地方式不同：照片是一张 JPEG，动图必须是原始字节（canvas
+  // 往返会把它压成一帧），视频根本没有 CSS 属性可以播放 —— 只能塞一个真的 <video>。
+  console.log('\nmoving pictures');
+  const PHOTO = { id: 'img-photo', kind: 'photo', dataUrl: 'data:photo', poster: 'data:photo', width: 800, height: 600 };
+  const CLIP = { id: 'img-clip', kind: 'video', blob: { name: 'clip' }, poster: 'data:clip-poster', width: 1920, height: 1080 };
+  const GIF = { id: 'img-gif', kind: 'animated', blob: { name: 'gif' }, poster: 'data:gif-poster', width: 640, height: 360 };
+
+  const photoRun = await emit({ mode: 'image', imageId: PHOTO.id }, { images: [PHOTO] });
+  check('a photo is painted from its own data URL', boxesOf(photoRun)[0].style.backgroundImage === 'url("data:photo")', boxesOf(photoRun)[0].style.backgroundImage);
+  check('and needs no element inside the box', boxesOf(photoRun)[0].children.length === 0);
+
+  const clipRun = await emit({ mode: 'image', imageId: CLIP.id }, { images: [CLIP] });
+  const clipBox = boxesOf(clipRun)[0];
+  check('a video box carries a real <video>', clipBox.children.length === 1 && clipBox.children[0].tagName === 'video', JSON.stringify(clipBox.children.map((child) => child.tagName)));
+  check('the still frame is written first, under it', clipBox.style.backgroundImage === 'url("data:clip-poster")', clipBox.style.backgroundImage);
+  check('the clip itself is a blob URL', clipBox.children[0].getAttribute('data-src') === 'blob:clip', clipBox.children[0].getAttribute('data-src'));
+  // 静音 + loop + autoplay + playsinline 四个一起才等于「当壁纸用」。少一个 muted 浏览器直接
+  // 拒绝自动播放；少一个 playsinline 移动端会想全屏播放。
+  // ⚠️ `muted` 还要**同时**写属性：这个 IDL 属性不反射到内容属性上，而自动播放策略读的是
+  // 元素解析时的静音状态。只写 `.muted = true` 在真机上会静默变成「不播」。
+  const clipVideo = clipBox.children[0];
+  check(
+    'and it is muted, looping, inline and told to start',
+    clipVideo.muted === true && clipVideo.loop === true && clipVideo.autoplay === true &&
+      clipVideo.hasAttribute('playsinline') && clipVideo.hasAttribute('muted'),
+    JSON.stringify({ muted: clipVideo.muted, loop: clipVideo.loop, autoplay: clipVideo.autoplay, attributes: clipVideo.attributes }),
+  );
+  check('the box remembers what it is holding', clipBox.getAttribute('data-dshbg-media') === 'video', clipBox.getAttribute('data-dshbg-media'));
+  check('the sheet sizes the video to the box', /\[data-dshbg-wall\] > video \{[^}]*object-fit: cover;/.test(base.css));
+
+  const gifRun = await emit({ mode: 'image', imageId: GIF.id }, { images: [GIF] });
+  const gifBox = boxesOf(gifRun)[0];
+  // 动图走 background-image 就够：它自己会动，不需要元素。但必须写 blob URL 而不是 poster，
+  // 否则「动图」只显示第一帧。
+  check('an animated picture plays from its own bytes', gifBox.style.backgroundImage === 'url("blob:gif")', gifBox.style.backgroundImage);
+  check('and needs no element of its own', gifBox.children.length === 0);
+
+  // 减少动态效果时一律退回静帧：不是「动得快一点」，是根本不动。
+  const calmRun = await emit({ mode: 'image', imageId: CLIP.id }, { images: [CLIP], reducedMotion: true });
+  check('reduced motion shows the poster instead of playing', boxesOf(calmRun)[0].children.length === 0 && boxesOf(calmRun)[0].style.backgroundImage === 'url("data:clip-poster")', boxesOf(calmRun)[0].style.backgroundImage);
+
+  console.log('\nframing');
+  // 取景位置必须同时落到 background-position 和 object-position 上，否则同一张照片和同一段
+  // 视频会按两套不同的构图显示。
+  const framed = await emit({ mode: 'image', imageId: CLIP.id, focusX: 20, focusY: 70 }, { images: [CLIP] });
+  const framedBox = boxesOf(framed)[0];
+  check('the still is cropped from the chosen point', framedBox.style.backgroundPosition === '20% 70%', framedBox.style.backgroundPosition);
+  check('and so is the clip, from the same point', framedBox.children[0].style.objectPosition === '20% 70%', framedBox.children[0].style.objectPosition);
+  check('the framing is per background, not global', CODE.includes("'focusX',") && CODE.includes("'focusY',"));
+  check('and it is clamped to the box', /focusX: clamp\(pick\('focusX'\), 0, 100\)/.test(CODE) && /focusY: clamp\(pick\('focusY'\), 0, 100\)/.test(CODE));
 
   console.log('\ntoken plumbing');
   check('captures the base surface', base.css.includes('--dshbg-raw-base: var(--dsw-alias-bg-base)'));
@@ -860,6 +1006,28 @@ async function main() {
   // 是一个整体，所以归属也跟输入框一致：实心模式就不磨砂。
   check('status row becomes a pane', glass.css.includes('[data-composer-dock]'));
   check('status row gets its own radius', /\[data-composer-dock\][^{]*\{[^}]*border-radius: 12px/.test(glass.css));
+  // 这条状态栏是**唯一**一个还留真 `backdrop-filter` 的 pane。别的表面底下只有糊过的壁纸，
+  // 再糊一遍是白花钱；它浮在转写区上面，消息滚到底时底下就是正文 —— 只给填充，那些字会
+  // 透上来糊成一片。输入框卡片同理，所以两处共用同一个 `menuBlurOf`。
+  check(
+    'status row is frosted, unlike every other pane',
+    /\[data-composer-dock\][^{]*\{[^}]*backdrop-filter: blur\(\d+px\) saturate\(160%\)/.test(glass.css),
+    glass.css.match(/\[data-composer-dock\][^{]*\{[^}]*\}/)?.[0],
+  );
+  // 「跟输入框一样的磨砂」不能靠两处各写一个数字来保证 —— 那是会漂的。把旋钮拧到一个
+  // 不常见的值，两处必须一起动。
+  const frostedTwice = await emit({ composerStyle: 'glass', menuBlur: 27 });
+  const blurOfRule = (css, selector) => {
+    const rule = css.match(new RegExp(`${selector}\\s*\\{[^}]*\\}`));
+    return rule === null ? null : (rule[0].match(/backdrop-filter: blur\((\d+)px\)/) || [])[1];
+  };
+  const dockBlur = blurOfRule(frostedTwice.css, '\\[data-composer-dock\\]');
+  const cardBlur = blurOfRule(frostedTwice.css, '\\[data-composer-card\\]');
+  check(
+    'the dock and the message box read the same blur knob',
+    dockBlur === '27' && cardBlur === '27',
+    `dock ${dockBlur} / card ${cardBlur}`,
+  );
   // 「回到最下面」那颗圆钮浮在正文上面，所以用比 pane 重的填充，并且要留住投影 ——
   // 换掉 box-shadow 就等于把宿主给的 --dsw-elevation-panel 弄丢了，它会看起来贴在纸上。
   check('jump-to-bottom disc is frosted', glass.css.includes('[class*="_toBottom"]:not([class*="_toBottomSlot"])'));
@@ -980,7 +1148,15 @@ async function main() {
   check('marquee travels at a constant speed', CODE.includes('loop / MARQUEE_SPEED'));
   // 动效搬到 CSS 里了。WAAPI 的动画是 JS 持有的对象，宿主每次重渲染把标题摘挂一次，
   // 挂在它身上的动画就被静默取消 —— 而声明式 CSS 在元素回到文档时会自己重新生效。
-  check('marquee motion is declarative, not WAAPI', !CODE.includes('crumb.animate(') && !CODE.includes('animation.cancel'));
+  // ⚠️ 这条只对标题成立：壁纸盒子反过来必须用 WAAPI（见 wallpaper 一节），所以不能全文禁。
+  const marqueeCode = CODE.slice(
+    CODE.indexOf('function installTitleMarquee('),
+    CODE.indexOf('function installComposerMenuGuard('),
+  );
+  check(
+    'marquee motion is declarative, not WAAPI',
+    marqueeCode.length > 0 && !marqueeCode.includes('.animate(') && !marqueeCode.includes('animation.cancel'),
+  );
   check('marquee animation is gated on the repeat attribute', /\[data-dshbg-mq\]\s*\{\s*animation: dshbg-marquee/.test(base.css.replace(/\n/g, '')));
   check('marquee distance travels through a custom property', CODE.includes('--dshbg-mq-loop'));
   // 重写自定义属性会让动画从零重新开始 —— 所以只在值真的变了才写。
@@ -1150,6 +1326,10 @@ async function main() {
   // off has to take it with it - otherwise a scrolling title keeps its ellipsis pinned.
   check('title clip goes away with the stylesheet', !off.css.includes('_crumb'));
   check('mode none leaves <html> unmarked', !off.documentElement.hasAttribute('data-dshbg-on'));
+  check(
+    'and takes the wallpaper container with it',
+    off.body.children.every((el) => !el.hasAttribute('data-dshbg-stack')),
+  );
   // 第二个座位是临时调参卡。它和设置页互不依赖：任何一边缺失都不能把另一边带崩。
   check('mode none still registers the config page', off.registered.length === 1, `got ${off.registered.length}`);
 
