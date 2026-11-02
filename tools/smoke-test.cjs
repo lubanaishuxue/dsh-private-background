@@ -493,6 +493,15 @@ async function main() {
   check('and so is the clip, from the same point', framedBox.children[0].style.objectPosition === '20% 70%', framedBox.children[0].style.objectPosition);
   check('the framing is per background, not global', CODE.includes("'focusX',") && CODE.includes("'focusY',"));
   check('and it is clamped to the box', /focusX: clamp\(pick\('focusX'\), 0, 100\)/.test(CODE) && /focusY: clamp\(pick\('focusY'\), 0, 100\)/.test(CODE));
+  // `.dshbg-add` 是图库网格里的一格，带 `aspect-ratio: 16 / 10`。把它复用到普通按钮上，
+  // 按钮会被拉成跟窗口一样高的虚线大框 —— 「居中」曾经就是这样变成 675px 的。测的是
+  // 「这个按钮没有格子几何」，不是某个类名。
+  check(
+    'the recentre action is a plain button, not a gallery tile',
+    /className: 'dshbg-plain'/.test(CODE) && !/className: 'dshbg-add'[\s\S]{0,120}text\.recenter/.test(CODE),
+  );
+  const plainRule = /\.dshbg-plain \{[^}]*\}/.exec(CODE);
+  check('and its rule carries no tile geometry', plainRule !== null && !/aspect-ratio/.test(plainRule[0]), plainRule === null ? 'missing .dshbg-plain' : plainRule[0]);
 
   console.log('\ntoken plumbing');
   check('captures the base surface', base.css.includes('--dshbg-raw-base: var(--dsw-alias-bg-base)'));

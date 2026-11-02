@@ -3181,6 +3181,11 @@ html[data-dshbg-on] select option:checked {
 .dshbg-tile-kind { position: absolute; left: 4px; bottom: 4px; padding: 1px 5px; border-radius: 6px; font-size: 10px; line-height: 1.4; color: #fff; background: rgb(0 0 0 / 55%); pointer-events: none; }
 .dshbg-add { border: 1px dashed var(--dsw-alias-border-l2, rgb(0 0 0 / 18%)); border-radius: 8px; background: transparent; cursor: pointer; color: var(--dsw-alias-label-secondary, #4b5563); font-size: 12px; aspect-ratio: 16 / 10; }
 .dshbg-add:hover { border-color: var(--dsw-alias-state-business-primary, #4176e6); color: var(--dsw-alias-label-primary, #0f1115); }
+/* An ordinary inline action - sized by its own text, not by a grid cell. .dshbg-add is a
+   gallery tile and carries aspect-ratio 16 / 10; sharing it with a normal button is how
+   居中 once became a 675px dashed frame. */
+.dshbg-plain { align-self: flex-start; border: 0.5px solid var(--dsw-alias-border-l2, rgb(0 0 0 / 18%)); border-radius: 8px; background: var(--dsw-alias-bg-layer-2, rgb(0 0 0 / 4%)); padding: 6px 14px; font-size: 12px; line-height: 1.4; cursor: pointer; color: var(--dsw-alias-label-secondary, #4b5563); }
+.dshbg-plain:hover { border-color: var(--dsw-alias-state-business-primary, #4176e6); color: var(--dsw-alias-label-primary, #0f1115); }
 /* The folder scan's own panel. It sits inside the gallery section but reads as a separate
    tray, because it is a temporary answer to "what is in this folder" rather than part of
    the gallery the user is building. */
@@ -3676,7 +3681,10 @@ html[data-dshbg-on] select option:checked {
                 'button',
                 {
                   type: 'button',
-                  className: 'dshbg-add',
+                  // ⚠️ Not `dshbg-add`. That class carries `aspect-ratio: 16 / 10` because it
+                  // is a *tile* in the gallery grid; reused here it stretched this button to
+                  // a 675px-tall dashed box around the word 居中.
+                  className: 'dshbg-plain',
                   onClick: () => patchSettings({ focusX: DEFAULTS.focusX, focusY: DEFAULTS.focusY }),
                 },
                 text.recenter,
