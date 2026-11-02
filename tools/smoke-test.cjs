@@ -1382,20 +1382,24 @@ async function main() {
   // 45% 是「字站得住、壁纸还是张照片」的位置。所以断言的是「它自己画底、不是 layer-1 的
   // lift」，以及「浓度明显高于对话区」—— 不是钉死某个数字。
   console.log('\nplugin market');
-  const MARKET_PAGE = '\\[data-dsh-market-plugins-tab="true"\\]\\[data-dsh-market-fullscreen="true"\\]';
+  // ⚠️ 这条断言的前一版钉在 `[data-dsh-market-plugins-tab][data-dsh-market-fullscreen]` 上，
+  // 而市场自己的渲染里 `fullscreen` 只在 `tab === "themes"` 时才写 —— 插件页上那个选择器
+  // **一个元素都不匹配**。规则在样式表里、断言全绿、屏幕上一像素都没变，这正是「绿灯可能
+  // 在保护 bug」。所以现在断言的是「填充落在根元素上」，也就是**那个确实存在的元素**。
   const marketRule = new RegExp(
-    `html\\[data-dshbg-on\\] ${MARKET_PAGE} \\{[^}]*?background: color-mix\\(in srgb, var\\(--dshbg-raw-base\\) (\\d+)%, transparent\\)`,
+    `html\\[data-dshbg-on\\] \\[data-dsh-market-root\\] \\{[^}]*?background: color-mix\\(in srgb, var\\(--dshbg-raw-base\\) (\\d+)%, transparent\\)`,
   );
   const marketFill = marketRule.exec(base.css);
-  check('the market page paints its own base instead of the layer-1 lift', marketFill !== null);
+  check('the market page paints its own base, on the root that every surface actually has', marketFill !== null);
   check(
     'and it is heavier than a chat pane, because its body text sits straight on the page',
     marketFill !== null && Number(marketFill[1]) >= 40,
     marketFill === null ? '' : `fill ${marketFill[1]}%`,
   );
+  // 反过来钉住那个已经死掉的选择器：填充一旦回到它身上，插件页又会变回「什么都不画」。
   check(
-    'and the rule is gated on the wallpaper switch, so turning it off restores the original',
-    base.css.includes(`html[data-dshbg-on] [data-dsh-market-plugins-tab="true"]`),
+    'and it is not gated on the attribute that only the themes tab sets',
+    !/data-dsh-market-fullscreen[^{]*\{[^}]*?background: color-mix/.test(base.css),
   );
   // 卡片要的是「标签纱」，不是再糊一遍：底下的壁纸已经被滑杆糊过了，再上 backdrop-filter
   // 看不出区别，只多一层合成。真正让卡片从塑料变玻璃的是填充 —— 中性色重混成 60% 暗会
@@ -1406,40 +1410,50 @@ async function main() {
       base.css,
     ),
   );
-  // 吸顶栏是这里唯一需要真模糊的地方：它底下滚过的是**内容**（卡片、价格、正文），不是
-  // 糊过的壁纸。50% 的 bg-base 挡不住文字，标题、搜索框、筛选条会被穿过去。
+  // 滚动容器自己的 8px 顶部内边距要摘掉：那块区域在吸顶栏盒子之外，只吃到根元素的填充，
+  // 密度比吸顶栏低一截 —— 屏幕上就是搜索框上面那条浅色带子。摘掉之后没有「栏外」了。
   check(
-    'the market sticky header occludes the cards scrolling under it',
-    /\[data-dsh-market-root\] \[class\$="_stickyHead"\] \{[^}]*?background: color-mix\(in srgb, var\(--dshbg-raw-base\) 45%, transparent\)[^}]*?backdrop-filter: blur\(/.test(
-      base.css,
-    ),
+    "the scroller's own top padding is removed, so nothing is left above the header at a different density",
+    /\[data-dsh-market-root\] \[class\$="_body"\] \{\s*padding-top: 0 !important/.test(base.css),
   );
-  // ⚠️ 这一条测的是**结构**，不是外观：宿主把 `top: -1px` 写死，于是吸顶栏自己的盒子
-  // 停在滚动容器 padding-box 顶边下方 1px 处，它上面那条「只有页面填充」的带子和它自己
-  // 差一截密度 —— 屏幕上就是一道缝。把盒子往上拉 `padding-top` 那么多（再用等量负
-  // `margin-top` 把搜索框按回原位），带子就没有了；`top: 0` 顺手补掉那 1px。
+  // ⚠️ 吸顶栏**不能**靠重填充去盖内容：它上面是页面（更浅），填充一重就变成一条带硬边的
+  // 深色横条 —— 缝只是往下挪了一行。真正抹掉卡片的是模糊，而且要比菜单的强得多：
+  // 一条 1px 的 16% 白描边在 `menuBlur` 下会活成一道软弧。所以测的是「填充是耳语、模糊够大」。
+  const headRule = /\[data-dsh-market-root\] \[class\$="_stickyHead"\] \{([^}]*)\}/.exec(base.css);
+  const headBody = headRule === null ? '' : headRule[1];
+  const headFill = /background: color-mix\(in srgb, var\(--dshbg-raw-base\) (\d+)%/.exec(headBody);
+  const headBlur = /backdrop-filter: blur\((\d+)px\)/.exec(headBody);
   check(
-    "the sticky header's box starts at the scroller's padding-box top, so no lighter band is left above it",
-    /\[class\$="_stickyHead"\] \{[^}]*?top: 0 !important[^}]*?margin-top: -8px !important[^}]*?padding-top: 8px !important/.test(
-      base.css,
-    ),
+    'the sticky header hides the cards behind it with blur, not with a heavy fill',
+    headFill !== null && Number(headFill[1]) <= 20,
+    headFill === null ? 'no fill' : `fill ${headFill[1]}%`,
+  );
+  check(
+    'and that blur is well past the menu value, because it has to erase 12px card titles',
+    headBlur !== null && Number(headBlur[1]) >= 32,
+    headBlur === null ? 'no blur' : `blur ${headBlur[1]}px`,
+  );
+  check(
+    "and the header's own box starts at the scroller's top edge, flush",
+    /top: 0 !important[^}]*?margin-top: 0 !important/.test(headBody),
   );
   // 宿主那条 14px 带子只写了 `background: inherit` —— 只继承颜色、不继承 `backdrop-filter`。
   // 再给它补一条模糊也不对：那会变成两个各自模糊、各自加填充的层，交界处照样是硬台阶。
-  // 正解是把它摘掉，让吸顶栏一个盒子盖住那一段。
   check(
     "the host's 14px strip is removed rather than re-blurred",
     /\[class\$="_stickyHead"\]::before \{\s*display: none !important/.test(base.css),
   );
+  // 只圆下面两个角：上面两个角紧贴着页面（同一密度），圆了就是在顶上挖两个浅色缺口 ——
+  // 又一个「缝」。下面圆角配上下面的空隙，才是「浮起来的一条」。
   check(
-    'the header is rounded like the cards it covers',
-    /\[class\$="_stickyHead"\] \{[^}]*?border-radius: 16px !important/.test(base.css),
+    'the header is rounded on the bottom only, because its top edge is flush with the page',
+    /border-radius: 0 0 16px 16px !important/.test(headBody),
   );
   // 最后一行是「已隐藏 N 个…」，第一排卡片以前直接顶上来。要用 padding 不能用 margin ——
   // margin 留的是**能看见卡片滚过去**的空隙。
   check(
     'and there is a filled gap below it instead of butting into the first row of cards',
-    /\[class\$="_stickyHead"\] \{[^}]*?padding-bottom: 10px !important/.test(base.css),
+    /padding-bottom: 10px !important/.test(headBody),
   );
 
   console.log('\nnative form controls');

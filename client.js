@@ -2371,10 +2371,9 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
      * the header is clean. It is the tell that only the visible bar was fixed.
      */
     function marketPageCss(settings) {
-      const page = '[data-dsh-market-plugins-tab="true"][data-dsh-market-fullscreen="true"]';
       const root = '[data-dsh-market-root]';
+      const body = `${root} [class$="_body"]`;
       const head = `${root} [class$="_stickyHead"]`;
-      const blur = menuBlurOf(settings);
       // ⚠️ **This page gets a heavier fill than a chat pane, and that is not a drift.**
       // `paneFill` is 22% because a transcript is carried by its own message bubbles - the
       // page underneath only has to tint. This page is the opposite: every card is 12px
@@ -2384,51 +2383,68 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       // number here - it is deliberately local, not a shared recipe.
       const pageMix = 'color-mix(in srgb, var(--dshbg-raw-base) 45%, transparent)';
       const wash = (percent) => `color-mix(in srgb, var(--dshbg-raw-label-0) ${percent}%, transparent)`;
-      // ⚠️ **The sticky header is one layer, not two, and its top edge is above the
-      // scrollport - both are structural, not cosmetic.**
+      // ⚠️ **The fill goes on `[data-dsh-market-root]`, and it used to go on a selector
+      // that never matched.**
       //
-      // The host wraps it in a `::before` that is 14px tall, sits `bottom: 100%` and only
-      // says `background: inherit`. Two consequences, and each one is a visible defect:
+      // The first version targeted `[data-dsh-market-plugins-tab=true][data-dsh-market-
+      // fullscreen=true]`. Read the market's own render: `fullscreen` is only set when
+      // `tab === "themes"`, so on the **plugins** tab that selector matched nothing. The
+      // rule was in the stylesheet, the assertion on it was green, and the page kept
+      // painting whatever its ancestors painted - which is why tuning 22% -> 45% changed
+      // nothing on screen and the band above the tab bar stayed unfilled.
       //
-      //   1. `inherit` copies the colour and **not** `backdrop-filter`, so the strip was
-      //      the one band that let text scroll through unblurred.
-      //   2. Once that strip is blurred too, it and the header are two *separate*
-      //      `backdrop-filter` elements. Each one blurs its own backdrop independently,
-      //      and each one adds its own fill - so the boundary between them is a hard
-      //      step, which is what reads as "一条缝隙" above the search box.
+      // `[data-dsh-market-root]` is the element that is actually there in every surface
+      // (plugins tab, sidebar panel, themes dialog). One fill, on the outermost market
+      // element, so the tab bar, the scroller and the empty strip between them all sit on
+      // the same density. Any of them left to an ancestor is a band at a different
+      // density, and a band at a different density is exactly what reads as "一条缝".
       //
-      // So the strip is removed rather than re-blurred, and the header is pulled up by
-      // exactly the scroller's own `padding-top` (`.nUhMVa_body` has `padding: 8px …`).
-      // `margin-top: -8px` cancels `padding-top: 8px`, so the search box does not move,
-      // but the header's **box** now starts at the scroller's padding-box top. There is
-      // no band of page fill left above it to be a step against. `top: 0` then sticks it
-      // flush - the host's `top: -1px` is what left a 1px slit.
+      // ⚠️ **The header is a frost pane, not a raised surface.**
       //
-      // `padding-bottom` is the opposite ask: the last line inside the header is the
-      // "已隐藏 N 个…" hint, and the first row of cards used to butt straight into it.
-      // It has to be padding and not margin - a margin would leave a see-through gap for
-      // the cards to scroll through.
-      const headerPad = 8;
+      // It has to sit on top of scrolling cards, so the obvious move is to fill it
+      // heavily. That is wrong here: the page above it is a *different, lighter* density,
+      // so any fill strong enough to hide the cards turns the header into a dark bar with
+      // a hard edge at its top - a new seam, one row down. What hides the cards instead is
+      // **blur**, and it has to be much stronger than the menus' value: `menuBlur` is
+      // tuned to soften a menu, this has to erase 12px card titles scrolling past. A 1px
+      // 16%-white card stroke is the worst case, and at `menuBlur` it survives as a soft
+      // arc. Doubling it and flooring at 32 is what actually removes it.
+      //
+      // So: a whisper of fill (enough that the bar is not pure glass) and a big blur. The
+      // header's density then equals the page's, which is the whole point - there is no
+      // step left to see.
+      //
+      // `::before` is the host's 14px strip above the header, `bottom: 100%`,
+      // `background: inherit`. `inherit` copies the colour and **not** `backdrop-filter`,
+      // so it was the one band that let text through unblurred. Re-blurring it is worse
+      // than removing it: two adjacent `backdrop-filter` elements blur their own backdrop
+      // independently and each adds its own fill, so the boundary between them is a hard
+      // step. It is removed, and the scroller's own `padding-top` is removed with it, so
+      // there is no strip left for it to cover.
+      const headerFill = 8;
+      const headerBlur = Math.min(64, Math.max(menuBlurOf(settings) * 2, 32));
+      const headerPad = 12;
       const headerGap = 10;
       return `
-${prefixed('html[data-dshbg-on]', [page])} {
-  background: ${pageMix} !important;
-}
 ${prefixed('html[data-dshbg-on]', [root])} {
+  background: ${pageMix} !important;
   --dsw-alias-settings-card-fill: ${wash(12)} !important;
   --dsw-alias-settings-card-stroke: ${wash(16)} !important;
   --dsw-specific-input-major: ${wash(8)} !important;
   --dsw-alias-bg-layer-2: ${wash(8)} !important;
 }
+${prefixed('html[data-dshbg-on]', [body])} {
+  padding-top: 0 !important;
+}
 ${prefixed('html[data-dshbg-on]', [head])} {
-  background: ${pageMix} !important;
-  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
-  backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  background: color-mix(in srgb, var(--dshbg-raw-base) ${headerFill}%, transparent) !important;
+  -webkit-backdrop-filter: blur(${headerBlur}px) saturate(150%) !important;
+  backdrop-filter: blur(${headerBlur}px) saturate(150%) !important;
   top: 0 !important;
-  margin-top: -${headerPad}px !important;
+  margin-top: 0 !important;
   padding-top: ${headerPad}px !important;
   padding-bottom: ${headerGap}px !important;
-  border-radius: 16px !important;
+  border-radius: 0 0 16px 16px !important;
 }
 ${prefixed('html[data-dshbg-on]', [`${head}::before`])} {
   display: none !important;
