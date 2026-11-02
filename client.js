@@ -1025,6 +1025,15 @@ window.__ModuleLoader__.load({
     async function addImage(file) {
       const ingested = await ingestFile(file);
       const digest = await digestOfIngested(ingested);
+      // ⚠️ **A record with no fingerprint cannot match, so comparing is meaningless until
+      // they all have one.** The backfill runs 1.2s after boot, which leaves a window - and
+      // "reload the plugin, then immediately try uploading the same picture again" is
+      // exactly the order someone testing this would use. Closing the window here costs one
+      // extra pass on the first upload of a session and nothing afterwards, because the
+      // backfill skips records that already carry a digest.
+      if ((state.images === null ? [] : state.images).some((record) => typeof record.digest !== 'string')) {
+        await backfillDigests();
+      }
       // The same artwork twice is not two tiles. Picking a file that is already in the
       // gallery means "use this one", so the duplicate is selected instead of added - and
       // the caller is told, because silently doing nothing looks like a failed upload.

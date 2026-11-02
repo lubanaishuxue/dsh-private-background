@@ -597,6 +597,34 @@ const presetFor = (win, key) => {
   check('an old picture is refused too once it has a fingerprint', legacyDuplicate === 'duplicate', String(legacyDuplicate));
   check('and the old gallery is still one tile', legacy.getSnapshot().images.length === 1, `${legacy.getSnapshot().images.length}`);
 
+  // 但用户不会先等补指纹再上传。补指纹是 boot 之后延迟 1.2 秒跑的，而「刚刷新就去点添加」
+  // 正是最可能的顺序 —— 那个窗口里比的是「新指纹 vs 一堆不存在的值」，永远不命中。所以
+  // addImage 自己先补齐。这里**不手动调 backfillDigests**，测的就是那个窗口不存在。
+  const lazyWin = makeWindow();
+  const lazy = makeStore(
+    lazyWin,
+    [{ id: 'img-lazy', dataUrl: 'data:lazy', addedAt: 0 }],
+    async () => still('data:lazy'),
+  );
+  lazy.boot();
+  await tick();
+  let lazyDuplicate = null;
+  try {
+    await lazy.addImage({});
+  } catch (failure) {
+    lazyDuplicate = failure && failure.message;
+  }
+  check(
+    'an upload still matches a gallery whose fingerprints are not filled in yet',
+    lazyDuplicate === 'duplicate',
+    String(lazyDuplicate),
+  );
+  check(
+    'and that gallery does not grow either',
+    lazy.getSnapshot().images.length === 1,
+    `${lazy.getSnapshot().images.length}`,
+  );
+
   // ------------------------------------------------------------- deleting the active
   api.patchSettings({ mode: 'image', imageId: b.id });
   await api.removeImage(b.id);
