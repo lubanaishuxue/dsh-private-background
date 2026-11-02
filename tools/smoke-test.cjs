@@ -467,6 +467,22 @@ async function main() {
     'and galleries saved before this existed get their fingerprints backfilled',
     CODE.includes('async function backfillDigests') && /typeof record\.digest !== 'string'/.test(CODE),
   );
+  // 文件夹扫描：一次选整个目录，里面已经加过的不列出来。浏览器不给路径，也不给「重开上次
+  // 那个文件」的权限，所以判重只能靠上传时记下的 name/size/mtime 三元组。
+  check('a whole folder can be scanned instead of picking files one by one', CODE.includes('webkitdirectory'));
+  check(
+    'and the scan leaves out what the gallery already holds',
+    /record\.source\.name\}\|\$\{record\.source\.size\}\|\$\{record\.source\.lastModified\}/.test(CODE),
+  );
+  check(
+    'the scan reads that triple off the record, not off the file',
+    /record\.source !== undefined && record\.source !== null/.test(CODE),
+  );
+  // 缩略图是 object URL，成批释放 —— 按格释放会把还在列表里的那张也弄空。
+  check(
+    'and its thumbnails are given back in a batch',
+    /browseUrls\.current\.forEach\(\(url\) => window\.URL\.revokeObjectURL\(url\)\)/.test(CODE),
+  );
 
   console.log('\nframing');
   // 取景位置必须同时落到 background-position 和 object-position 上，否则同一张照片和同一段

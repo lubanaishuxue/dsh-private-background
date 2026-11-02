@@ -144,6 +144,11 @@ window.__ModuleLoader__.load({
         gallery: '背景图库',
         galleryHint: '点一张图立即切换；图库里的图都保存在本机。',
         add: '添加图片或动图',
+        browse: '浏览文件夹',
+        browseHint: '选一个文件夹，里面已经加过的不会列出来；点一张加一张。',
+        browseEmpty: '这个文件夹里没有新的图片或视频。',
+        browseHidden: '张已经在图库里，没有列出来。',
+        browseClose: '收起',
         empty: '还没有图片。点「添加图片或动图」选一张。',
         framing: '取景位置',
         focusX: '左右',
@@ -201,6 +206,11 @@ window.__ModuleLoader__.load({
         gallery: 'Gallery',
         galleryHint: 'Click an image to switch to it. Everything is stored locally.',
         add: 'Add image or clip',
+        browse: 'Browse a folder',
+        browseHint: 'Pick a folder; anything already in the gallery is left out. Click a tile to add it.',
+        browseEmpty: 'Nothing new in that folder.',
+        browseHidden: 'already in the gallery, so not listed.',
+        browseClose: 'Close',
         empty: 'No images yet. Use "Add image or clip" to pick one.',
         framing: 'Framing',
         focusX: 'Horizontal',
@@ -1046,10 +1056,21 @@ window.__ModuleLoader__.load({
         commit({}, { mode: 'image', imageId: duplicate.id });
         throw new Error('duplicate');
       }
+      // Where the picture came from - **not** a path. A browser never sees a real path, and a
+      // page cannot re-open a file it was handed earlier even if it did; the security model
+      // is the reason wallpapers are copied into IndexedDB instead of referenced in place.
+      // This triple is what does survive, and it is enough to recognise "the folder still
+      // holds the file I already added" without decoding every picture in it.
+      const source = {
+        name: String((file && file.name) || ''),
+        size: Number((file && file.size) || 0),
+        lastModified: Number((file && file.lastModified) || 0),
+      };
       const record = {
         id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         addedAt: Date.now(),
         digest,
+        source,
         ...ingested,
       };
       await putImageRecord(record);
@@ -3160,6 +3181,13 @@ html[data-dshbg-on] select option:checked {
 .dshbg-tile-kind { position: absolute; left: 4px; bottom: 4px; padding: 1px 5px; border-radius: 6px; font-size: 10px; line-height: 1.4; color: #fff; background: rgb(0 0 0 / 55%); pointer-events: none; }
 .dshbg-add { border: 1px dashed var(--dsw-alias-border-l2, rgb(0 0 0 / 18%)); border-radius: 8px; background: transparent; cursor: pointer; color: var(--dsw-alias-label-secondary, #4b5563); font-size: 12px; aspect-ratio: 16 / 10; }
 .dshbg-add:hover { border-color: var(--dsw-alias-state-business-primary, #4176e6); color: var(--dsw-alias-label-primary, #0f1115); }
+/* The folder scan's own panel. It sits inside the gallery section but reads as a separate
+   tray, because it is a temporary answer to "what is in this folder" rather than part of
+   the gallery the user is building. */
+.dshbg-picks-row { display: flex; align-items: center; gap: 14px; }
+.dshbg-picks { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 10px; background: var(--dsw-alias-bg-layer-2, rgb(0 0 0 / 4%)); }
+.dshbg-pick { padding: 0; cursor: pointer; }
+.dshbg-pick-name { display: block; position: absolute; left: 4px; right: 4px; bottom: 4px; padding: 1px 5px; border-radius: 6px; font-size: 10px; line-height: 1.4; color: #fff; background: rgb(0 0 0 / 55%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; pointer-events: none; }
 .dshbg-switch { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
 .dshbg-switch input { position: absolute; opacity: 0; pointer-events: none; }
 .dshbg-switch-track { position: relative; flex: none; width: 34px; height: 20px; margin-top: 1px; border-radius: 10px; background: var(--dsw-alias-bg-layer-3, rgb(0 0 0 / 18%)); transition: background 0.15s ease; }
@@ -3200,10 +3228,27 @@ html[data-dshbg-on] select option:checked {
       const [error, setError] = useState(null);
       const [diag, setDiag] = useState(readDiagnostics);
       const fileInput = useRef(null);
+      const dirInput = useRef(null);
+      // What a folder scan turned up: the files still worth offering, and how many were left
+      // out because the gallery already holds them. `null` means no scan has been run.
+      const [browse, setBrowse] = useState(null);
+      // The scan's thumbnails are object URLs, and they are borrowed rather than owned. They
+      // are released as a batch - on the next scan and on unmount - instead of per tile,
+      // because a tile that stays in the list keeps the same URL and revoking it there would
+      // blank a thumbnail that is still on screen.
+      const browseUrls = useRef([]);
 
       useEffect(() => {
         boot();
       }, []);
+
+      useEffect(
+        () => () => {
+          browseUrls.current.forEach((url) => window.URL.revokeObjectURL(url));
+          browseUrls.current = [];
+        },
+        [],
+      );
 
       /**
        * Tell the stylesheet that the settings page is on screen. Only the full detail
@@ -3235,6 +3280,63 @@ html[data-dshbg-on] select option:checked {
           else setError(text.readFail);
         });
       }, [text.duplicate, text.readFail, text.tooLarge, text.tooLargeMedia, text.videoFail]);
+
+      /**
+       * What a folder scan leaves out, and why it can only be a first pass.
+       *
+       * The gallery cannot be asked "do you already hold this file" by path: a browser never
+       * sees a real path, and a `File` does not survive a reload. What does survive is the
+       * `name|size|lastModified` triple, recorded on every upload since this feature landed,
+       * so a folder that still holds the same file is recognised without decoding a single
+       * picture.
+       *
+       * The gap: a picture added by an older build has no `source`, so it cannot be matched
+       * here and will be offered again. `addImage` still refuses it by fingerprint, so the
+       * cost is a tile that turns out to be a duplicate when clicked - not a duplicate in the
+       * gallery. That is the right way round: offering something twice is an annoyance,
+       * silently hiding a picture the user is looking for is not.
+       */
+      const scanFolder = (fileList) => {
+        setError(null);
+        browseUrls.current.forEach((url) => window.URL.revokeObjectURL(url));
+        browseUrls.current = [];
+        const files = Array.from(fileList || []);
+        const media = files.filter((file) => /^(image|video)\//.test(String(file.type || '')));
+        const known = new Set(
+          (images === null ? [] : images)
+            .filter((record) => record.source !== undefined && record.source !== null)
+            .map((record) => `${record.source.name}|${record.source.size}|${record.source.lastModified}`),
+        );
+        const fresh = media.filter((file) => !known.has(`${file.name}|${file.size}|${file.lastModified}`));
+        const items = fresh.map((file) => ({ file, url: window.URL.createObjectURL(file) }));
+        browseUrls.current = items.map((item) => item.url);
+        const relative = files.find((file) => String(file.webkitRelativePath || '').indexOf('/') > 0);
+        setBrowse({
+          dir: relative === undefined ? '' : String(relative.webkitRelativePath).split('/')[0],
+          items,
+          hidden: media.length - fresh.length,
+        });
+      };
+
+      const addFromBrowse = (item) => {
+        setError(null);
+        addImage(item.file)
+          .then(() => {
+            // The URL is deliberately not revoked here: the same object is about to be gone
+            // from the list, but a scan still holds the batch, and revoking one tile in the
+            // middle of a batch is how a thumbnail elsewhere goes blank.
+            setBrowse((prev) =>
+              prev === null ? null : { ...prev, items: prev.items.filter((entry) => entry !== item) },
+            );
+          })
+          .catch((failure) => {
+            const code = failure && failure.message;
+            if (code === 'duplicate') setError(text.duplicate);
+            else if (code === 'too-large') setError(text.tooLarge);
+            else if (code === 'too-large-media') setError(text.tooLargeMedia);
+            else setError(text.readFail);
+          });
+      };
 
       const palette = fontPalette(settings, tone);
       const previewColor = palette === null ? null : palette.primary;
@@ -3459,6 +3561,89 @@ html[data-dshbg-on] select option:checked {
               ),
             ),
             gallery.length === 0 ? h('p', { className: 'dshbg-hint' }, text.empty) : null,
+            h(
+              'input',
+              {
+                // React has no first-class prop for this one, and passing an unknown one
+                // through JSX is how it gets silently dropped by some versions. Setting the
+                // attribute on the node is what actually turns the picker into a folder
+                // picker. `directory` is the Firefox spelling, kept so the markup says what
+                // it means.
+                ref: (node) => {
+                  dirInput.current = node;
+                  if (node !== null && !node.hasAttribute('webkitdirectory')) {
+                    node.setAttribute('webkitdirectory', '');
+                    node.setAttribute('directory', '');
+                  }
+                },
+                type: 'file',
+                multiple: true,
+                style: { display: 'none' },
+                onChange: (event) => {
+                  scanFolder(event.target.files);
+                  event.target.value = '';
+                },
+              },
+            ),
+            h(
+              'div',
+              { className: 'dshbg-picks-row' },
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'dshbg-link',
+                  onClick: () => dirInput.current && dirInput.current.click(),
+                },
+                text.browse,
+              ),
+              browse === null
+                ? null
+                : h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'dshbg-link',
+                      onClick: () => {
+                        setBrowse(null);
+                        browseUrls.current.forEach((url) => window.URL.revokeObjectURL(url));
+                        browseUrls.current = [];
+                      },
+                    },
+                    text.browseClose,
+                  ),
+            ),
+            browse === null
+              ? null
+              : h(
+                  'div',
+                  { className: 'dshbg-picks' },
+                  h('div', { className: 'dshbg-label' }, browse.dir),
+                  browse.items.length === 0
+                    ? h('p', { className: 'dshbg-hint' }, text.browseEmpty)
+                    : h(
+                        'div',
+                        { className: 'dshbg-grid' },
+                        ...browse.items.map((item) =>
+                          h(
+                            'button',
+                            {
+                              key: `${item.file.name}|${item.file.size}|${item.file.lastModified}`,
+                              type: 'button',
+                              className: 'dshbg-tile dshbg-pick',
+                              title: item.file.name,
+                              style: { backgroundImage: `url("${item.url}")` },
+                              onClick: () => addFromBrowse(item),
+                            },
+                            h('span', { className: 'dshbg-pick-name' }, item.file.name),
+                          ),
+                        ),
+                      ),
+                  browse.hidden === 0
+                    ? null
+                    : h('p', { className: 'dshbg-hint' }, `${browse.hidden} ${text.browseHidden}`),
+                  h('p', { className: 'dshbg-hint' }, text.browseHint),
+                ),
             h('p', { className: 'dshbg-hint' }, text.galleryHint),
           ),
         );

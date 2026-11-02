@@ -563,6 +563,31 @@ const presetFor = (win, key) => {
   await dupApi.addImage({});
   check('a different picture still goes in', dupSnap().images.length === 2, `${dupSnap().images.length}`);
 
+  // 每条上传都记下「它是从哪来的」—— 不是路径（浏览器根本不给），是 name/size/mtime 这个
+  // 三元组。文件夹扫描靠它判断「这个文件我已经有了」，不用把整张图解码一遍。
+  pending = still('data:three');
+  await dupApi.addImage({ name: 'holiday.jpg', size: 4096, lastModified: 1700000000000 });
+  const traced = dupSnap().images.at(-1);
+  check(
+    'an upload remembers where it came from',
+    traced.source !== undefined &&
+      traced.source !== null &&
+      traced.source.name === 'holiday.jpg' &&
+      traced.source.size === 4096 &&
+      traced.source.lastModified === 1700000000000,
+    JSON.stringify(traced.source),
+  );
+  // 反过来说：改名换 size 也躲不过去 —— 判重认的是内容，不是那个三元组。
+  pending = still('data:three');
+  let renamed = null;
+  try {
+    await dupApi.addImage({ name: 'renamed.jpg', size: 1, lastModified: 2 });
+  } catch (failure) {
+    renamed = failure && failure.message;
+  }
+  check('renaming a file does not get it past the fingerprint', renamed === 'duplicate', String(renamed));
+  check('and the gallery is still three tiles', dupSnap().images.length === 3, `${dupSnap().images.length}`);
+
   // 老图库里的记录没有指纹，直接比就永远对不上 —— 这个功能对存量图片会整个失效，而且没有
   // 任何迹象。所以 boot 之后补算一遍写回去，测的是「补完之后存量图片也拦得住」。
   const legacyWin = makeWindow();

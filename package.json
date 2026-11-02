@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-custom-background",
-  "version": "1.2.6",
+  "version": "1.3.0",
   "private": true,
   "description": "为 DSH 界面设置自定义背景：本地图片、动图（GIF / 动态 WebP / APNG）、视频、渐变或纯色，可调模糊、压暗、取景位置，以及面板 / 对话区 / 输入框不透明度，输入框与代码块可切换液态玻璃质感。默认只作用于工作区，左侧对话栏保持原样。",
   "type": "module",
