@@ -2185,9 +2185,29 @@ ${restores}
      * It is keyed on `role="dialog"` + `aria-modal` because those are semantics the host's
      * JSX owns: a hashed class would break on the next build and the rule would fail
      * silently.
+     *
+     * **⚠️ The panel is not the only thing darkening the artwork, and that is what the floor
+     * of 46% missed.** The settings modal ships its own scrim as a *sibling* of the panel -
+     * `div[role=presentation] > div[aria-hidden]` painting `--dsw-alias-bg-mask-1`, which is
+     * `rgba(0,0,0,.5)` in the dark theme. Panel at 46% and scrim at 50% compose to
+     * `1 - .54 x .50 = 73%` opaque, so the wallpaper reached the screen at 27% and the whole
+     * page read as a black slab no matter how the fill slider was set. Two layers each
+     * "half" is the same trap as `1-(1-a)²` in the sidebar: the number on the slider is not
+     * the number on the screen. The scrim is pulled to 20% so that the panel's own fill is
+     * what decides, which is also the only thing the user can see a slider for.
+     *
+     * **⚠️ The cards inside the dialog cannot use their own tokens at the global density.**
+     * `--dsw-alias-settings-card-fill` and `--dsw-alias-bg-module-platform` are opaque
+     * neutrals (#2c2c2e / #353638) whose whole job is to read as "this control is raised
+     * above the panel". Remixed to 60-odd percent they land on top of an already-transparent
+     * panel and compose back to ~91% - the panel turns to glass and the cards stay plastic.
+     * They are re-expressed as a wash of the *label* colour instead: a white veil stays
+     * lighter than whatever is under it on any wallpaper, whereas a half-transparent neutral
+     * can end up the darkest thing on a bright one. Same reasoning as the dialog's own
+     * controls in ENGINEERING.md A.9, and the same reason `-nav-item-active` is included.
      */
     function dialogCss(settings) {
-      const fill = Math.max(menuFillOf(settings), 46);
+      const fill = Math.max(menuFillOf(settings), 36);
       const blur = menuBlurOf(settings);
       return `
 ${prefixed('html[data-dshbg-on]', ['[role="dialog"][aria-modal="true"]'])} {
@@ -2195,6 +2215,13 @@ ${prefixed('html[data-dshbg-on]', ['[role="dialog"][aria-modal="true"]'])} {
   -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
   backdrop-filter: blur(${blur}px) saturate(150%) !important;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dshbg-raw-label-0) 14%, transparent) !important;
+  --dsw-alias-settings-card-fill: color-mix(in srgb, var(--dshbg-raw-label-0) 10%, transparent) !important;
+  --dsw-alias-bg-module-platform: color-mix(in srgb, var(--dshbg-raw-label-0) 9%, transparent) !important;
+  --dsw-specific-sidebar-nav-item-active: color-mix(in srgb, var(--dshbg-raw-label-0) 17%, transparent) !important;
+  --dsw-specific-sidebar-nav-item-hover: color-mix(in srgb, var(--dshbg-raw-label-0) 8%, transparent) !important;
+}
+${prefixed('html[data-dshbg-on]', ['div[role="presentation"]:has(> [role="dialog"][aria-modal="true"]) > div[aria-hidden="true"]'])} {
+  background-color: rgb(0 0 0 / 20%) !important;
 }
 html[data-dshbg-on] dialog::backdrop {
   background: rgb(0 0 0 / 26%) !important;
@@ -2270,17 +2297,153 @@ html[data-dshbg-on]:has(dialog[open]) ${frameSelector()}::before {
      * the next launch. Hiding it here is scoped to the header slot, so the dock entry and
      * the statistics dialog are untouched.
      */
-    const CM_PANELS = ['.cm-section', '.cm-footer-stack.simple', '.cm-simple-summary'];
+    const CM_FLOATS = ['.cm-footer-stack.simple', '.cm-simple-summary'];
+    const CM_SECTION = '.cm-section';
     const CM_HEADER_ENTRY = '[data-slot="conversation.session.header.actions"] .cm-btn';
 
+    /**
+     * ⚠️ `.cm-section` gets **no** fill of its own, and that is the whole point.
+     *
+     * The plugin paints it with `background: rgb(from var(--dsw-alias-bg-layer-2) r g b / 1)`.
+     * The `/ 1` puts the alpha back to 1 no matter how translucent the token became, so the
+     * remix never reached the screen - the section was opaque by construction. It then sits
+     * *inside* the settings dialog, which already paints a fill: the content column got two
+     * coats while the nav beside it got one, and the wallpaper stopped dead at a vertical
+     * line down the middle of the panel. That is the "费用 is a blackboard, 桌宠 is glass"
+     * difference - the 桌宠 section paints no slab at all.
+     *
+     * Giving it a fill of our own (the old recipe, `l2` at `surface`%) only made the second
+     * coat thinner, not absent: at surface 50 the column still composed to ~75% against the
+     * nav's 49%. A child of a filled panel must be transparent, full stop.
+     *
+     * The two sidebar blocks stay filled - they are not inside any panel.
+     */
     function costMeterCss(settings) {
       const alpha = surfaceOf(settings);
       return `
-${prefixed('html[data-dshbg-on] body', CM_PANELS)} {
+${prefixed('html[data-dshbg-on] body', [CM_SECTION])} {
+  background: transparent !important;
+}
+${prefixed('html[data-dshbg-on] body', CM_FLOATS)} {
   background: color-mix(in srgb, var(--dshbg-raw-l2) ${alpha}%, transparent) !important;
 }
 ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
   display: none !important;
+}
+`;
+    }
+
+    /**
+     * The plugin market's fullscreen page (`dshmarket`, the 插件市场 tab).
+     *
+     * It paints its own backdrop with `--dsw-alias-bg-layer-1`, which is already in the
+     * remix list - so it is translucent, not a black slab. What is wrong is the *lift*:
+     * `layer-1` means "one step above a pane" and carries +8 points of opacity. This
+     * element is not above a pane, it **is** the page - so opening the market drops the
+     * whole window eight points darker than the chat you just came from, and it reads as
+     * a separate slab even though every value in it is the remixed one.
+     *
+     * Keyed on the plugin's own `data-dsh-market-*` markers rather than a hashed class:
+     * they are its documented fullscreen switch and survive a rebuild of its stylesheet.
+     * Its own rule also writes `inset: 0`, so this element alone covers the window - the
+     * `[role=dialog]` wrapper around it never paints and needs nothing here.
+     *
+     * ⚠️ **The cards get a label wash, not a `backdrop-filter`.** The obvious reading of
+     * "make it frosted like the dialog" is to copy the dialog's blur - but the thing behind
+     * a card here is the wallpaper, and that layer is already blurred by the slider. Blurring
+     * a blurred image is invisible and costs one compositor layer per card. What actually
+     * separates glass from plastic is the *fill*: `--dsw-alias-settings-card-fill` is an
+     * opaque neutral (#2c2c2e) that the remix turns into ~60% dark, so the card reads as a
+     * slab. A 10% white wash reads as glass on any wallpaper, and unlike a neutral it never
+     * turns into the darkest thing on the screen. Same recipe as the settings dialog's cards.
+     *
+     * ⚠️ **The sticky header is the one place here that needs a real blur.** Its own rule is
+     * `background: var(--dsw-alias-bg-base)`, which the remix turns into 50% - and what
+     * scrolls under it is *content*: cards, prices, body text. At 50% they show straight
+     * through the title, the search box and the filter chips. Judgement is the same one used
+     * everywhere else - it is not "is this important", it is "what is underneath". Under a
+     * sticky header the answer is text, so it gets `paneFill` + `menuBlur`, exactly like the
+     * composer dock. Under a card the answer is wallpaper, so it gets the wash only.
+     *
+     * ⚠️ **And its `::before` needs the same treatment.** That pseudo-element is a 14px strip
+     * sitting *above* the header with `background: inherit` - so it picks up the fill but not
+     * the blur, and that one band keeps showing unblurred text sliding past while the rest of
+     * the header is clean. It is the tell that only the visible bar was fixed.
+     */
+    function marketPageCss(settings) {
+      const page = '[data-dsh-market-plugins-tab="true"][data-dsh-market-fullscreen="true"]';
+      const root = '[data-dsh-market-root]';
+      const head = `${root} [class$="_stickyHead"]`;
+      const blur = menuBlurOf(settings);
+      // ⚠️ **This page gets a heavier fill than a chat pane, and that is not a drift.**
+      // `paneFill` is 22% because a transcript is carried by its own message bubbles - the
+      // page underneath only has to tint. This page is the opposite: every card is 12px
+      // body text sitting straight on the page, so wherever the wallpaper turns bright the
+      // text goes with it. 45% is where that stops happening and the wallpaper still reads
+      // as a picture behind glass. If it ever needs to match the chat exactly, change the
+      // number here - it is deliberately local, not a shared recipe.
+      const pageMix = 'color-mix(in srgb, var(--dshbg-raw-base) 45%, transparent)';
+      const wash = (percent) => `color-mix(in srgb, var(--dshbg-raw-label-0) ${percent}%, transparent)`;
+      return `
+${prefixed('html[data-dshbg-on]', [page])} {
+  background: ${pageMix} !important;
+}
+${prefixed('html[data-dshbg-on]', [root])} {
+  --dsw-alias-settings-card-fill: ${wash(12)} !important;
+  --dsw-alias-settings-card-stroke: ${wash(16)} !important;
+  --dsw-specific-input-major: ${wash(8)} !important;
+  --dsw-alias-bg-layer-2: ${wash(8)} !important;
+}
+${prefixed('html[data-dshbg-on]', [head])} {
+  background: ${pageMix} !important;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
+}
+${prefixed('html[data-dshbg-on]', [`${head}::before`])} {
+  background: ${pageMix} !important;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
+}
+`;
+    }
+
+    /**
+     * Native form-control popups - the `<select>` option list.
+     *
+     * ⚠️ **The dropdown is not a DOM element.** Chromium paints it in its own widget, so
+     * nothing here can be a wallpaper or a blur; the most that is reachable is its colour.
+     * Two things decide that colour, and both are outside the dialog's recipe:
+     *
+     *   1. The list's **backdrop** follows the page's `color-scheme`, which the host leaves
+     *      light - so the list is painted over white.
+     *   2. The list's **fill** is the `<select>`'s own `background-color`. The host styles
+     *      selects with `--dsw-alias-bg-base` (`.iy1EbG_field select`), and this plugin
+     *      remixes that token to a translucent `color-mix` - so the fill arrives at the
+     *      popup as "55% of #151517" and composites over the white backdrop.
+     *
+     * `(127, 127, 128)` - the flat grey in the bug report - is exactly `#151517` at 55%
+     * over `#ffffff`. Nothing about the dialog was wrong: the popup was reading a
+     * translucent colour as if it were opaque, and a separate widget has no way to know
+     * what is behind it. **A surface that is drawn outside the document's stacking context
+     * cannot be translucent, ever.**
+     *
+     * So the recipe is the honest one - opaque rows, widget in dark mode. `color-scheme:
+     * dark` also darkens the sliver of backdrop around the rows, the popup's scrollbar and
+     * the hover highlight, which otherwise stays the light-theme blue.
+     */
+    function formControlCss() {
+      return `
+html[data-dshbg-on] select {
+  color-scheme: dark !important;
+}
+html[data-dshbg-on] select option,
+html[data-dshbg-on] select optgroup {
+  background-color: var(--dshbg-raw-l2, #2c2c2e) !important;
+  color: var(--dshbg-raw-label-0, #f9fafb) !important;
+}
+html[data-dshbg-on] select option:checked {
+  background-color: var(--dsw-alias-state-business-primary, #3b82f6) !important;
+  color: #fff !important;
 }
 `;
     }
@@ -2297,6 +2460,8 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
         configPageCss(settings),
         fontCss(settings, tone),
         costMeterCss(settings),
+        marketPageCss(settings),
+        formControlCss(),
         titleCss(),
         // Last, so the frosted panes are not re-painted by anything above.
         transcriptGlassCss(settings),

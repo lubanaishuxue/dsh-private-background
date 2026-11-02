@@ -1230,7 +1230,12 @@ async function main() {
       wide.css,
     ),
   );
-  check('whole-window strip does not blur what it covers', !/::before \{[\s\S]{0,400}?backdrop-filter/.test(wide.css));
+  // 扫的是「画那条通栏渐变的那条规则」，不是「任何一个 ::before」—— 插件市场吸顶栏的
+  // 14px 带子也是 ::before，它底下滚的是文字、本来就该模糊。按选择器种类扫会误伤。
+  check(
+    'whole-window strip does not blur what it covers',
+    !/::before \{ background: linear-gradient\(to right,[\s\S]{0,400}?backdrop-filter/.test(wide.css),
+  );
   check(
     'work-area strip is still never glass',
     !/::before \{ background: linear-gradient/.test(base.css),
@@ -1269,6 +1274,42 @@ async function main() {
       base.css,
     ),
   );
+  // ⚠️ 面板和遮罩是**两层**，各自「一半」合成出来是 73% 不透明 —— 壁纸只剩 27%，
+  // 在深色壁纸上等于没有。滑杆上的数字不是屏幕上的数字。这条断言算的是后者：
+  // 以后谁把任何一层调回去，这里就会红，而不是等用户再截一张黑板。
+  const dialogFill = Number(
+    (base.css.match(/\[role="dialog"\]\[aria-modal="true"\] \{[^}]*?var\(--dshbg-raw-base\) (\d+)%/) || [])[1],
+  );
+  const scrimFill = Number(
+    (base.css.match(/\[role="presentation"\]:has\(> \[role="dialog"\]\[aria-modal="true"\]\) > div\[aria-hidden="true"\] \{[^}]*?rgb\(0 0 0 \/ (\d+)%\)/) ||
+      [])[1],
+  );
+  const composite = 1 - (1 - dialogFill / 100) * (1 - scrimFill / 100);
+  check(
+    `the panel and its own scrim do not add up to a slab (${Math.round(composite * 100)}% opaque)`,
+    dialogFill > 0 && scrimFill > 0 && composite <= 0.6,
+  );
+  // 卡片不能按全局密度重混：那是「控件凸起」的不透明中性色，压在半透明面板上合成回 91%，
+  // 面板成了玻璃、卡片还是塑料。改成标签色的纱 —— 白纱在任何壁纸上都比底下亮，
+  // 而半透明中性色在亮壁纸上会变成最暗的那块。
+  check(
+    'cards inside the dialog are a label wash, not a remixed neutral',
+    /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*--dsw-alias-settings-card-fill: color-mix\(in srgb, var\(--dshbg-raw-label-0\)/.test(
+      base.css,
+    ),
+  );
+  check(
+    'the raised nav item takes the same wash',
+    /\[role="dialog"\]\[aria-modal="true"\] \{[^}]*--dsw-specific-sidebar-nav-item-active: color-mix\(in srgb, var\(--dshbg-raw-label-0\)/.test(
+      base.css,
+    ),
+  );
+  check(
+    'the wash never reuses the opaque neutral it replaces',
+    !/\[role="dialog"\]\[aria-modal="true"\] \{[^}]*--dsw-alias-bg-module-platform: color-mix\(in srgb, var\(--dshbg-raw-module\)/.test(
+      base.css,
+    ),
+  );
   check(
     'the plugin page never paints an opaque sheet',
     !/\[data-dshbg-config\][^{]*\{[^}]*background-color: var\(--dshbg-raw-base\) !important/.test(base.css) &&
@@ -1299,7 +1340,21 @@ async function main() {
   check('custom mode derives the secondary tone', custom.css.includes('color-mix(in srgb, #ff0000 80%, transparent)'));
 
   console.log('\ncost-meter shim');
-  check('panels retargeted', base.css.includes('html[data-dshbg-on] body .cm-section'));
+  // ⚠️ 这里断言的是**性质**不是写法：`cm-section` 是设置弹窗的子元素，弹窗已经画过底，
+  // 它自己再画一层就是同一个矩形画两遍（surface 50 时内容列合成 ~75%，旁边的导航列只有
+  // 49%，壁纸在面板中间断成一条竖线）。所以断言「它自己是透明的」，而不是「它拿到了某个值」。
+  check(
+    'the cost meter section paints no fill of its own',
+    /html\[data-dshbg-on\] body \.cm-section \{[^}]*background: transparent !important/.test(base.css),
+  );
+  check(
+    'and nothing colour-mixes it back',
+    !/\.cm-section[^{}]*\{[^}]*color-mix/.test(base.css),
+  );
+  check(
+    'the sidebar cost meter blocks keep theirs',
+    /html\[data-dshbg-on\] body \.cm-footer-stack\.simple[^{]*\{[^}]*color-mix/.test(base.css),
+  );
   // 弹窗玻璃**不再由本插件负责**：费用明细自己的样式表在安装时已经打了补丁（ENGINEERING.md
   // 里有完整记录）。两边同时上色只会互相盖，而且它的规则永远更靠近宿主，所以这里断言本插件
   // 的样式表**不再提** `.cm-stat-dialog` —— 谁改了这条，都会把弹窗重新推回互相覆盖。
@@ -1317,6 +1372,71 @@ async function main() {
     'the installed cost meter carries the glass patch',
     installedCostMeter === null || installedCostMeter.includes('color-mix(in srgb,#ffffff 14%,transparent)'),
     installedCostMeter === null ? 'not installed on this machine - skipped' : '',
+  );
+
+  // 插件市场的全屏页：它自己用 layer-1 画底，而 layer-1 的语义是「比 pane 高一层」，
+  // 带着 +8 的 lift。它不是 pane 之上的面板，它**就是**页面本身 —— 打开市场整窗比刚才的
+  // 对话暗八个百分点，看起来就像另开了一层板。
+  //
+  // 但它也**不该**照抄对话区的 22%：整页都是 12px 小字直接坐在页面上，底下一亮字就发飘。
+  // 45% 是「字站得住、壁纸还是张照片」的位置。所以断言的是「它自己画底、不是 layer-1 的
+  // lift」，以及「浓度明显高于对话区」—— 不是钉死某个数字。
+  console.log('\nplugin market');
+  const MARKET_PAGE = '\\[data-dsh-market-plugins-tab="true"\\]\\[data-dsh-market-fullscreen="true"\\]';
+  const marketRule = new RegExp(
+    `html\\[data-dshbg-on\\] ${MARKET_PAGE} \\{[^}]*?background: color-mix\\(in srgb, var\\(--dshbg-raw-base\\) (\\d+)%, transparent\\)`,
+  );
+  const marketFill = marketRule.exec(base.css);
+  check('the market page paints its own base instead of the layer-1 lift', marketFill !== null);
+  check(
+    'and it is heavier than a chat pane, because its body text sits straight on the page',
+    marketFill !== null && Number(marketFill[1]) >= 40,
+    marketFill === null ? '' : `fill ${marketFill[1]}%`,
+  );
+  check(
+    'and the rule is gated on the wallpaper switch, so turning it off restores the original',
+    base.css.includes(`html[data-dshbg-on] [data-dsh-market-plugins-tab="true"]`),
+  );
+  // 卡片要的是「标签纱」，不是再糊一遍：底下的壁纸已经被滑杆糊过了，再上 backdrop-filter
+  // 看不出区别，只多一层合成。真正让卡片从塑料变玻璃的是填充 —— 中性色重混成 60% 暗会
+  // 变成屏幕上最暗那块，白纱不会。测的是「填充是纱」，不是某个具体字符串。
+  check(
+    'the market cards are a label wash rather than the remixed neutral',
+    /\[data-dsh-market-root\] \{[^}]*?--dsw-alias-settings-card-fill: color-mix\(in srgb, var\(--dshbg-raw-label-0\) 12%/.test(
+      base.css,
+    ),
+  );
+  // 吸顶栏是这里唯一需要真模糊的地方：它底下滚过的是**内容**（卡片、价格、正文），不是
+  // 糊过的壁纸。50% 的 bg-base 挡不住文字，标题、搜索框、筛选条会被穿过去。
+  check(
+    'the market sticky header occludes the cards scrolling under it',
+    /\[data-dsh-market-root\] \[class\$="_stickyHead"\] \{[^}]*?background: color-mix\(in srgb, var\(--dshbg-raw-base\) 45%, transparent\)[^}]*?backdrop-filter: blur\(/.test(
+      base.css,
+    ),
+  );
+  // 那 14px 的 `::before` 带子只会继承填充、不会继承模糊 —— 它是「只修了看得见的那条」的指纹。
+  check(
+    'and so does the strip above it, which only inherits the fill',
+    /\[class\$="_stickyHead"\]::before \{[^}]*?backdrop-filter: blur\(/.test(base.css),
+  );
+
+  console.log('\nnative form controls');
+  check(
+    'the select widget is put in dark mode',
+    /html\[data-dshbg-on\] select \{[^}]*color-scheme: dark !important/.test(base.css),
+  );
+  // ⚠️ 断言的是**性质**：这个列表画在文档的层叠上下文之外，读不到底下是什么，所以它的底色
+  // 必须是不透明的。给它 `transparent` 或任何 `color-mix(… transparent)` 都会退回「半透明
+  // 色合成在弹层白底上」那个灰色 —— 实测 (127,127,128) 正好是 #151517 在 55% 下压白底。
+  check(
+    'and its option rows are filled with a solid colour',
+    (() => {
+      const rule = /html\[data-dshbg-on\] select option,[\s\S]{0,140}?\{([^}]*)\}/.exec(base.css);
+      if (rule === null) return false;
+      const fill = /background-color:\s*([^;]+);/.exec(rule[1]);
+      if (fill === null) return false;
+      return !/transparent/.test(fill[1]) && !/color-mix/.test(fill[1]);
+    })(),
   );
 
   console.log('\nlifecycle');
