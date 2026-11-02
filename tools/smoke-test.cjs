@@ -1414,10 +1414,32 @@ async function main() {
       base.css,
     ),
   );
-  // 那 14px 的 `::before` 带子只会继承填充、不会继承模糊 —— 它是「只修了看得见的那条」的指纹。
+  // ⚠️ 这一条测的是**结构**，不是外观：宿主把 `top: -1px` 写死，于是吸顶栏自己的盒子
+  // 停在滚动容器 padding-box 顶边下方 1px 处，它上面那条「只有页面填充」的带子和它自己
+  // 差一截密度 —— 屏幕上就是一道缝。把盒子往上拉 `padding-top` 那么多（再用等量负
+  // `margin-top` 把搜索框按回原位），带子就没有了；`top: 0` 顺手补掉那 1px。
   check(
-    'and so does the strip above it, which only inherits the fill',
-    /\[class\$="_stickyHead"\]::before \{[^}]*?backdrop-filter: blur\(/.test(base.css),
+    "the sticky header's box starts at the scroller's padding-box top, so no lighter band is left above it",
+    /\[class\$="_stickyHead"\] \{[^}]*?top: 0 !important[^}]*?margin-top: -8px !important[^}]*?padding-top: 8px !important/.test(
+      base.css,
+    ),
+  );
+  // 宿主那条 14px 带子只写了 `background: inherit` —— 只继承颜色、不继承 `backdrop-filter`。
+  // 再给它补一条模糊也不对：那会变成两个各自模糊、各自加填充的层，交界处照样是硬台阶。
+  // 正解是把它摘掉，让吸顶栏一个盒子盖住那一段。
+  check(
+    "the host's 14px strip is removed rather than re-blurred",
+    /\[class\$="_stickyHead"\]::before \{\s*display: none !important/.test(base.css),
+  );
+  check(
+    'the header is rounded like the cards it covers',
+    /\[class\$="_stickyHead"\] \{[^}]*?border-radius: 16px !important/.test(base.css),
+  );
+  // 最后一行是「已隐藏 N 个…」，第一排卡片以前直接顶上来。要用 padding 不能用 margin ——
+  // margin 留的是**能看见卡片滚过去**的空隙。
+  check(
+    'and there is a filled gap below it instead of butting into the first row of cards',
+    /\[class\$="_stickyHead"\] \{[^}]*?padding-bottom: 10px !important/.test(base.css),
   );
 
   console.log('\nnative form controls');

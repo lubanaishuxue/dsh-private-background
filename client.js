@@ -2384,6 +2384,32 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       // number here - it is deliberately local, not a shared recipe.
       const pageMix = 'color-mix(in srgb, var(--dshbg-raw-base) 45%, transparent)';
       const wash = (percent) => `color-mix(in srgb, var(--dshbg-raw-label-0) ${percent}%, transparent)`;
+      // ⚠️ **The sticky header is one layer, not two, and its top edge is above the
+      // scrollport - both are structural, not cosmetic.**
+      //
+      // The host wraps it in a `::before` that is 14px tall, sits `bottom: 100%` and only
+      // says `background: inherit`. Two consequences, and each one is a visible defect:
+      //
+      //   1. `inherit` copies the colour and **not** `backdrop-filter`, so the strip was
+      //      the one band that let text scroll through unblurred.
+      //   2. Once that strip is blurred too, it and the header are two *separate*
+      //      `backdrop-filter` elements. Each one blurs its own backdrop independently,
+      //      and each one adds its own fill - so the boundary between them is a hard
+      //      step, which is what reads as "一条缝隙" above the search box.
+      //
+      // So the strip is removed rather than re-blurred, and the header is pulled up by
+      // exactly the scroller's own `padding-top` (`.nUhMVa_body` has `padding: 8px …`).
+      // `margin-top: -8px` cancels `padding-top: 8px`, so the search box does not move,
+      // but the header's **box** now starts at the scroller's padding-box top. There is
+      // no band of page fill left above it to be a step against. `top: 0` then sticks it
+      // flush - the host's `top: -1px` is what left a 1px slit.
+      //
+      // `padding-bottom` is the opposite ask: the last line inside the header is the
+      // "已隐藏 N 个…" hint, and the first row of cards used to butt straight into it.
+      // It has to be padding and not margin - a margin would leave a see-through gap for
+      // the cards to scroll through.
+      const headerPad = 8;
+      const headerGap = 10;
       return `
 ${prefixed('html[data-dshbg-on]', [page])} {
   background: ${pageMix} !important;
@@ -2398,11 +2424,14 @@ ${prefixed('html[data-dshbg-on]', [head])} {
   background: ${pageMix} !important;
   -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
   backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  top: 0 !important;
+  margin-top: -${headerPad}px !important;
+  padding-top: ${headerPad}px !important;
+  padding-bottom: ${headerGap}px !important;
+  border-radius: 16px !important;
 }
 ${prefixed('html[data-dshbg-on]', [`${head}::before`])} {
-  background: ${pageMix} !important;
-  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
-  backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  display: none !important;
 }
 `;
     }
