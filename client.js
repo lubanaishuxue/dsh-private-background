@@ -37,6 +37,10 @@ window.__ModuleLoader__.load({
     const { useCallback, useEffect, useRef, useState, useSyncExternalStore } = React;
 
     const PACKAGE = '@local/dsh-custom-background';
+    // The sidebar panel id. It is also the key of the `main` slot entry, and those two are
+    // matched by string equality - a typo in one of them registers an icon that cannot
+    // select anything.
+    const PANEL_ID = 'custom-background';
     const SETTINGS_KEY = 'dsh.custom-background.settings.v4';
     const LEGACY_SETTINGS_KEY = 'dsh.custom-background.settings.v3';
     const DB_NAME = 'dsh-custom-background';
@@ -3011,6 +3015,12 @@ html[data-dshbg-on] select option:checked {
     }
 
     const PAGE_CSS = `
+/* The sidebar panel's frame. The plugin page gives the form its padding; the main slot does
+   not, so without this the form sits against the window edge and cannot scroll. The width
+   cap is the same reading measure the plugin page uses - sliders stretched across a
+   maximised window are hard to aim. */
+.dshbg-panel { box-sizing: border-box; height: 100%; overflow-y: auto; padding: 24px 28px 40px; }
+.dshbg-panel > .dshbg { max-width: 900px; }
 .dshbg { display: flex; flex-direction: column; gap: 18px; font-size: 13px; color: var(--dsw-alias-label-primary, #0f1115); }
 .dshbg-head { display: flex; flex-direction: column; gap: 3px; }
 .dshbg-title { font-size: 14px; font-weight: 600; line-height: 20px; margin: 0; }
@@ -3655,6 +3665,46 @@ html[data-dshbg-on] select option:checked {
 
     // --------------------------------------------------------------- registration
 
+    /**
+     * The sidebar glyph.
+     *
+     * Drawn inline rather than taken from `ui-primitives`: an icon font import would add a
+     * second injected module for one 16px shape, and the sidebar hands the component only
+     * `size`, so a plain `<svg>` sized from that prop is the whole contract. `currentColor`
+     * is what makes it follow the rail's own selected/unselected tint.
+     */
+    function WallpaperIcon({ size }) {
+      return h(
+        'svg',
+        {
+          width: size,
+          height: size,
+          viewBox: '0 0 16 16',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 1.4,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+        },
+        h('rect', { x: 1.7, y: 2.7, width: 12.6, height: 10.6, rx: 2.4 }),
+        h('circle', { cx: 5.6, cy: 6.5, r: 1.35 }),
+        h('path', { d: 'M2.3 12.1l3.5-3.3 2.5 2.3 2.2-1.9 3.2 2.9' }),
+      );
+    }
+
+    /**
+     * The sidebar panel wrapper.
+     *
+     * `ConfigPage` carries no padding of its own - in the plugin detail page the host
+     * supplies it. Dropped straight into `main` the form would sit flush against the window
+     * edge, so this wrapper is what supplies the frame and the scroll. It is a separate
+     * component rather than a rule on `.dshbg` because that same `.dshbg` also renders in
+     * the plugin page, where padding here would stack on top of the host's.
+     */
+    function WallpaperPanel(props) {
+      return h('div', { className: 'dshbg-panel' }, h(ConfigPage, props));
+    }
+
     return {
       inject: ['slots'],
       apply(ctx) {
@@ -3669,12 +3719,48 @@ html[data-dshbg-on] select option:checked {
         try {
           ctx.slots.inject('plugins.bundle.config', () =>
             ctx.slots.register(
-              { name: 'plugins.bundle.config', key: PACKAGE, id: 'custom-background', order: 10 },
+              { name: 'plugins.bundle.config', key: PACKAGE, id: PANEL_ID, order: 10 },
               ConfigPage,
             ),
           );
         } catch (failure) {
           console.error('[dsh-custom-background] config slot registration failed:', failure);
+        }
+
+        // The sidebar entry. Same component as the plugin page - the panel *is* the config
+        // page, so there is one form to maintain and no second copy to drift.
+        //
+        // ⚠️ **These two registrations are one feature and must stay together.** The host
+        // keeps an icon in `sidebar.panellist` and, when it is clicked, looks the panel up
+        // in the root-scoped `main` keyed slot **by the same id**. A missing `main` entry
+        // does not render an empty page: `selectPanel` throws and the current selection is
+        // kept, so the symptom is an icon that does nothing at all, with nothing in the UI
+        // to say why. Registering only the icon is therefore worse than registering
+        // neither.
+        //
+        // `view: 'page'` is what the component checks before it sets `data-dshbg-config`,
+        // and that attribute is what lets the page be transparent so the wallpaper stays
+        // visible while it is being adjusted. Handing it anything else here would paint an
+        // opaque sheet over the very thing the sliders change.
+        try {
+          ctx.slots.inject('main', () =>
+            ctx.slots.register({ name: 'main', key: PANEL_ID, inject: () => ({ view: 'page' }) }, WallpaperPanel),
+          );
+          ctx.slots.inject('sidebar.panellist', () =>
+            ctx.slots.register(
+              {
+                name: 'sidebar.panellist',
+                id: PANEL_ID,
+                // After the host's own entries (plugins is 0), so the icon lands at the
+                // bottom of the list rather than pushing the built-ins down.
+                order: 20,
+                label: () => (currentLang() === 'zh' ? '壁纸' : 'Wallpaper'),
+              },
+              WallpaperIcon,
+            ),
+          );
+        } catch (failure) {
+          console.error('[dsh-custom-background] sidebar entry registration failed:', failure);
         }
 
       },

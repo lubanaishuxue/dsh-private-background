@@ -1487,7 +1487,12 @@ async function main() {
     off.body.children.every((el) => !el.hasAttribute('data-dshbg-stack')),
   );
   // 第二个座位是临时调参卡。它和设置页互不依赖：任何一边缺失都不能把另一边带崩。
-  check('mode none still registers the config page', off.registered.length === 1, `got ${off.registered.length}`);
+  // 现在是三处：插件详情页的配置、主区域里的同一个配置页、左栏图标。
+  check(
+    'mode none still registers the config page and the sidebar entry',
+    off.registered.length === 3,
+    `got ${off.registered.length}`,
+  );
 
   // Nothing else in this file calls the page component, so a typo in the JSX would only
   // surface in the app. Render it once and look for the controls by their label text.
@@ -1594,13 +1599,67 @@ async function main() {
   check('the artwork pointers are not presentation keys', !perSource.some((key) => pointers.includes(key)));
 
   console.log('\nslot registration');
-  // 只留设置页那一个座位。调参卡已经不是座位了（见上）。
-  check('one slot registration', base.registered.length === 1, `got ${base.registered.length}`);
-  if (base.registered.length > 0) {
-    const { options } = base.registered[0];
-    check('registers into plugins.bundle.config', options.name === 'plugins.bundle.config');
-    check('keyed by the package name', options.key === '@local/dsh-custom-background', options.key);
+  // 三个座位。插件详情页那份给「设置 → 插件」用；`main` + `sidebar.panellist` 是左栏
+  // 入口，**两者必须成对** —— 只有图标没有 main 时，宿主 selectPanel 会抛错并保留当前
+  // 选中态，屏幕上就是「图标点不动」，没有任何提示。所以这里测的是「成对」，不是
+  // 「有没有图标」。
+  const slotByName = new Map(base.registered.map((entry) => [entry.options.name, entry]));
+  check('three slot registrations', base.registered.length === 3, `got ${base.registered.length}`);
+  const bundleConfig = slotByName.get('plugins.bundle.config');
+  check('registers into plugins.bundle.config', bundleConfig !== undefined);
+  check(
+    'keyed by the package name',
+    bundleConfig !== undefined && bundleConfig.options.key === '@local/dsh-custom-background',
+    bundleConfig === undefined ? '' : String(bundleConfig.options.key),
+  );
+  // 左栏那一条：id 与 `main` 的 key 必须是同一个字符串，否则点击时找不到面板。
+  const sidebarEntry = slotByName.get('sidebar.panellist');
+  const mainEntry = slotByName.get('main');
+  check('the sidebar icon is registered', sidebarEntry !== undefined);
+  check('and the panel it selects is registered too', mainEntry !== undefined);
+  check(
+    'the two are addressed by the same id, which is what makes the click resolve',
+    sidebarEntry !== undefined &&
+      mainEntry !== undefined &&
+      sidebarEntry.options.id === mainEntry.options.key &&
+      sidebarEntry.options.id === 'custom-background',
+    sidebarEntry === undefined || mainEntry === undefined
+      ? ''
+      : `${String(sidebarEntry.options.id)} vs ${String(mainEntry.options.key)}`,
+  );
+  // 面板拿到的 `view` 必须是 `page`：只有它会让配置页挂上 `data-dshbg-config`，而那个属性
+  // 是页面透明的开关 —— 调壁纸时得能看见壁纸。
+  check(
+    'the panel is handed view=page so the page stays transparent behind the sliders',
+    mainEntry !== undefined && mainEntry.options.inject().view === 'page',
+  );
+  // 图标排在宿主自己的条目（plugins 是 0）后面，不去挤内置面板。
+  check(
+    'the sidebar icon sorts after the host entries',
+    sidebarEntry !== undefined && Number(sidebarEntry.options.order) > 0,
+  );
+  // 面板必须自带框：配置页自己没有内边距，插件详情页那边是宿主给的，main 没有。少了
+  // 这一层，表单会直接贴在窗口边上，而且滚不动。
+  let panelFrame = null;
+  try {
+    panelFrame = mainEntry === undefined ? null : mainEntry.component({ view: 'page' });
+  } catch (failure) {
+    panelFrame = null;
   }
+  check(
+    'the panel supplies the padding the plugin page used to give',
+    panelFrame !== null &&
+      panelFrame.props !== null &&
+      typeof panelFrame.props === 'object' &&
+      panelFrame.props.className === 'dshbg-panel',
+  );
+  check('and that frame is styled', CODE.includes('.dshbg-panel {') && CODE.includes('.dshbg-panel > .dshbg'));
+  // 图标是内联 SVG，不额外 inject 一个图标库 —— 侧栏只给 `size`，一个 16px 的形状不值得
+  // 为它多挂一个宿主模块（那条 inject 写错会让整个插件启动失败）。
+  check(
+    'the glyph is drawn inline rather than imported',
+    CODE.includes('function WallpaperIcon({ size })') && !/inject: \[[^\]]*ui-primitives/.test(CODE),
+  );
 
   console.log('\ncss syntax sanity');
   const open = (base.css.match(/\{/g) || []).length;
