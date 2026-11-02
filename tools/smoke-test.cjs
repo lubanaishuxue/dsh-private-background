@@ -24,6 +24,10 @@ const CLIENT = path.resolve(
 );
 const DUMP = process.argv.includes('--dump');
 const CODE = fs.readFileSync(CLIENT, 'utf8');
+// The package name is compared, not hard-coded: it changed once already (the `@local/`
+// scope was a local-development convention, not something to publish under), and an
+// assertion that pins the literal only ever proves the literal is still there.
+const MANIFEST = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
 
 const BASE_SETTINGS = {
   mode: 'gradient',
@@ -332,7 +336,14 @@ async function emit(settingsOverride, extra) {
 async function main() {
   const base = await emit({});
   console.log('module contract');
-  check('module id matches package', base.definition && base.definition.id === '@local/dsh-custom-background');
+  check('module id matches package', base.definition && base.definition.id === MANIFEST.name, base.definition ? base.definition.id : 'no definition');
+  // The bundle patch is a second, independent place where the package names itself — the
+  // host resolves `name:` out of the profile's node_modules, so a stale literal here is a
+  // plugin that simply never loads. It is a separate string from the module id, which is
+  // exactly why renaming the package missed it once already.
+  const PATCH = fs.readFileSync(path.join(__dirname, '..', 'cordis.patch.yml'), 'utf8');
+  const patchNames = [...PATCH.matchAll(/^\s*name:\s*(.+)$/gm)].map((match) => match[1].trim().replace(/^['"]|['"]$/g, ''));
+  check('the bundle patch names the package', patchNames.length === 1 && patchNames[0] === MANIFEST.name, patchNames.join(', '));
   check('factory is a function', base.definition && typeof base.definition.factory === 'function');
   check('exports apply', typeof base.exported.apply === 'function');
   check('exports inject list', Array.isArray(base.exported.inject) && base.exported.inject.includes('slots'));
@@ -1655,8 +1666,8 @@ async function main() {
   check('registers into plugins.bundle.config', bundleConfig !== undefined);
   check(
     'keyed by the package name',
-    bundleConfig !== undefined && bundleConfig.options.key === '@local/dsh-custom-background',
-    bundleConfig === undefined ? '' : String(bundleConfig.options.key),
+    bundleConfig !== undefined && bundleConfig.options.key === MANIFEST.name,
+    bundleConfig === undefined ? '' : `${String(bundleConfig.options.key)} vs ${MANIFEST.name}`,
   );
   // 左栏那一条：id 与 `main` 的 key 必须是同一个字符串，否则点击时找不到面板。
   const sidebarEntry = slotByName.get('sidebar.panellist');

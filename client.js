@@ -1,5 +1,5 @@
 /**
- * @local/dsh-custom-background - browser half.
+ * dsh-private-background - browser half.
  *
  * Paints a wallpaper behind the DSH shell and renders its control panel into the
  * plugin-manager detail page. Nothing here talks to the model, the session log or any
@@ -30,13 +30,13 @@
  *   - the bottom status bar carries `data-shell-bottom`
  */
 window.__ModuleLoader__.load({
-  id: '@local/dsh-custom-background',
+  id: 'dsh-private-background',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
     const { useCallback, useEffect, useRef, useState, useSyncExternalStore } = React;
 
-    const PACKAGE = '@local/dsh-custom-background';
+    const PACKAGE = 'dsh-private-background';
     // The sidebar panel id. It is also the key of the `main` slot entry, and those two are
     // matched by string equality - a typo in one of them registers an icon that cannot
     // select anything.

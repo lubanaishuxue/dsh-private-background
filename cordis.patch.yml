@@ -1,3 +1,3 @@
 - insert:
     - id: custom-background
-      name: '@local/dsh-custom-background'
+      name: dsh-private-background
