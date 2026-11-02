@@ -447,6 +447,27 @@ async function main() {
   const calmRun = await emit({ mode: 'image', imageId: CLIP.id }, { images: [CLIP], reducedMotion: true });
   check('reduced motion shows the poster instead of playing', boxesOf(calmRun)[0].children.length === 0 && boxesOf(calmRun)[0].style.backgroundImage === 'url("data:clip-poster")', boxesOf(calmRun)[0].style.backgroundImage);
 
+  console.log('\nduplicate uploads');
+  // 判重靠「存下来的那份」的指纹，不是原文件字节 —— 照片是先重编码成 JPEG 再存的，原文件
+  // 字节根本没留下，拿原文件去算会得到一个永远匹配不上任何东西的值。这条在 store-test 里
+  // 有行为断言，这里只钉住入口没被拆掉、以及那个反直觉的取值来源没被「顺手优化」掉。
+  check('an upload is fingerprinted before it is stored', CODE.includes('const digest = await digestOfIngested(ingested)'));
+  check('and compared against what the gallery already holds', /record\.digest === digest/.test(CODE));
+  check(
+    'the fingerprint comes from the stored form, not from the picked file',
+    /typeof ingested\.dataUrl === 'string'/.test(CODE) && /ingested\.blob\.arrayBuffer\(\)/.test(CODE),
+  );
+  check(
+    'a refusal reaches the user as a message instead of looking like a failed upload',
+    /code === 'duplicate'\) setError\(text\.duplicate\)/.test(CODE) &&
+      CODE.includes("duplicate: '这个文件已经在图库里了") &&
+      CODE.includes("duplicate: 'That file is already in the gallery"),
+  );
+  check(
+    'and galleries saved before this existed get their fingerprints backfilled',
+    CODE.includes('async function backfillDigests') && /typeof record\.digest !== 'string'/.test(CODE),
+  );
+
   console.log('\nframing');
   // 取景位置必须同时落到 background-position 和 object-position 上，否则同一张照片和同一段
   // 视频会按两套不同的构图显示。

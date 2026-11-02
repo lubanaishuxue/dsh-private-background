@@ -88,8 +88,16 @@ for (const marker of ['function readRaw(', 'function flatten(', 'function source
   }
 }
 
-const body = `${prelude}\n${persistence}\n${store}
-    return { getSnapshot, commit, patchSettings, boot, addImage, removeImage, subscribe };`;
+// Uploads fingerprint what they store, and that function sits in the ingesting block - above
+// the store, so it has to be spliced in or `addImage` throws on every call. `ingestFile`
+// itself stays the stub passed to the factory: the real one needs a canvas.
+const digesting = between(
+  'async function digestOfIngested',
+  '// ---------------------------------------------------------------- luminance',
+);
+
+const body = `${prelude}\n${persistence}\n${digesting}\n${store}
+    return { getSnapshot, commit, patchSettings, boot, addImage, removeImage, subscribe, backfillDigests };`;
 
 const record = (key) => ({ id: `img-${key}`, dataUrl: `data:${key}`, addedAt: 0 });
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -174,7 +182,7 @@ function makeWindow() {
   };
 }
 
-function makeStore(win, initialImages) {
+function makeStore(win, initialImages, ingest) {
   let images = initialImages.slice();
   const factory = new Function(
     'window',
@@ -187,15 +195,22 @@ function makeStore(win, initialImages) {
   return factory(
     win,
     async () => images.slice(),
+    // `put`, not `append`: the real store is keyed by `id`, so writing an existing record
+    // replaces it. Backfilling fingerprints rewrites records that are already there, and a
+    // push here would silently grow the gallery on every boot.
     async (item) => {
-      images.push(item);
+      const at = images.findIndex((existing) => existing.id === item.id);
+      if (at < 0) images.push(item);
+      else images[at] = item;
     },
     async (id) => {
       images = images.filter((item) => item.id !== id);
     },
     // The real `ingestFile` returns a record fragment now, not a bare data URL: the gallery
-    // holds stills, GIFs and video alike, so the shape has to say which one it is.
-    async () => ({ kind: 'photo', dataUrl: 'data:new', poster: 'data:new', width: 0, height: 0 }),
+    // holds stills, GIFs and video alike, so the shape has to say which one it is. A caller
+    // that needs to drive what gets ingested passes its own.
+    ingest ||
+      (async () => ({ kind: 'photo', dataUrl: 'data:new', poster: 'data:new', width: 0, height: 0 })),
   );
 }
 
@@ -509,6 +524,78 @@ const presetFor = (win, key) => {
     presetFor(win, 'color:#1b2233').blur === 7,
     JSON.stringify(presetFor(win, 'color:#1b2233')),
   );
+
+  // ---------------------------------------------------------------- refusing duplicates
+  // 同一个文件加第二次不该变成第二格。指纹按**存下来的那份**算 —— 照片存的是重编码后的
+  // JPEG，不是原文件字节 —— 所以「同一张图选两次」在这里就等价于「两次 ingest 产物相同」。
+  let pending = null;
+  const dupWin = makeWindow();
+  const dupApi = makeStore(dupWin, [], async () => pending);
+  const dupSnap = () => dupApi.getSnapshot();
+  const still = (dataUrl) => ({ kind: 'photo', dataUrl, poster: dataUrl, width: 0, height: 0 });
+
+  pending = still('data:one');
+  await dupApi.addImage({});
+  check('the first upload lands in the gallery', dupSnap().images.length === 1, `${dupSnap().images.length}`);
+
+  const keptId = dupSnap().images[0].id;
+  // 先把壁纸切走，否则「切回这张」和「本来就停在这张」在屏幕上没有区别，测了也白测。
+  dupApi.patchSettings({ mode: 'color', color: '#1b2233' });
+  pending = still('data:one');
+  let duplicate = null;
+  try {
+    await dupApi.addImage({});
+  } catch (failure) {
+    duplicate = failure && failure.message;
+  }
+  check('the same file a second time is refused', duplicate === 'duplicate', String(duplicate));
+  check('and the gallery does not grow', dupSnap().images.length === 1, `${dupSnap().images.length}`);
+  // 抛出去只是为了给调用方一个显示提示的理由。用户点「添加」的本意是「用这张图」，所以
+  // 选中那张已有的必须真的发生 —— 否则提示「已经在图库里了」却什么都不做，看起来像上传失败。
+  check(
+    'and it switches to the copy that is already there',
+    dupSnap().settings.imageId === keptId,
+    String(dupSnap().settings.imageId),
+  );
+  check('and the wallpaper follows it', artOf(dupSnap()) === 'data:one', artOf(dupSnap()));
+
+  pending = still('data:two');
+  await dupApi.addImage({});
+  check('a different picture still goes in', dupSnap().images.length === 2, `${dupSnap().images.length}`);
+
+  // 老图库里的记录没有指纹，直接比就永远对不上 —— 这个功能对存量图片会整个失效，而且没有
+  // 任何迹象。所以 boot 之后补算一遍写回去，测的是「补完之后存量图片也拦得住」。
+  const legacyWin = makeWindow();
+  const legacy = makeStore(
+    legacyWin,
+    [{ id: 'img-old', dataUrl: 'data:old', addedAt: 0 }],
+    async () => still('data:old'),
+  );
+  legacy.boot();
+  await tick();
+  check(
+    'a gallery saved before fingerprints existed has none',
+    legacy.getSnapshot().images[0].digest === undefined,
+    String(legacy.getSnapshot().images[0].digest),
+  );
+  await legacy.backfillDigests();
+  check(
+    'boot fills the gap in',
+    typeof legacy.getSnapshot().images[0].digest === 'string',
+    String(legacy.getSnapshot().images[0].digest),
+  );
+  // 幂等：已经有指纹的记录不该再算一遍，否则每次启动都要把所有大图重新哈希一次。
+  const settled = JSON.stringify(legacy.getSnapshot().images);
+  await legacy.backfillDigests();
+  check('running it again changes nothing', JSON.stringify(legacy.getSnapshot().images) === settled);
+  let legacyDuplicate = null;
+  try {
+    await legacy.addImage({});
+  } catch (failure) {
+    legacyDuplicate = failure && failure.message;
+  }
+  check('an old picture is refused too once it has a fingerprint', legacyDuplicate === 'duplicate', String(legacyDuplicate));
+  check('and the old gallery is still one tile', legacy.getSnapshot().images.length === 1, `${legacy.getSnapshot().images.length}`);
 
   // ------------------------------------------------------------- deleting the active
   api.patchSettings({ mode: 'image', imageId: b.id });

@@ -153,6 +153,7 @@ window.__ModuleLoader__.load({
         kindVideo: '视频',
         kindAnimated: '动图',
         tooLargeMedia: '这个文件太大（上限 96 MB），换一个小一点的。',
+        duplicate: '这个文件已经在图库里了，已经帮你切到那一张。',
         videoFail: '这个视频播不出来，可能是编码不被支持。换一个试试。',
         gradient: '渐变',
         color: '纯色',
@@ -209,6 +210,7 @@ window.__ModuleLoader__.load({
         kindVideo: 'Video',
         kindAnimated: 'Animated',
         tooLargeMedia: 'That file is too large (96 MB limit). Try a smaller one.',
+        duplicate: 'That file is already in the gallery - switched to it.',
         videoFail: 'That video will not play - the codec is probably unsupported. Try another one.',
         gradient: 'Gradient',
         color: 'Solid colour',
@@ -547,6 +549,49 @@ window.__ModuleLoader__.load({
       if (!isVideo && !isAnimated) return ingestPhoto(file);
       if (file.size > MAX_MEDIA_BYTES) return Promise.reject(new Error('too-large-media'));
       return isVideo ? ingestVideo(file) : ingestAnimation(file);
+    }
+
+    /**
+     * Content fingerprint of an **ingested** picture, used to refuse the same artwork twice.
+     *
+     * Taken from what gets *stored*, not from the file that was picked. A photo is re-encoded
+     * to JPEG before it is kept, so the bytes in the gallery are not the bytes on the
+     * clipboard - hashing the picked file would produce a value that never matches anything
+     * already saved. Hashing the stored form is also what lets pictures added before this
+     * feature existed take part: their original bytes were never kept, but their stored form
+     * is right there. The trade-off is that a browser upgrade which changes its JPEG encoder
+     * would stop matching older entries - that direction only ever fails to block a
+     * duplicate, it never blocks a new picture.
+     *
+     * SHA-256 when `crypto.subtle` exists (it does on both `file://` and `localhost`, the two
+     * origins this page runs on), with a plain FNV-1a over the same bytes as the fallback.
+     * A fingerprint is only ever compared for equality, so a non-cryptographic hash is
+     * enough; the fallback exists so a page without `crypto.subtle` still blocks duplicates
+     * instead of throwing on every upload.
+     */
+    async function digestOfIngested(ingested) {
+      const bytes =
+        typeof ingested.dataUrl === 'string'
+          ? new TextEncoder().encode(ingested.dataUrl)
+          : new Uint8Array(await ingested.blob.arrayBuffer());
+      const subtle = typeof crypto !== 'undefined' ? crypto.subtle : null;
+      if (subtle !== null && subtle !== undefined && typeof subtle.digest === 'function') {
+        try {
+          const hash = await subtle.digest('SHA-256', bytes);
+          const hex = Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
+          return `sha256:${hex}`;
+        } catch (failure) {
+          // A page that is not a secure context rejects here; fall through rather than
+          // refusing every upload from then on.
+        }
+      }
+      let forward = 0x811c9dc5;
+      let backward = 0x01000193;
+      for (let index = 0; index < bytes.length; index += 1) {
+        forward = ((forward ^ bytes[index]) * 0x01000193) >>> 0;
+        backward = ((backward + bytes[index] * (index + 1)) * 0x85ebca6b) >>> 0;
+      }
+      return `fnv:${bytes.length.toString(16)}:${forward.toString(16)}:${backward.toString(16)}`;
     }
 
     // ---------------------------------------------------------------- luminance
@@ -934,15 +979,68 @@ window.__ModuleLoader__.load({
         .then((records) => {
           const images = Array.isArray(records) ? records : [];
           commit({ images });
+          // Deferred rather than awaited: the first frame must not wait on hashing a gallery
+          // of videos. Nothing depends on it being done before the user uploads - a picture
+          // with no fingerprint simply cannot match yet, which is the old behaviour.
+          setTimeout(() => {
+            backfillDigests().catch(() => {});
+          }, 1200);
         })
         .catch(() => commit({ images: [] }));
     }
 
+    /**
+     * Fingerprints for pictures saved before this feature existed.
+     *
+     * Their records carry no `digest`, so re-uploading one of them would add a second copy -
+     * exactly what this is meant to stop. The stored form is enough to compute one, so the
+     * gap is filled in after boot, one record at a time, and written back so it only ever
+     * happens once per picture. A record that cannot be hashed is left alone rather than
+     * dropped: losing the artwork is a much worse outcome than missing one duplicate.
+     */
+    async function backfillDigests() {
+      const images = state.images;
+      if (images === null || images.length === 0) return;
+      const missing = images.filter((record) => typeof record.digest !== 'string');
+      if (missing.length === 0) return;
+      const filled = new Map();
+      for (const record of missing) {
+        try {
+          const digest = await digestOfIngested(record);
+          filled.set(record.id, digest);
+          await putImageRecord({ ...record, digest });
+        } catch (failure) {
+          // Skip this one; the rest still get their fingerprint.
+        }
+      }
+      if (filled.size === 0) return;
+      // Re-read from `state` rather than reusing `images`: an upload may have landed while
+      // the loop was awaiting, and its record must not be replaced by the stale snapshot.
+      const next = (state.images === null ? [] : state.images).map((record) =>
+        filled.has(record.id) ? { ...record, digest: filled.get(record.id) } : record,
+      );
+      commit({ images: next });
+    }
+
     async function addImage(file) {
       const ingested = await ingestFile(file);
+      const digest = await digestOfIngested(ingested);
+      // The same artwork twice is not two tiles. Picking a file that is already in the
+      // gallery means "use this one", so the duplicate is selected instead of added - and
+      // the caller is told, because silently doing nothing looks like a failed upload.
+      // The selection is committed *before* the throw: the throw is for the message, the
+      // commit is the thing the user actually asked for.
+      const duplicate = (state.images === null ? [] : state.images).find(
+        (record) => typeof record.digest === 'string' && record.digest === digest,
+      );
+      if (duplicate !== undefined) {
+        commit({}, { mode: 'image', imageId: duplicate.id });
+        throw new Error('duplicate');
+      }
       const record = {
         id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         addedAt: Date.now(),
+        digest,
         ...ingested,
       };
       await putImageRecord(record);
@@ -3123,10 +3221,11 @@ html[data-dshbg-on] select option:checked {
           const code = failure && failure.message;
           if (code === 'too-large') setError(text.tooLarge);
           else if (code === 'too-large-media') setError(text.tooLargeMedia);
+          else if (code === 'duplicate') setError(text.duplicate);
           else if (isVideo && code === 'decode') setError(text.videoFail);
           else setError(text.readFail);
         });
-      }, [text.readFail, text.tooLarge, text.tooLargeMedia, text.videoFail]);
+      }, [text.duplicate, text.readFail, text.tooLarge, text.tooLargeMedia, text.videoFail]);
 
       const palette = fontPalette(settings, tone);
       const previewColor = palette === null ? null : palette.primary;
