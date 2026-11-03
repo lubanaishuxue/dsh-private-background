@@ -1275,6 +1275,51 @@ html[data-dshbg-on] [data-dshbg-stack] > [data-dshbg-wall] > video {
     }
 
     /**
+     * Say which of a box's two video elements is on screen.
+     *
+     * Both are always in the box and always rendered - the idle one at `opacity: 0` rather
+     * than `display: none`, because a display:none video is not painted and its first frame
+     * is therefore never decoded. That frame is the whole point: it is what makes the handover
+     * below instant.
+     */
+    function setActiveVideo(box, index) {
+      box.setAttribute('data-dshbg-video', String(index));
+      const videos = Array.from(box.children);
+      for (let at = 0; at < videos.length; at += 1) {
+        const opacity = at === index ? '1' : '0';
+        if (videos[at].style.opacity !== opacity) videos[at].style.opacity = opacity;
+      }
+    }
+
+    /**
+     * Hand the picture over from one element to the other at the end of a clip.
+     *
+     * `loop` on a single `<video>` is not seamless, and no amount of preloading fixes it: at
+     * the loop point the engine seeks back to zero and has to decode the first frame again,
+     * so the last frame sits on screen for a beat - the "卡一下" that shows up at every
+     * repeat. A second element parked at zero with its first frame already decoded turns that
+     * beat into a single frame. Only one of the two ever plays, so the extra cost is memory,
+     * not decoding.
+     *
+     * The incoming element is brought up **before** the outgoing one is rewound: rewinding a
+     * video that is still visible shows its first frame, and for one frame that would look
+     * like the clip jumping backwards.
+     */
+    function handOver(box, index) {
+      const videos = Array.from(box.children);
+      if (videos.length < 2) return;
+      const next = index === 0 ? 1 : 0;
+      const incoming = videos[next];
+      const outgoing = videos[index];
+      setActiveVideo(box, next);
+      incoming.currentTime = 0;
+      const started = incoming.play();
+      if (started !== undefined && typeof started.catch === 'function') started.catch(() => {});
+      outgoing.pause();
+      outgoing.currentTime = 0;
+    }
+
+    /**
      * Write one wall's source onto its box.
      *
      * A still is a `background-image`; a clip has to be an element, because no CSS property
@@ -1303,26 +1348,41 @@ html[data-dshbg-on] [data-dshbg-stack] > [data-dshbg-wall] > video {
       }
       if (wants !== 'video') return;
 
-      let video = box.children.length === 0 ? null : box.children[0];
-      if (video === null) {
-        video = document.createElement('video');
-        video.muted = true;
-        video.loop = true;
-        video.autoplay = true;
-        video.setAttribute('muted', '');
-        video.setAttribute('playsinline', '');
-        box.appendChild(video);
+      // Two elements per box, never one: see `handOver`. They are created once and then only
+      // ever rewritten, because replacing a `<video>` that is on screen restarts it.
+      while (box.children.length < 2) {
+        const index = box.children.length;
+        const created = document.createElement('video');
+        created.muted = true;
+        created.setAttribute('muted', '');
+        created.setAttribute('playsinline', '');
+        // Parked at zero, not playing: this is the element that takes over at the next loop.
+        created.setAttribute('preload', 'auto');
+        created.addEventListener('ended', () => {
+          // Only the element on screen may hand over. An idle one firing `ended` would swap
+          // the picture to a clip that is not where the viewer is.
+          if (box.getAttribute('data-dshbg-video') === String(index)) handOver(box, index);
+        });
+        box.appendChild(created);
       }
-      // Tracked on a data attribute rather than on `src`: assigning `.src` reflects to the
-      // attribute in a browser but not in every environment this runs in, and a needless
-      // re-assignment restarts the clip from zero.
-      if (video.getAttribute('data-src') !== wall.src) {
+      if (box.getAttribute('data-dshbg-video') === null) setActiveVideo(box, 0);
+      const active = box.getAttribute('data-dshbg-video') === '1' ? 1 : 0;
+
+      for (let index = 0; index < 2; index += 1) {
+        const video = box.children[index];
+        video.style.objectPosition = position;
+        // Tracked on a data attribute rather than on `src`: assigning `.src` reflects to the
+        // attribute in a browser but not in every environment this runs in, and a needless
+        // re-assignment restarts the clip from zero.
+        if (video.getAttribute('data-src') === wall.src) continue;
         video.setAttribute('data-src', wall.src);
         video.src = wall.src;
+        // Only the element on screen is told to play; the other one loads its first frame and
+        // waits. Starting both would decode the clip twice and let them drift apart.
+        if (index !== active) continue;
         const started = video.play();
         if (started !== undefined && typeof started.catch === 'function') started.catch(() => {});
       }
-      video.style.objectPosition = position;
     }
 
     /**
