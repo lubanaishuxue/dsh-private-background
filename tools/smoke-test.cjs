@@ -89,10 +89,8 @@ function makeElement(tag) {
     getAnimations() { return el._animations === undefined ? [] : el._animations.slice(); },
     // A video wallpaper is a real <video> child; `play()` is what starts it and it must not
     // throw when the browser refuses (autoplay policy), which is why the plugin swallows it.
-    // Playback itself is recorded rather than simulated: the handover between the two
-    // elements is only observable as "this one was told to play, that one was paused".
-    play() { el._plays = (el._plays === undefined ? 0 : el._plays) + 1; return { catch() {} }; },
-    pause() { el._pauses = (el._pauses === undefined ? 0 : el._pauses) + 1; },
+    play() { return { catch() {} } },
+    pause() {},
     // The tuning card is draggable, so it reads and writes real geometry. A fixed 248x320
     // box is enough for the clamp arithmetic to be checkable; anything more faithful would
     // be a layout engine.
@@ -432,46 +430,20 @@ async function main() {
 
   const clipRun = await emit({ mode: 'image', imageId: CLIP.id }, { images: [CLIP] });
   const clipBox = boxesOf(clipRun)[0];
-  check('a video box carries two <video> elements', clipBox.children.length === 2 && clipBox.children.every((child) => child.tagName === 'video'), JSON.stringify(clipBox.children.map((child) => child.tagName)));
-  check('the still frame is written first, under them', clipBox.style.backgroundImage === 'url("data:clip-poster")', clipBox.style.backgroundImage);
+  check('a video box carries a real <video>', clipBox.children.length === 1 && clipBox.children[0].tagName === 'video', JSON.stringify(clipBox.children.map((child) => child.tagName)));
+  check('the still frame is written first, under it', clipBox.style.backgroundImage === 'url("data:clip-poster")', clipBox.style.backgroundImage);
   check('the clip itself is a blob URL', clipBox.children[0].getAttribute('data-src') === 'blob:clip', clipBox.children[0].getAttribute('data-src'));
-  check('and the one waiting its turn holds the same bytes', clipBox.children[1].getAttribute('data-src') === 'blob:clip', clipBox.children[1].getAttribute('data-src'));
-  // 静音 + playsinline 才等于「当壁纸用」。⚠️ `muted` 还要**同时**写属性：这个 IDL 属性不反射
-  // 到内容属性上，而自动播放策略读的是元素解析时的静音状态。只写 `.muted = true` 在真机上
-  // 会静默变成「不播」。待命那个也要 preload：它的第一帧就是换手时不卡的全部依据。
+  // 静音 + loop + autoplay + playsinline 四个一起才等于「当壁纸用」。少一个 muted 浏览器直接
+  // 拒绝自动播放；少一个 playsinline 移动端会想全屏播放。
+  // ⚠️ `muted` 还要**同时**写属性：这个 IDL 属性不反射到内容属性上，而自动播放策略读的是
+  // 元素解析时的静音状态。只写 `.muted = true` 在真机上会静默变成「不播」。
+  const clipVideo = clipBox.children[0];
   check(
-    'both are muted, inline and preloaded',
-    clipBox.children.every(
-      (video) => video.muted === true && video.hasAttribute('playsinline') && video.hasAttribute('muted') && video.getAttribute('preload') === 'auto',
-    ),
-    JSON.stringify(clipBox.children.map((video) => video.attributes)),
+    'and it is muted, looping, inline and told to start',
+    clipVideo.muted === true && clipVideo.loop === true && clipVideo.autoplay === true &&
+      clipVideo.hasAttribute('playsinline') && clipVideo.hasAttribute('muted'),
+    JSON.stringify({ muted: clipVideo.muted, loop: clipVideo.loop, autoplay: clipVideo.autoplay, attributes: clipVideo.attributes }),
   );
-  // ⚠️ **一个 loop 都不许有。** 单元素 `loop` 在浏览器里不是无缝的：到点要先 seek 回 0 再
-  // 解一帧，最后一帧就停在屏幕上一拍 —— 那就是「播完卡一下再继续」。换手靠 `ended`，而
-  // `loop` 开着 `ended` 根本不触发。
-  check('neither element loops', clipBox.children.every((video) => video.loop !== true), JSON.stringify(clipBox.children.map((video) => video.loop)));
-
-  const [firstVideo, secondVideo] = clipBox.children;
-  check('only the element on screen was told to play', firstVideo._plays === 1 && secondVideo._plays === undefined, JSON.stringify({ first: firstVideo._plays, second: secondVideo._plays }));
-  check('and it is the opaque one', firstVideo.style.opacity === '1' && secondVideo.style.opacity === '0', `${firstVideo.style.opacity} / ${secondVideo.style.opacity}`);
-
-  // 播到头：另一个从 0 接上，自己停下并回到 0。顺序是「先亮新的、再倒旧的」—— 反过来会看到
-  // 画面往回跳一帧，比卡一下还难看。
-  secondVideo.currentTime = 7;
-  firstVideo.fire('ended');
-  check('the end of a clip hands the picture to the other element', secondVideo.style.opacity === '1' && firstVideo.style.opacity === '0', `${firstVideo.style.opacity} / ${secondVideo.style.opacity}`);
-  check('the incoming element starts from zero', secondVideo.currentTime === 0, String(secondVideo.currentTime));
-  check('the outgoing one is paused and rewound', firstVideo._pauses === 1 && firstVideo.currentTime === 0, JSON.stringify({ pauses: firstVideo._pauses, currentTime: firstVideo.currentTime }));
-  check('and it is the incoming one that was told to play', secondVideo._plays === 1, String(secondVideo._plays));
-
-  // 待命那个就算自己报了 ended 也不许换手。换手的第一步是把接手的那个倒回 0，所以一次误
-  // 触发会把**正在播的那一个**从半截打回开头。⚠️ 只查 opacity 是查不出来的 —— 换手之后
-  // 亮着的还是同一个元素，屏幕上看起来一模一样，必须查播放位置。
-  secondVideo.currentTime = 4;
-  firstVideo.fire('ended');
-  check('an idle element cannot hand over', secondVideo.style.opacity === '1' && firstVideo.style.opacity === '0', `${firstVideo.style.opacity} / ${secondVideo.style.opacity}`);
-  check('and the element that is playing is left exactly where it is', secondVideo.currentTime === 4 && secondVideo._plays === 1, JSON.stringify({ currentTime: secondVideo.currentTime, plays: secondVideo._plays }));
-
   check('the box remembers what it is holding', clipBox.getAttribute('data-dshbg-media') === 'video', clipBox.getAttribute('data-dshbg-media'));
   check('the sheet sizes the video to the box', /\[data-dshbg-wall\] > video \{[^}]*object-fit: cover;/.test(base.css));
 
