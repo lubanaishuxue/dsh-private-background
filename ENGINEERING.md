@@ -206,7 +206,34 @@ body .cm-stat-dialog::backdrop { background: #080a0e59 !important; }
 
 那个包的 CSS 是压缩过的：`!important`、token 名、整个声明都被替换成 `ƀ`–`ǿ` 区间的单字符。**直接追加纯 ASCII 是安全的**（解码器只替换那些字符），而且追加在出错规则之后天然赢得层叠。补丁脚本先查签名，重复运行不会叠两层。
 
-代价：插件重装/升级会覆盖这段补丁，重跑一次脚本即可；脚本找不到锚点时会**报错退出**而不是猜。
+**代价：cost-meter 每次升级都会整包重写，补丁和 `.dshbg-orig` 备份一起消失，弹窗退回深灰板。** 这不是理论风险，2026-11-10 就是被 1.9.58 冲掉的一次：升级在 11-07 23:35，用户两天后才打开那个弹窗，看到的是 `#2c2c2e` 的平直方块。
+
+### 所以它现在自己补（1.3.16 启动时 → 1.3.19 运行期也补）
+
+补丁逻辑搬进了 `cost-meter-patch.js`，两个入口共用同一份实现：
+
+| 谁 | 什么时候 | 干什么 |
+|---|---|---|
+| `index.js`（宿主半边） | 每次装配插件，**在窗口请求这个 bundle 之前** | 查签名，被冲掉了就补回去 |
+| `index.js`（1.3.19 起） | `fs.watch` 盯着 `lib/` 目录，文件被重写就补 | 覆盖**运行期间**发生的升级 |
+| `tools/patch-cost-meter.cjs` | 手动 | 立刻补 / `--revert` 撤回 |
+
+**为什么还要加 watcher：** 启动时那一次只覆盖「应用关着的时候被升级」。2026-11-11 01:46 cost-meter 从 1.9.58 升到 1.9.64，是**应用开着的时候**整包重写的 —— 补丁没了，自愈早跑完了，用户看到的就是「这个更新了，又没了」。watcher 把「升级」到「又变玻璃」之间从「等下次重启」压到几百毫秒。
+
+盯的是**目录**不是文件：安装是替换文件（rename），持有旧文件的句柄会失效。`filename` 要过滤，否则补丁自己写 `.dshbg-orig` / `.dshbg-off` 会被当成升级（自己叫自己）。
+
+`apply()` 按状态返回而不是抛：`patched` / `already` / `missing` / `anchor-missing` / `off` / `error`。**不抛是硬要求** —— 宿主半边一抛异常，整个插件不装配，用户连壁纸都没了，为了一个弹窗的透明度付这个代价不值。只有 `patched` 写一行日志，其余静默；`anchor-missing` 和 `error` 走 warn，因为那两种情况需要有人来看。定时器回调里抛异常等于往宿主主进程扔一个未捕获异常，所以 watcher 的回调也整个包在 try 里。
+
+**`--revert` 不是一次性的。** 它还原文件之外还写一个 `client.js.dshbg-off` 标记，之后的启动看到标记就不补 —— 一个下次开关机就被自动撤销的「撤销」，等于没撤。手动脚本带 `force`，所以「跑一次脚本」仍然能盖过标记重新打开。
+
+⚠️ **补丁是插在一个字符串字面量中间的。** 多一个引号、反斜杠或反引号，等于 `cost-meter` 整个插件从界面上消失，不只是弹窗。冒烟里第一条断言就是「补丁文本里不许有这四个字符」。
+
+验法是 `node lab/mutate-heal.cjs`（9/9）。它把仓库根这三个文件复制到临时目录，`DSHBG_ROOT` 指过去跑冒烟 —— 所以变异的是副本，真仓库一个字节都不动（脚本末尾自己 md5 对一遍）。九条变异里，两条是白写的教训：
+
+- **「把补丁追加到文件末尾」在当时的断言下是全绿的。** 追加到 CSS 字符串外面语法合法、`replace` 也照样能反推回原文，所以「可逆」那条抓不住它。现在单独钉「插在强制 alpha 的那条规则后面、紧跟着」。
+- **变异体语法错误时，冒烟一行 FAIL 都不会打，「没打 FAIL」和「全绿」长得一模一样。** 第一个版本的变异写成了 `void (a, b, c,)`（尾逗号），模块 import 直接抛，脚本报的却是 `MISS 套件全绿`。现在脚本先确认输出里真有 `PASS`/`FAIL` 那一行，再判断。
+
+
 
 
 窗口截图的实测（150% 缩放，除以 1.5 得 CSS px）可以逐条对上：
@@ -502,6 +529,1036 @@ v2.50.0 之前所有背景共用一套滑杆：把 A 图调成模糊 5，切到 
 只认 `view === 'page'`，因为同一个组件在插件列表里也会以 summary 形式渲染一次——那种情况下不该动整页。
 
 不透明铺在**栏**上而不是内容块上：页面容器是 `align-items:center` 的 flex column，内容块被限制在 `max-width:960px`，只铺内容块会在两侧各留一条透壁纸的亮缝，看起来像渲染 bug。
+
+### 表头是宿主插件页上唯一该有模糊的地方
+
+⚠️ **先说清楚是哪一页。** 用户说的「插件页面」是**宿主自己的插件管理页**（「插件」标题 + 刷新 / 添加按钮 + 实验性功能 / 已安装插件列表），**不是本插件的设置页**。所以下面这条规则的前缀只能是 `html[data-dshbg-on]`，**不能带 `[data-dshbg-config]`** —— 那个属性只有本插件自己的设置页才会写，挂在它上面等于这条规则在真正需要它的那一页上**永远不会匹配**：样式表里有、断言全绿、屏幕上一像素都不变。这个错误在本轮真的写出来过一次，是 `tools/smoke-test.cjs` 里那条 `the title bar is scoped to the wallpaper being on, not to this plugin's own page` 把它挡下来的。
+
+页面里那条带子原本**没有任何表面**。列表行滚到它下面时，文字被一条水平线从字形中间硬切，切线上方是干净的壁纸——看起来像渲染坏了，其实是那里什么都没画。
+
+⚠️ **它是一块「内容从底下滚过去的表头」，不是一列 pane —— 这两者要的配方是反的。** 前七轮定配方，第八轮定范围，第九轮才发现前六轮的测量对象根本不在屏幕上；每一次都看着合理：
+
+1. **自己挑数**：`34%` 填充 + `blur(24px)` + 一条下缘线。屏幕上读出来是另一个材质：平直边、没有内环也没有顶部高光，比周围所有东西都更「奶」。用户：「模糊的效果和别的模糊的效果又不太对」。
+2. **借一列 pane 的配方**：`glassPane()`（22% + 四面 1px 内环 + 投影）+ `menuBlurOf`。**更糟。** 一条 52px 高的带子被画成了浮起的卡片——四边一圈硬线、底下压着投影。用户：「更怪了，你让他和标题头的模糊度一致」。
+3. **借市场页吸顶头的整份配方**：8% + `min(64, max(menuBlur × 2, 32))`。形状对了，模糊仍然不对：64px 把表头后的壁纸抹成平汤，和旁边透出同一层壁纸的侧栏成了两种材质。用户：「不对，你直接把数值调到和侧边栏一样的模糊数值」。
+4. **只共享薄填充，模糊跟随壁纸**：`STICKY_FILL` + `settings.blur`。模糊终于对了，**填充还是错的** —— 而填充才是眼睛真正读成「同一种材质」的那个量。
+5. **密度对齐**：`1-(1-sidebarFill)²` = 64%，去掉 `saturate`。**错，而且这个数算在一个已经被修掉的 bug 上。**
+6. **纵向渐变**：顶部 `sidebarFill`、33% 处到底边归零。把「台阶」当指标测了一轮，是填充能做到的最好结果（−2），但**仍然错**。用户：「还是不对，全面排查」。
+7. **不画**：清掉宿主自己画在 `::before` 上的那层底色，自己一个像素的填充都不加，唯一的表面就是**被 `backdrop-filter` 糊过的壁纸**。用户提的：「你不要去画，你让他模糊的反馈壁纸的颜色」。**这一步是错的，而且错得很隐蔽**，见下一段。
+8. **侧栏那个数，平铺**：`sidebarFill`（默认 40%）+ 壁纸那条模糊，宿主那层继续清掉。参数没变，但**这是它第一次真的到达屏幕** —— 前六轮它都被宿主那层压在下面。
+
+第 2 步的教训是：**「和别处一致」不等于「照抄别处的配方」**。配方要匹配这个表面在**做什么**。一列 pane 四周都被别的东西围着，所以需要一圈 1px 内环和一道投影；一条横贯的表头没有「四周」，那圈内环就是四条凭空出现的线。第 3 步又补了一半：**要一致的那个表面到底是谁，也必须先看实现，不能按名字猜。**
+
+**先量了一下「第 4 步在屏幕上到底贡献了多少」，这一步以前从来没做过，而它才是关键。**
+
+把那张截图当数据读：带子内部（避开按钮和标题，取中位数）是 `(40.3, 46.8, 88.3)`，紧贴它下沿的壁纸是 `(33, 35, 70)`。8% 的 `#151517` 叠上去只该压暗 3–4 个单位，剩下的差来自壁纸自己的竖直渐变。
+
+也就是说：**8% 的填充在屏幕上等于没有。**（⚠️ 这个结论只对了一半：屏幕上那块颜色里还有宿主自己的一层，见第 7 步。8% 之所以看不出来，是因为它叠在宿主那层**下面**，不是因为它太薄。）用户三番五次说「不一样」，不是嫌这个材质的浓度不对 —— 是那里读不出一个属于本插件的材质，只有宿主那层底色和它自己的 1px 亮线（`rgba(255,255,255,≈0.16)`，实测 α 在 0.155–0.172 之间，横贯内容列、到侧栏边为止）。
+
+**第 4 → 第 5 步是怎么定下来的**（当时的推理，拿「带子内部 vs 侧栏」当依据）：
+
+这个差别**不可能靠调模糊修掉**：模糊只改变「糊到什么程度」，不改变「透过来多少」。当时按合成公式反推，表头后面那层底图是 `(43,50,96)` 一带，据此认为 8% 的填充让一块很亮的壁纸透过来 **92%**，而侧栏那一列只透 **36%**。—— 这两个数本身没算错，但「表头只透 92%」这个前提漏了宿主那层 50%，真实值是 46%。**差的这 10 个点，就是后面几轮怎么调都对不上的那一截。**
+
+⚠️ **`settings.sidebarFill` 不是 64%，而且「64% 的侧栏」这个说法本身已经过期了。** 第 5 步的推导是：侧栏那一列被画了**两次**（宿主的列 + 它的内层 root 都读 `--dsw-specific-sidebar-fill`），同一个 alpha 落两遍，屏幕上看到的是 `1-(1-a)²`，默认 40 就是 64%。
+
+**这个前提在上一版就已经被修掉了。** `chromeCss()` 里有一段 `column`，专门把那一层的 `background-color` 设成 `transparent`，就是为了一次性解决「两层叠成一条黑柱」。而 `chromeCss` 自己的注释写的是：*"two layers of the same 40% land as 64% and read as a black column"* —— **64% 正是这段代码骂过的那个数**，我把它算出来、写进表头，还写了一条断言把它钉死。屏幕上那列就是 **40%**。
+
+`saturate(150%)` 那部分结论仍然成立，保留：侧栏从不给任何东西提饱和，而薄填充之上再提饱和，会让带子比旁边的玻璃更蓝——截图上就是那一带的蓝通道比屏幕上任何别的表面高出 20 点。
+
+**第 6 步：把「台阶」当指标**
+
+不和截图比颜色了，改量**下边界的台阶**：把每个候选配方放到**同一块壁纸**上、在浏览器里 1:1 渲染，然后量「带内最靠下的 18px」与「带外最靠上的 18px」的差（`lab/head-trial*.html` + `lab/head-trial.py`）：
+
+| 配方 | 台阶（B 通道） |
+|---|---|
+| 8% 平铺 | **+1** |
+| 22% 平铺 | −15 |
+| 40% 平铺 | −35 |
+| 51% 平铺 | −47 |
+| 64% 平铺 | **−61** |
+| 顶部 40% → 底边 0 | **−2** |
+| 顶部 64% → 底边 0 | −3 |
+
+**要量的不是带子内部有多深，是它下边界跳了多少。** 眼睛读的不是「这块带子密度多大」，而是「从这里跨到下面那一行，颜色跳了多少」。这张表本身是对的（纯填充的效果就是这么几个数），它说明了**任何平铺值都会在一头失分**：「厚到能读成一层表面」和「下边界不留硬边」是两个相反的要求。
+
+但它也是这一轮最后的岔路：这些数字是**在只有我们那一层填充的前提下**量的。真机上还有一层 —— 而且它盖在上面。
+
+**第 7 步：根因 —— 表头的背景根本不在我们标记的那个元素上**
+
+宿主把它的底色画在**伪元素**上（`dsh-client-ui-plugin-manager`，`lib/client.js` 里那坨 CSS）：
+
+```css
+.V7pFBG_pageBar[data-natural]:before {
+  content: "";
+  height: var(--plugin-header-paint-height, var(--plugin-header-rest-height));
+  background: var(--dsw-alias-bg-base);      /* ← 而本插件的 tokenCss 会把它 remix 成 surface 半透明 */
+  position: absolute; inset: 0 0 auto;
+}
+```
+
+`::before` 属于元素的**内容**，绘制顺序在元素自己的 `background` 和 `backdrop-filter` 结果**之上**。而我们标记的正是 `.pageBar`（`isBand` 会拒掉 `.pageHead`，因为它是 `position: relative`；沿线向上走最后落在 sticky 的那个容器上）。于是前六轮：
+
+- **我们调的每一个填充值，都叠在宿主那层 50% 的下面**，屏幕上永远是「宿主 + 我们」两层叠加。这解释了一个一直对不上的事实：无论 fill 取多少，看着都偏深，而且 40% 和 64% 的差别没有数字上那么大。
+- **我们的 `backdrop-filter` 一直在跑，糊的结果被那层 50% 的实色盖住了。** 所以「没有覆盖，非常清晰」这一句抱怨，跟模糊有没有生效根本无关 —— 它确实生效了，只是看不见。
+
+**怎么找到的**：解包宿主 `D:/DeepSeek Harness/resources/app.asar`（`lab/asar-get.cjs`，格式是先 16 字节头再 JSON 再数据），把 `dsh-client-ui-plugin-manager/lib/client.js` 整个取出来，CSS 从它里面原样抽成 `lab/host-pm.css`；再写 `lab/repro-head.html` 用**宿主自己的样式表**把这一页连同壁纸复刻出来，命中结果打在角上：`hit=div.bar`、`::before h=56px bg=…/0.5`。前六轮一直缺的就是这一步 —— 所有推理都建立在「我们看到的那块颜色是我们画上去的」这个前提上，而它从来不成立。
+
+**第 9 步：空的表头不是「背景」，是朝列表开的一扇窗**
+
+第 7 步把填充归零之后，屏幕上剩下的唯一东西就是 `backdrop-filter`。而 `backdrop-filter` 采样的**不是壁纸，是表头背后的一切** —— 包括滚上来的那些行。用户下一张截图里那条东西就是它：一团形状和列表一样的亮斑，浮在那里、周围什么都没有、到半条带子的地方就断掉（因为行到那里为止）。
+
+量出来是 `+19,+19,+19` —— **三通道等量**，一层中性白光，也就是被糊开的白字，不是壁纸。所以调模糊半径永远调不成背景：它糊的是内容，糊得再狠也只是把字变成雾。
+
+「我不要求他能显示出后面的文字，我只要求显示出背景」这句话把两头的极端都排掉了：一块色板不是背景（第 1–6 步），一个空表头也不是背景（第 7 步），它是朝列表开的一扇窗。剩下的只有**侧栏自己用的那个填充** —— 一个已经在滑杆上、已经在屏幕左边 200px 处存在的数。
+
+**这就是为什么第 8 步以前所有「40%」的测量都不作数**：它们量的是「宿主那层 + 我们的填充」，而屏幕上从来没出现过单独的 40%。清掉 `::before` 之后，同一个 40% 才第一次真的到达屏幕。
+
+分工回到一句：**填充负责盖住行，模糊负责让它们化开。** 谁也不替谁干活，所以这条规则是四行，不是一段渐变。
+
+| 项 | 值 | 为什么 |
+|---|---|---|
+| 填充 | `headFill(settings)` = `sidebarFill`（默认 **40%**），**平铺、无渐变** | 侧栏那一列用的就是这个数，两者按构造同材质。渐变会把底边归零，滚上来的行在带子下半截就裸着 |
+| 宿主那层 | `[data-dshbg-head]::before { background: transparent !important }` | **第 7 步的核心**。不清掉它，我们的填充叠在它下面（40% 读成 ~70%），表头就是一块板子，而其余断言全绿 |
+| `backdrop-filter` | `blur(clamp(settings.blur, 0, 40))`，**不带 saturate** | 与侧栏背后的壁纸同一条滑杆、同一个上限；侧栏不提饱和，这里也不提 |
+| 边缘与投影 | **没有** | 一条横贯的带子没有「四周」。`glassPane()` 的四面内环 + 投影会把它读成一块浮起的卡片 |
+| `fullWindow` 关闭时 | 退回 `STICKY_FILL = 8` | 那时侧栏是宿主的**实心**列，没有密度可对齐，也没有壁纸透过来 |
+
+⚠️ **方法学：`--disable-gpu` 会让 `backdrop-filter` 静默失效。** 第 6 轮渲染那批对照图时带着这个参数，八份候选里的「插件」二字**全都是清晰的** —— 那就是马脚，而我没看出来，还照着那批图量了一轮。判断方法不是看图：在同一张图里放一份「只有模糊、零填充」的对照，比它的细节 σ（`none 36.7 → 32.3`）才算真糊了。
+
+**第 8 步：先确定「这条规则只许落在这一页」**
+
+配方定死之后，用户的下一条反馈是 **「你要改的是插件页面的那个表头，不是聊天的，工作区的，这两个的表头是好的」**。这句不是配方问题，是**作用域**问题 —— 而且它比配方更危险：
+
+这条规则**不增加表面，它拆掉宿主画的那一层**（`::before` 被设成透明）。所以标记一旦落错页面，那一页的表头不会变玻璃，而是**变空**。
+
+原来的守卫是**反面**的：
+
+```js
+const isChat = () => document.querySelector('[data-composer-card]') !== null;
+...
+if (!root.hasAttribute('data-dshbg-on') || isChat()) { unmark(); return; }
+```
+
+它只认「对话页」一种，而且认法是「有没有 composer 卡片」—— **工作区那一页根本没有这道检查**，任何以后新增的页面也没有。几何定位本身是**通用**的（`isBand` 只看尺寸、位置、在不在流里），所以它落在哪一页的表头上，取决于那一页长得像不像，而不取决于它是不是插件页。这是反面判断的通病：**它能挡住的只有它想到过的那几种页面。**
+
+改成正面判据，而且不需要任何类名：宿主的 `attach()` 会把 `--plugin-header-rest-height` / `--plugin-header-compact-height` / `--plugin-header-paint-height` **写在这条 bar 自己的内联样式上**（`bar.style.setProperty(...)`，`measure()` 在 `attach()` 里同步跑），全应用只有这一个组件写这三个名字。于是「带着它们」就是「这是插件页的 bar」，而且是个**肯定的**答案：
+
+```js
+const ownsHeaderVars = (node) => HEAD_VARS.some((n) => node.style.getPropertyValue(n) !== '');
+const barOf = (node) => { /* 从候选向上爬 6 层，返回携带这些变量的那个 */ };
+```
+
+`barOf` 必须向上爬：命中测试落到的是 bar 的 `<header>` 子元素（bar 自己 `pointer-events: none`），而变量在 bar 身上。
+
+**证据在 `lab/head-cases.html`**，新加两个形状：
+
+| 形状 | 是什么 | 期望 |
+|---|---|---|
+| `l` | 与 `a` **几何完全相同**（同样的 sticky 带子、同样的滚动体、同样的左右边），只是不带那些变量 | **不标记** |
+| `m` | 插件页的 bar 带变量，但树里还挂着一个 composer 卡片 | 照样标记 |
+
+`l` 就是用户那句话的形状；`m` 证明判据是**正面**的而不是"认页面"。只测 `l` 不够 —— 把 `isChat()` 加回来也能让 `l` 通过，所以 `e`（对话页）和 `m` 必须同时在。
+
+⚠️ 顺带一个坑：`the mark is not gated on recognising which page it is instead` 这条反面断言一开始写成 `!/isChat/.test(CODE)`，结果被 client.js 里解释「为什么删掉它」的那行**注释**命中，永远红。改为只钉**定义**和**调用**（`const isChat = () =>` / `|| isChat()`）。
+
+市场页是另一种现场：12px 卡片标题和 1px 16% 白描边从底下滚过，因此保留自己的 `8% + min(64, max(menuBlur × 2, 32))`。**两条表头的填充从此不再相同，也不该相同**——市场页没有「旁边的列」要对齐，插件页有。
+
+### 文档预览面板的路径条（第三张表头：1.3.17 填 → 1.3.18 透明 → 1.3.19 不碰）
+
+宿主 `dsh-client-ui-sidebar-documentpreview` 的表头是这样写的：
+
+```css
+._xxx_preview { flex-direction: column; height: 100% }
+._xxx_header  { flex: none; height: 38px; border-bottom: .5px solid … }   /* 没有底色 */
+._xxx_content { flex: auto; min-height: 0 }
+```
+
+**这一行是正常流里的 chrome**：文档在 `.content` 里自己滚，**永远不从它底下过**，也没有东西从它背后滚过去。所以它既不需要填充挡东西，也不需要模糊化东西。**这个结论花了三个版本。**
+
+#### 第一次：60% 填充 → 「毛玻璃贴在文档上」
+
+量用户 11-10 那张截图（1048×1362，全是物理像素）：
+
+| 带 | y（物理） | 色值 | 是什么 |
+|---|---|---|---|
+| 文件标签条 | 51–107 | `(29,33,56)` = 壁纸原色（tab 自己 `(44,44,46)`） | 透明 |
+| 路径条 | 108–164 | `(25,26,34)` 平铺 56px | **我们的 60% 板** |
+| 代码块工具条 | 165–227 | `(150,150,151)` | 宿主内容 |
+| 文档页 | 228– | `(255,255,255)` | 文档 |
+
+相邻两行 chrome：上边**完全透明**（露出壁纸），下边 60% 的深色。屏幕上读成「一条贴在文档上的深色板」，用户的原话是「把毛玻璃、文件名、代码框这些都显示在文档上」。**判据：两行相邻的 chrome 必须同一个色；薄一点也还是台阶。**
+
+#### 第二次：透明 + `backdrop-filter` → 这一行自己的字变双影
+
+1.3.18 把填充撤成 `transparent`、只留模糊，理由是「面板半透明，背后那页的字会落到这一行后面」。结果用户发回来的截图里，**这一行自己的 12px 路径变成了两套字叠在一起**。
+
+量化（物理像素，除以 1.5 是 CSS px）：
+
+| 层 | x | y | 说明 |
+|---|---|---|---|
+| 灰（`_directory`） | 27–500 | 137–157 | 整串路径 |
+| 白（`_name`） | 227–499 | 137–153 | 文件名那一段，**和灰层同一个基线、同一个右端** |
+| 蓝 | 37–75 | 139–156 | 第二个字起两个字形，满饱和 |
+
+关键判据是**它不在填充下面**：1.3.17 那张带 60% 深色板的截图里，这些字仍然是满亮度（`(247,248,250)` / `(122,170,255)` 满饱和）。60% 的板子盖在后面的东西上，后面那个不可能还是满亮度 —— **所以它不是「背后透出来的」，它是压在填充上面的东西**。
+
+而宿主这一行里只有一个 `PathLabel`（`PreviewFrame` 的 JSX 里 path / tools / handoff / 导航开关四个 children），路径字符串本身也只有一个文本节点。于是只剩一种解释：**这一层被重复合成了一遍**。宿主 `PathLabel` 的 `_path` 带 mask：
+
+```css
+._path_1kiio_3[data-path-clipped] { mask-image: linear-gradient(to right, transparent, black 28px) }
+```
+
+**带 mask 的子树嵌在一个自带 `backdrop-filter` 的元素里，正是 Chromium 会重复合成的那一对**；而这块表头本来就已经在一个玻璃 pane 里（`glassPane`），我们再叠一层等于套了两层 backdrop root。`lab/repro-path.html` 用宿主原样的 CSS 一比一复刻了三种组合（有模糊 / 无模糊 / 模糊+60% 填充），无头渲染里都不重现 —— 这类合成器问题只在真 GPU 上出现，和第八章那条「截图测不出画错的帧」是同一类。
+
+#### 第三次（1.3.19）：不碰
+
+没有东西可糊 + 宿主自带 mask + 双影 = **唯一不可能自己造出伪影的做法是什么都不加**。这也正是用户说「好」的那两张表头（聊天页、工作区页）本来的样子：**裸字坐在壁纸上**。
+
+所以 `previewHeadCss` 整个删掉了，规则表里不再有这一项。**下一根杠杆不是给表头加表面**，而是它所在的 pane（`glassPane`）或宿主的 mask。
+
+⚠️ 这条锚点（`data-textpreview-path`）的信息仍然有用，只是现在**不用它**：宿主 JSX 里 `PathLabel { path, className, "data-textpreview-path": true }` 把属性写死在标签上，`:has(> [data-textpreview-path])` 能拿住这个没有自己名字的表头。真要再动，先验锚点，别调数值 —— `[class*="_scrollBody"]` 那种抄来的类名、`[class*="_path"]` 这种想当然的锚点，都会让规则在样式表里存在、断言全绿、屏幕零变化。
+
+**同一张截图上的另一个现象，1.3.19 判错了，1.3.20 才修对。** 当时的结论是「那条 `「代码块」` 工具条是预览的文本渲染器（`CodeBody` → `[data-code-preview]`）画的，和文档页同时挂着，是宿主侧残留，藏起来也没用」。**判据错了**：那一行左边的字就是**聊天里代码块的语言标签**，右边两个按钮是折行和复制 —— 它是聊天转写区里某个代码块的 sticky 表头（`_bannerWrap`），并不是预览自己的零件。它之所以出现在白纸上，是因为**它被我们的 `blur(50px)` 变成了独立合成层**，而合成层不按 DOM 顺序排（见下一节）。
+
+断言只剩两条（`document preview header` 段），是正面约束：
+
+- **`the plugin does not style the preview path bar at all`**：整个样式表里不许出现 `data-textpreview-path`。想再给它加表面的人必须先删掉这条。
+- **`the preview body is left alone`**：正文不许被糊（里面是代码，逐帧重栅格化没有收益）。
+
+变异两条（`lab/mutate-head.cjs`）：往 `buildCss` 里塞回一条带 `data-textpreview-path` 的填充规则 / 塞回一条带模糊的规则，各自命中第一条。
+
+### 谁在上面（1.3.20）—— 一页文档进来的时候
+
+现场：用户打开一个 `.docx`，白色文档页铺满窗口。而页面上同时飘着——一条「代码块」表头（贴着页面顶端）、一张文件卡（`W 电气 3262 包强…`，压在「学院/专业」那几行上）、一个输入框、一条底部状态栏。把它们关掉插件就全好了。
+
+这三件东西没有一个属于文档预览。它们全是**聊天转写区里的零件**，而且**每一件都已经自带一个合成层**：
+
+| 零件 | 谁让它合成 |
+|---|---|
+| 代码块表头 `_bannerWrap` | 宿主给 `position: sticky; top: 0; z-index: 6` + **我们的 `blur(menuBlur)`** |
+| 输入框卡片 `[data-composer-card]` | 我们的 `position: relative` + `blur(menuBlur)` |
+| 文件卡 / 交付卡 / 气泡 | `glassPane()`（只有填充，**不是**合成层） |
+| 回到底部圆钮 | `glassFloat()` 的模糊 |
+
+而**中间那一列自己什么都不建**：`frame > div:nth-of-type(2)` 是一个 `position: static` 的普通盒子，没有 `z-index`、没有 `isolation`。于是它里面的合成层被提到**帧**的层叠顺序里去排 —— 而合成层的顺序是「谁先准备好谁先画」，不是 DOM 顺序。预览本来排在聊天后面、永远该压住它，就这么被反过来了。
+
+**判据（这一节真正值钱的一句）：管顺序的是 `isolation`，`z-index` 不是。** `z-index` 只能在同层兄弟之间排；一个 `static` 父盒子里冒出来的合成层，跟它叔叔们的 `z-index` 根本不在一个层里比。给这一列写 `isolation: isolate`，它就成了层叠上下文，**列里所有的层封在列里**，列与列、列与浮层的关系回到 DOM 顺序。
+
+⚠️ **不能用 `filter` 或 `backdrop-filter` 干这件事**，虽然它们也建层叠上下文：`filter` 会建 containing block（静默弄坏 `position: fixed` 的后代）并让整列每帧重栅格化，`backdrop-filter` 会建 **backdrop root**（`glassPane` 那条警告：整页变成一个背景根，悬在外面的菜单采样到空白、模糊静默失效）。`isolation` 两个副作用都没有 —— 它只是「这一层到此为止」。
+
+第二半：**预览一开，聊天只是背景，它身上所有模糊都该让位。** 每撤掉一个 `backdrop-filter` 就少一个合成层，也就少一次排序的机会。标记由 `installHostPanelGuard()` 写在 `<html>` 上（`data-dshbg-panel`），`hostPanelCss()` 把五个模糊点一起撤成 `none`：
+
+```
+[data-composer-card] · [data-composer-dock] · [data-sidebar-right-panel]
+[class*="_bannerWrap"] · [class*="_toBottom"]:not([class*="_toBottomSlot"])
+```
+
+填充、描边、内高光、投影**一个都不动**，只停取背景快照。这跟 `/` 菜单那条守卫（`installComposerMenuGuard`）是同一条规矩：两个模糊不可能同时成立时，让**不该在那儿的那个**让位。
+
+第三半：**面板自己装着预览时也不许糊**。`[data-sidebar-right-panel]` 上原来有一层 `blur(menuBlur)`，而预览表头的 `PathLabel._path` 带 `mask-image` —— 「带 mask 的子树嵌在自带 `backdrop-filter` 的元素里」就是 Chromium 会把整层重复合成一遍的那一对（1.3.18 双影的根因，量过色）。所以 `:has([data-document-preview])` / `:has([data-textpreview-body])` 时：撤模糊、填充 `menuFill + 12`（面板背后是聊天正文，比纯壁纸更需要挡住）、顺手 `isolation: isolate`。
+
+⚠️ **判定不能用 CSS 的 `html:has(...)`。** 挂在 `<html>` 上、里面是后代选择器，等于要求浏览器在**每次 DOM 变动**时重算整棵树 —— 而转写区流式输出时每个 token 都在动。守卫用 120ms 防抖的 `MutationObserver`，热闹时一次都不跑。
+
+认的锚点都是宿主写死在 JSX 字面量里的：`data-document-preview`（`PreviewFrame` 把 `selected.id` 挂在上面）、`data-textpreview-body`、`data-textpreview-path`。**三个都认不到时什么都不发生** —— 退化成今天的模样，而不是把别的页面弄坏。
+
+13 条断言（`stacking order` 段）：列 `isolation` 在、且没顺手变成 `filter`/`backdrop-filter`；`data-dshbg-panel` 规则在、五个模糊点一个不漏、规则体里只有 `none` 没有 `blur`；面板带预览时撤模糊且填充更浓、且带 `isolation`；守卫写标记 / 撤标记 / 插件关掉时不残留 / 防抖 120ms / 接进 `paint` 与 `dispose`。
+
+⚠️ 同时松开了三条被这次改动「误伤」的老断言：`solid mode leaves the message box flat`、`status row stays flat in solid mode`、`jump-to-bottom disc follows the finish switch`。它们原本是**字面匹配** `backdrop-filter`，而新加的 `hostPanelCss` 会显式写 `backdrop-filter: none` —— 那不是加料，正是对的那件事。三条都改成只匹配 `backdrop-filter: blur`。**判据：断言要钉行为（加没加模糊），不要钉字面（有没有这个词）。**
+
+
+### 提问卡与标签栏（1.3.21）
+
+用户两张图，两件事。
+
+**一、「这个文本框没适配（这是提出问题的那个）」。** 那张卡是提问工具的**已答回执**（`QuestionReplyBubble`：一行问题、一行答案，右下角一个时间 + 复制）。它长得像用户气泡、也确实借了宿主的 `UserMessageBubble`，但两个条件同时错过：
+
+| 它需要 | 实际 |
+|---|---|
+| 气泡底色被我们接管 | 底色是 `--dsw-specific-bubble`，**不在重混名单里**（`SURFACE_TOKENS` 里没有它） |
+| 落进某条 flow 规则 | flow kind 是 `question-reply`，而三条规则只认 `user` / `steering` / `turn-trigger`，兜底那条认 `_userRow` |
+
+于是它一直是主题那块不透明的灰。修法是加一条 `[data-question-reply] [class*="_bubble"]` 到同一批里 —— **用宿主写死在 JSX 里的属性认它，不猜类名**（`data-question-reply={data.callId}`）。它现在和用户气泡吃同一套 22% 面板配方，视觉上本就该是一家人。
+
+⚠️ 待答的那张（`QuestionComposer`，一次一问、带选项行）**不用改**：它画 `--dsw-specific-input-major`，那个 token 在名单里，早就是半透明的了。
+
+**二、「侧边依旧很乱，和背景重叠了」。** 截图里标签的标题**画到了标签自己的圆角底色外面**，压在隔壁的胶囊和壁纸上。宿主样式表里两处细节能指认它：
+
+```css
+._tab { max-width: 170px; /* 一个 overflow 都没有 */ }
+._tabTitle { overflow: hidden;
+  mask-image: linear-gradient(to right, black calc(100% - 30px), transparent ...); }
+```
+
+- **裁字只发生在 `_tabTitle` 上**，标签自己不裁；
+- `_tabTitle` 在「被截断」和「活动标签」两种状态下都带 `mask-image`，而**带 mask 的子树在这个宿主里会被重复合成一遍** —— 1.3.18 的路径条（`PathLabel`，同样的形状）就是「同一行字画两套」。这一行的渐隐段还会被画到父级底色之外，屏幕上就是文字和隔壁、和壁纸叠在一起。
+
+所以修法不是调颜色，是**把渲染路径改回一条**：
+
+```css
+[data-dockkit-tab]       { overflow: clip }   /* 裁切下沉到标签自己身上 */
+[data-dockkit-tab-title] { mask-image: none } /* 渐隐摘掉，它只是锦上添花 */
+```
+
+⚠️ `clip` 不是 `hidden`：`hidden` 会在标签上再建一个滚动容器，`_stripTabs` 的横向滚动和拖拽都会变味。
+⚠️ **不碰 `[data-dockkit-strip-tabs]`**：那条 mask 是「右边还有标签」的唯一提示，而且它自己就是滚动容器，动它风险不成比例。这一条有反向断言钉着。
+
+两条锚点都是**稳定的 data 属性**，不是那串每次构建都会变的 `_3oazc_` 类名哈希 —— 这一条比什么都重要，上一版的 `_scrollBody` 就是被哈希换掉的。
+
+10 条断言（`question card + dock strip` 段）：回执在、而且是 22% 那套配方；标签自裁、标题摘 mask、`_stripTabs` 的 mask 必须还在。另外整张样式表过了一遍真 Chromium 的 CSSOM：**56 条规则解析出 56 条，`missing 0`** —— 无效选择器会被静默丢掉，而断言全绿、屏幕零变化，这个项目已经栽过两次。
+
+## 1.3.22 · 标签栏自己磨一层（「下面的字透上来了」）
+
+用户拿开关两版截图对比：「下面的东西不应该显示出来」，并自己给了方向 —— 给上面这一层画个模糊背景的磨砂。
+
+判断是对的，而且能**指认来源**，这也是它值得写下来的原因：
+
+```css
+._tabStrip { height:28px; padding:10px 6px 0 10px }   /* 没有 background */
+._stripFill { flex:1 1 0; min-width:0 }               /* 也没有 background */
+._tabHost:not(._float) { background: var(--dsw-alias-bg-base) }
+```
+
+**标签栏这一条宿主自己一个底色都没有。**它一直靠下面那个 pane 的 `--dsw-alias-bg-base` 当底 —— 而那个 token 正是 `chatSurface` 在重混的东西。改成 50% 之后，垫在底下**别的面板的标题栏**（用户截图里那句「团队 ▸ AI 业务模式」，是会话栏的 tab 条）就从标签栏里浮出来了：字还是那些字，只是中间隔了一层半透明。
+
+修法用的是**市场页吸顶栏那份配方**（`stickyHeadRecipe()`），理由也是同一条：
+
+| | 底下是什么 | 配方 |
+|---|---|---|
+| 市场页吸顶栏 | 卡片标题从下往上滑 | 8% 填充 + `max(menu*2, 32)` 模糊 |
+| 这条标签栏 | **别的面板的字** | 同一份 |
+
+- **只靠填充是治标**：要盖住字得把条子做成不透明，那它和 pane 体就不是一个密度了 —— 屏幕上是一条更深的横带，底下一条硬边，正是「一道缝」（市场页那段记过同一条）。
+- **模糊要远大于 `menuBlur`**：`menuBlur` 是为「柔化一个菜单」调的，这里要抹掉 14px 的正文。`max(menu*2, 32)`，上限 64。38px 高的带子在 `blur(32px)` 下，字会被平均成一片很淡的亮雾 —— 读不出字，但仍是一片「磨砂」，这正是要的效果。
+- **填充只给 8%**（`STICKY_FILL`）：够让这条不是纯玻璃，又不够让它变成横带。
+
+⚠️ **不给它圆角。** 这条 strip 横跨 pane 整个宽度，两个上角正落在工作区那对圆角上。但工作区外面**有带圆角的裁切祖先** —— 证据是：pane 的底色是**方**的（`_tabHost` 只有 `background`，一个 radius 都没有），开着插件时屏幕上却是圆的，那圆只能来自祖先的 `overflow`。所以这里画方块填充是安全的，多出来的部分会被同一条弧裁掉；**反过来自己猜一个半径去对齐才是危险的**（猜错就是两道弧，#19 / #20 记过两次）。
+
+⚠️ **`backdrop-filter` 会把 strip 变成 backdrop root / 包含块**，动它之前必须先查它的固定定位后代。查过了：标签右键菜单是 `createPortal(..., document.body)` 出去的（`_menu_3oazc_581` 自己写着 `position: fixed`），不在这棵子树里。`_slot` / `_stripChrome` / `_addTab` 都是静态流内元素。唯一需要注意的是 `[data-dockkit-strip-tabs]` 那条 mask（「右边还有标签」的提示）——它的元素在这棵子树里，但它是滚动容器自己的 `mask-image`，和父级的 `backdrop-filter` 不冲突（mask 在自身绘制时生效，backdrop 在父级采样时生效）。
+
+4 条新断言（同一段）：条子必须同时有 `backdrop-filter: blur(` 和 `color-mix`；填充必须是半透明（写成不透明常数会红）；模糊必须是吸顶栏那份（默认 `menuBlur:12` → `blur(32px)`）；`menuBlur:40` → `blur(64px)` 上限。样式表再过一遍 CSSOM：**57 条解析出 57 条，`missing 0`**，并且把那条规则从 `cssRules` 里读回来逐条核对 —— `background: color-mix(in srgb, var(--dshbg-raw-base) 8%, transparent)`、`backdrop-filter: blur(32px) saturate(150%)`。
+
+## 1.3.23 · 提问卡片自己接管表面（「直角套着一道圆弧」）
+
+> ⚠️ **这一节的后半段（「摘壳」）已被 1.3.24 推翻**：方框不是输入框那两层壳，而是 `[class*="_bubble"]` 子串命中限宽壳 `_bubbleWidth` 造成的「同一圈画两遍」。下半段继续读可以，但别照它改代码；结论看 1.3.24。留下这节是因为**排除法那张穷举表仍然有效**（没有任何 CSS 描边写法会把圆角画成直角），下次别重跑。
+
+用户给了两张对照图：「这是代码框表头」（好的），「这是要改的」（提问卡片）。卡在同一张图上同时报了两件事，而且它们是两件不相干的事。
+
+### 一、那圈直角不是卡片画的 —— 先把手上的嫌疑一个个排掉
+
+宿主原话（`QuestionComposer.module.css`）：
+
+```css
+.wnLwla_card {
+  border-radius: var(--dsw-radius-xl);   /* 20px */
+  overflow: hidden;
+  border: 0;
+  background: var(--dsw-specific-input-major);
+  box-shadow: var(--dsw-elevation-panel); /* 里头是 0 0 0 .5px + 两层柔影 */
+  max-height: min(60vh, 520px);
+}
+```
+
+图上量到的是两条边：一条**直边**在 `x=484` 上从 `y=135` 一路到 `y=810` 恒定不动，一道 **20px 的弧**从 `(500,134)` 弯到 `(485,148)`。两者**共边但不同形**，所以是两层，不是一层画歪了。
+
+最像的嫌疑是「0.5px 的 spread 阴影在非整数像素比下被光栅化成了矩形」。为了不靠猜，用真 Chromium 做了一张穷举表（`C:/tmp/bs*.html`）：
+
+| 描边写法 | DPR 1 / 1.25 / 1.5 / 2 |
+|---|---|
+| `box-shadow: 0 0 0 .5px` | 全部圆弧 |
+| `box-shadow: 0 0 0 1px` | 全部圆弧 |
+| `border: 1px solid` | 全部圆弧 |
+| `outline: 1px solid`（含 `outline-offset: -1px`） | 全部圆弧 |
+| `outline: auto`（focus ring） | 全部圆弧 |
+| `inset 0 0 0 1px` | 全部圆弧 |
+
+再叠上五种会创建合成层的写法（`backdrop-filter`、`transform: translateZ(0)`、`opacity: .999`、`filter: blur(0.0001px)`、`contain: paint`）**和 GPU / 软件光栅化各跑一遍**，结论一致：**没有任何一种写法会把圆角画成直角。**
+
+所以错的不是描边的写法，而是**垫在下面那一层 `radius: 0` 的壳**。卡片 20px 的圆角只盖得住它的中间，四个角各露出一个月牙，看上去就是「圆角外面还套着一个方框」。
+
+整棵树上同时具备「顶部一条更亮的高光 + 四周 1px 内描边」的只有两种，而且都是**插件自己**在 `composerGlassCss()` 里画给输入框的：`[data-composer-card]` 和它内部的 `[data-composer-overlay]`。提问时这两层壳是多余的 —— 卡片自己就是那张卡 —— 所以按「提问卡片在场」把它们摘掉。
+
+⚠️ **摘壳必须用 `:has([data-question-key])` 限定。** 无条件摘会把正常输入框一起变成透明的。
+
+⚠️ **`[data-question-key]` 是宿主给的稳定锚点**（`QuestionComposer` 外层那个 `<div>`，JSX 里明写 `"data-question-key": pending.key`）。不要换成 `wnLwla_card` —— `wnLwla` 是模块哈希，换版本就变。
+
+⚠️ **摘壳规则的特异性比 `composerGlassCss` 高**（多一层 `:has(...)` 的具体性），但位置仍放在它**之后**，两道保险。
+
+### 二、透的问题：卡片不该继承输入框的稀薄度
+
+卡片背景是 `var(--dsw-specific-input-major)`，这个 token 跟「输入框不透明度」那个滑块走。提问卡片不是输入框 —— 它是一块浮在壁纸上的大面板，不该跟输入框一样薄。
+
+改成**代码块（也就是用户拿来当参照的那个表头）和吸顶栏共用的配方**：
+
+| | 底下是什么 | 配方 |
+|---|---|---|
+| 市场页吸顶栏 | 卡片标题从下往上滑 | 8% + `max(menu*2, 32)` |
+| 标签栏（1.3.22） | 别的面板的字 | 同一份 |
+| **提问卡片** | **壁纸的大色块** | `paneFill()` 22% + 同一份模糊 |
+
+22% 压不平壁纸的明暗，吃掉它的是模糊（`stickyHeadRecipe()`，默认 `blur(32px)`，封顶 64）。
+
+⚠️ **描边自己给**：`inset 0 1px 0` 高光 + `inset 0 0 0 1px` 环 + 一层外投影，替换掉宿主的 `--dsw-elevation-panel`。这样**就算上面第一条判断错了**，卡片这一层的边也只会跟着自己的 20px 圆角走，不会再冒出一条直边。
+
+⚠️ **`--dshbg-raw-label-0` 要带 fallback**（`var(--dshbg-raw-label-0, #fff)`）。CSS 变量未定义时 `var()` 是 invalid，**整条 `box-shadow` 声明会一起失效** —— 卡片会连描边带投影全部消失，比现在更糟。这一条是实测出来的：`C:/tmp/css_ok.html` 第一版没定义 token，`card.shadow_has_inset=false`。
+
+⚠️ **模糊挂在卡片上是安全的**：`wnLwla_*` 里没有任何 `createPortal` 出去的菜单，不会被 backdrop root 带走。
+
+### 验证
+
+4 条新断言（同一段）：卡片必须有自己的 `background-color`；必须同时有 `backdrop-filter: blur(` 和 `22%`；环必须是 `inset 0 0 0 1px` 且**不得**再引用 `--dsw-elevation-panel`；**不得**再出现 `:has([data-question-key])`（1.3.24 把它换成了一条反向断言 —— 那条「摘壳」规则从没匹配过，留着就是假证据）。
+
+CSSOM 复核（真 Chromium，`css_ok.html`，带 token 与 20px 圆角）：
+
+```
+rules=2 | card.bg=color(srgb .102 .102 .102 / 0.22) | card.bf=blur(32px) saturate(1.5)
+card.radius=20px | card.shadow_has_inset=true | shell.shadow=none | shell.bg=transparent
+plain.matchCount=false        ← 普通输入框不受影响
+```
+
+`375 → 379` 项，smoke / store 全绿。
+
+### 还没闭环的地方
+
+**外圈那个方壳，我只做到「排除所有 CSS 描边写法」+「把最可能的两个壳摘掉」，没有拿到实证。** 用户在下一轮把 `elementsFromPoint` 的 42 层结果发了过来（折叠状态），同在图的还有一张新截图 —— 方框还在。于是换个方向查，见下一节。
+
+## 1.3.24 · 闭环：方框是「同一圈描边被画了两遍」，其中一遍画在方角壳上
+
+**先说 1.3.23 错在哪：搞错了对象。** 用户截图里那张卡（有问题、有答案、右下角带 `21:05`）不是 `wnLwla_card`（提问**中**、等你作答那张，出在输入区），而是**已答回执**：
+
+```
+div.BfLV8a_row[data-question-reply]
+  └ div.BfLV8a_bubbleWidth          ← 限宽壳：max-width + min-width:0，**没有 border-radius**
+      └ div._bubble_1sgyj_1.BfLV8a_bubble   ← 真气泡，border-radius: 20px
+```
+
+（`QuestionReplyView.jsx` 与 `QuestionReplyView.module.css`，`UserMessageBubble` 来自 primitives。）
+
+**而插件的选择器是子串匹配：**
+
+```js
+'[data-question-reply] [class*="_bubble"]'
+```
+
+`BfLV8a_bubbleWidth` 里就含 `_bubble` —— 于是 `glassPane()` 被同时画在**两个尺寸完全一样**的盒子上：圆角 20px 的气泡（画出来是弧），和方角的限宽壳（画出来是直角）。屏幕上就是「一道圆弧外面套一个方框」。
+
+### 亮度差就是「画了两遍」的指纹
+
+同一张截图上逐像素读（1659×255 的裁片，DPR=1，卡片 `471..1506 / 49..220`）：
+
+| 位置 | 实测 | 单遍/双遍推算（16% 白压底色） |
+|---|---|---|
+| 圆弧（内层） | 57–60 | 单遍 ≈ 62（斜线还有抗锯齿衰减） |
+| 直边（外层） | 84 | 双遍 `1−0.84² ≈ 29%` ≈ 93 |
+| 顶边 | 120 | 双遍 + 两层 `inset 0 1px` 高光 ≈ 131 |
+| 卡片内部 | 25–46 | — |
+
+单遍对不上 84，双遍对得上 84 与 120 —— 而 `glassPane()` 里正好是 16% 的 `inset 0 0 0 1px` 环 + 10% 的顶高光，两样都在两个盒子上各画一次。这条账能对上，比“猜哪个元素”硬得多。
+
+### 修法
+
+```js
+'[data-question-reply] [class*="_bubble"]:not([class*="_bubbleWidth"])'
+```
+
+只排掉限宽壳，气泡照旧。**不要顺手把 `:not()` 加到聊天侧那三条 flow 选择器上** —— 我用宽松正则扫过 `chat / conversation / web-frontend / user-questions` 四个包，`_bubble*` 类名只有 `BfLV8a_bubble` 和 `BfLV8a_bubbleWidth` 两个（primitives 里是 `_bubble_1sgyj_1` / `_bubble_44yfq_1`，没有 `Width` 兄弟），所以这个坑只在这一张卡上。
+
+顺带两件事一起改了：
+
+1. **1.3.23 那两条「摘壳」规则删掉。** `[data-composer-card]:has([data-question-key])` 从来没匹配过 —— 回执出在消息流里，两张输入框的壳根本不是它的祖先。留着就是假证据。
+2. 同一圈环的百分比统一成 `16%`（跟 `glassPane()` 一致，原来是手写的 `14%`）。
+
+### 验证
+
+真 Chromium（`C:/tmp/qr_ok.html`，按宿主真实类名搭的 DOM）：
+
+```
+rules=1
+shellMatched : true      ← 旧选择器确实命中了限宽壳（这就是 bug）
+shellGuarded : false     ← 新选择器排掉了它
+bubbleMatched: true
+shell  computed: bg=rgba(0,0,0,0)        shadow=none
+bubble computed: bg=color(srgb .11 .11 .11 / .22)  shadow=<四层 inset/外投影>
+```
+
+`379 → 381` 项，smoke / store 全绿。
+
+### 学到的
+
+**`[class*="_xxx"]` 这种子串选择器，只要模块里存在 `_xxxWidth` / `_xxxWrap` 这类包裹层，就会连着壳一起画。** 而“玻璃”配方自带填充 + 环 + 投影，画在壳上不是无伤大雅 —— 壳没有圆角，环就是方的。以后再看到「圆弧外套直角」，先数一遍这个子串命中了几个元素，别再从描边写法上找。
+
+## 1.3.25 · 侧栏里「正在看的文件」那两行自己磨一层（顺手修掉 1.3.22 埋下的 tooltip 平移）
+
+用户截图（`clipboard-2026-11-13T09-28-21-437Z-afe0c8e4.png`，1533×158）是右侧栏里一上一下两条带子，壁纸的花纹从两条里直接穿过：
+
+| 行 | 是谁 | 宿主原话 |
+|---|---|---|
+| 上 | 文件标签栏 | `div.tabStrip[data-dockkit-strip]`（dockkit `ow()`），`_tabStrip_3oazc_239{height:28px;padding:10px 6px 0 …}`，**没有底色** |
+| 下 | 文档预览表头 | `._3R73eq_header{height:38px;padding:0 6px 0 16px;border-bottom:.5px solid …}`，**整份 `TextPreview.module.css` 里 header 只有尺寸和描边** |
+
+上面那条 1.3.22 已经磨过（`dockStripCss`），但用户这一轮把两条一起指了出来 —— 而下那条从来没碰过。
+
+### ⚠️ 先修 1.3.22 的 bug：模糊直接挂在 bar 上会让里面的 tooltip 整体平移
+
+`backdrop-filter` 会让元素成为**固定定位后代的包含块**。宿主 Tooltip 恰好是 `position: fixed` + 视口坐标：
+
+```
+._bubble_44yfq_1{…;position:fixed;z-index:100;left/top 由 useAnchoredPosition 按视口算…}
+```
+
+而且 `Tooltip` 的 `portal` **默认 false**：
+
+```js
+function Mn({ label, side = "right", …, portal: f = !1, … }) {
+  … f ? createPortal(te, document.body) : te
+}
+```
+
+dockkit 的「新建标签」「分屏」提示、文档表头的「换行 / 自动刷新 / 重新加载 / 在…中打开」提示，**都不带 `portal`**，所以全躺在被我们糊的那根 bar 子树里。1.3.22 的注释只核对了「标签右键菜单是 portal 出去的」，就把这块包含块判成安全的 —— 漏的就是这一层。
+
+真 Chromium 实测（`C:/tmp/bf.html`，bar 在 css `(80,120)`，tooltip 写死 `left:420px;top:200px`）：
+
+| 挂法 | tooltip 实际落点 |
+|---|---|
+| `backdrop-filter` 直接挂 bar | `(500,320)` ← 整平移了一个 bar 的偏移 |
+| 挂在 bar 的 `::before` 上 | `(420,200)` ← 不动 |
+
+### 配方：模糊挂 `::before`，三件套缺一不可
+
+```css
+BAR { position: relative; z-index: 1; isolation: isolate; }
+BAR::before { content:""; position:absolute; inset:0; z-index:-1; pointer-events:none;
+              background: color-mix(in srgb, var(--dshbg-raw-base) 8%, transparent);
+              backdrop-filter: blur(max(menu*2,32)px) saturate(150%); }
+```
+
+- `position: relative` —— 伪元素的定位包含块。**不**建立 fixed 的包含块，所以对 tooltip 仍然无害。
+- `isolation: isolate` —— 把 `z-index:-1` 关在自己的层叠上下文里。**不加这条伪元素会漏到祖先去**：实测直接跑到 `position: fixed` 的壁纸层后面，整条带子看不见（`C:/tmp/bf.png` 里 B 条就是这个结果）。
+- `z-index: 1` —— 抬一层。有了 `isolation`，子树（含 fixed tooltip）成了**一个整体**，而 `[data-textpreview-content]` / `_paneBody` 是它后面的兄弟，不抬就会被盖住。
+
+量化验证（`C:/tmp/mask_test.html`，DPR 3，两条完全相同的带子）：带子内的横向高频能量 `0.01 / 0.02`，紧邻其下的正文 `3.11 / 3.53` —— 带子里确实被糊平了，两种挂法的磨砂强度一致。
+
+### 下那条（路径表头）为什么要绕开 1.3.18 的老坑
+
+`ENGINEERING.md` 里原来有一条**正面禁令**：「本插件的样式表里不许出现 `data-textpreview-path` 这个锚点」。理由是两次失败：60% 填充变成贴在文档上的深色横杠；透明 + `backdrop-filter` 之后**路径变成双影**，因为 `._path_1kiio_3[data-path-clipped]{mask-image:linear-gradient(to right,transparent,black 28px)}`，而**带 mask 的子树嵌在一个自带 `backdrop-filter` 的元素里**正是 Chromium 重复合成的那一对。
+
+新配方绕开的正是这一对：表头自己 `backdrop-filter: none`，模糊在 `::before`（叶子，没有后代）上 —— 带 mask 的路径**不在任何 `backdrop-filter` 元素里面**。断言也从「别碰」改成「怎么碰」：锚点必须在、模糊只能在伪元素上、路径元素自己算出来必须是 `none`。
+
+### 认的锚点
+
+`PreviewFrame` 被所有预览模式共用（文本 / 代码 / 图片 / PDF / Office），header 的唯一稳定特征是它的**直接子元素** `PathLabel` 上写死的 `data-textpreview-path`，所以用 `:has(> [data-textpreview-path])` 认表头，不碰 `_3R73eq_*` 那串哈希。
+
+`relative` 会让表头成为绝对定位后代的包含块 —— 已核对：这一行里没有绝对定位子元素（唯一的 `position: absolute` 是正文里的 `_lineMark`，不在 header 里）。
+
+### 验证
+
+真 Chromium 跑导出的样式表（`C:/tmp/verify25.html`，按宿主真实结构搭的 DOM）：
+
+```
+rules=61   （= 顶层规则数，一条没被 CSSOM 丢掉）
+strip  own backdrop-filter=none  z-index=1  isolation=isolate
+strip  ::before blur(32px) saturate(1.5)  bg=color(srgb .071 .078 .102 / .08)  z=-1
+header matched(:has(> [data-textpreview-path]))=true  own=none  ::before blur(32px)  z=-1
+tooltip 落点 (420,320)  ← 与写死的 left/top 一致
+path   backdrop-filter=none
+```
+
+`381 → 384` 项，smoke / store 全绿（换掉 1 条旧禁令，新增 4 条：表头有表面、路径不在 backdrop-filter 元素里、strip 自己不是 backdrop root、磨砂层在内容下面）。
+
+### 学到的
+
+**`backdrop-filter` 的「包含块」副作用比「backdrop root」更容易被忽略。** 判断一个 bar 能不能直接糊，问的不是「它里面有没有 portal 出来的菜单」（宿主 portal 的一般都安全），而是「它里面有没有 `position: fixed` 的元素」。这个宿主里 `Tooltip` 默认不 portal，等于随手一个提示按钮就是坑。
+
+## 1.3.26 · 插件页表头：它抄了两个不属于自己的数
+
+用户这一轮的原话是「比对表头的样式，找出其中细微的差异，使其与其他部分保持一致」，并且明确
+提醒**不要再看之前的断言，有些是错的**。所以这一节不引用 1.3.21~1.3.25 里任何一条结论，
+全部重测；测出来的两个数确实是错的，都是「从别的表面借了一个数」。
+
+### 先把「底下的东西透上来多少」变成可量的
+
+新夹具 `lab/repro-head-finish.html`：用宿主自己的 `host-pm.css` + 真壁纸重建这一页，参数
+`v=` 换配方。关键是同一页渲染两次 —— 一次正常、一次 `hide=1` 把列表 `visibility:hidden`，
+两张图**逐像素相减**：差值就是「表头里有多少东西是底下透上来的」。这比「看着像不像」硬，
+也比高频能量准（后者分不清「壁纸本来就糊」和「字没盖住」）。
+
+```
+          leak mean   leak max    表头亮度   下方页面亮度
+1.3.25      3.70        12.0        92.8        123.1
+1.3.26      3.03         5.0        82.5        123.1
+宿主原样     —           —          82.8        123.1
+```
+
+`leak max` 从 12 掉到 5 是重点：均值几乎不动（模糊只是把亮斑摊开），**峰值才是眼睛看到的
+那一小块亮斑**。而表头亮度落在 82.5，正好是宿主自己那层底色画出来的 82.8 —— 这不是巧合，
+见下面第一条。
+
+### 错一：填充抄了侧栏的 `sidebarFill`（40），宿主给的是 `surface`（50）
+
+宿主给这根表头的底色写的是：
+
+```
+.pageBar[data-natural]:before { background: var(--dsw-alias-bg-base); inset: 0 0 auto; }
+```
+
+而 `tokenCss` 把 `--dsw-alias-bg-base` 重混成 `color-mix(in srgb, var(--dshbg-raw-base) surface%, transparent)`
+—— 也就是说**这根带子原本的密度就是 `surface` 那条滑杆**（默认 50）。1.3.21~25 之后我们
+把它换成了侧栏的 `sidebarFill`（40），理由是「和左边那一列一致」。清掉宿主伪元素之后，这
+10 点就是真金白银地少掉了：屏幕上的表头比它自己原本该有的样子亮一截。
+
+两根滑杆不是一回事：`surface` 是「一页面板」的不透明度，`sidebarFill` 是「侧栏那一列」的
+（那一列在 `fullWindow` 关的时候还是宿主的实心列）。别互相借。
+
+### 错二：模糊抄了壁纸那条滑杆（`blur`，默认 20），该抄的是 `menuBlur`（50）
+
+壁纸是**整幅**糊过一次的大色块，20px 对它是合适的。可这根带子底下滑过去的是 12~14px 的
+**文字**和 40px 的卡片图标 —— 20px 糊不掉它们，所以两者会在带子里留下形状（用户截图里那条
+带子比它下面亮 20 点，就是滚上来的卡片和标题被糊成的一片亮斑）。
+
+干同一件差事的表面是代码框表头 `_bannerWrap`（也是「一条横在滚动内容上的带子」），它用的是
+`menuBlurOf(settings)`，宿主自己的注释原话是 *“at blur(50px) it is gone”*。同一个差事，抄同一个数。
+
+### 没动的两样，以及为什么
+
+- **不补 `saturate`。** 全表 21 条 `backdrop-filter` 里 20 条带饱和，只有这条不带 —— 看着像
+  漏写。但 1.3.x 中段**实测过**：薄填充之上再提饱和，这根带子的蓝通道比屏幕上任何别的表面
+  高 20 点（它旁边那一列从不加饱和）。借数是统一，加料不是。
+- **不加描边。** 宿主 `[data-natural][data-compact]:after` 已经画了一条
+  `border-bottom: .5px solid var(--dsw-alias-border-l3)`。我们自己再叠一条 `inset 0 -1px`
+  就是双线 —— 用户截图里表头底边那道细线是宿主画的，不要重复画。
+- **不换成 `frostedBandCss` 的伪元素挂法。** 这根 bar 的两个伪元素都被宿主占了
+  （`::before` = 底色板，`::after` = 底边线），挪不过去；而且它里面那几个按钮不带 `portal`
+  的 tooltip 是否真的会漂，还没测到，没有证据就不动。
+
+### 断言改了三处（原来是反的）
+
+| 旧断言 | 新断言 |
+|---|---|
+| the bar is filled with the sidebar's own alpha | the bar is filled with the density the host itself painted it with（`surface` 30/50/70 三点） |
+| the bar follows the wallpaper blur slider exactly | the bar frosts with the same number the code-block header uses（`menuBlur`） |
+| the menu slider cannot move the bar away from the sidebar | the wallpaper slider cannot move the bar away from that number |
+
+新增一条反面：`the sidebar slider cannot move the bar`（`sidebarFill` 20 vs 80 输出必须逐字相同），
+以及 `the bar respects the menu blur ceiling, not the wallpaper one`（500 → 320）。
+总数仍是 384。
+
+### 学到的
+
+**「保持一致」不等于「抄一个看起来相近的数」。** 这根带子先后抄过侧栏的 alpha、抄过壁纸的
+模糊，两次都因为「它旁边是什么」而选，而屏幕上真正该一致的是**同一件差事**：谁也在一条滚动
+内容上盖一层，就抄谁（代码框表头）。外观相近的表面，差事可能完全不同。
+
+## 1.3.27 · 插件页表头：把「标签栏那条带子」的做法复刻过来
+
+用户这轮的诉求有两句，先是一张截图加一句「让你透背景，没让你画啊」，随后是一段更一般的
+要求：「参考其他项目中相同功能的实现方式，在当前代码基础上复刻」。所以这一节分两步：先
+列出可参考的实现并说清它的结构，再说这根表头怎么适配，最后给量出来的证据。
+
+### 一、可参考的实现，按「是不是同一件差事」排序
+
+| 来源 | 位置 | 它解决的场景 | 结构要点 |
+|---|---|---|---|
+| **本项目的 `frostedBandCss()`** | `client.js` `frostedBandCss()` | 标签栏、文档预览路径条：一条横在**滚动内容**上的带子 | 带子只做 `position: relative` / `z-index: 1` / `isolation: isolate`；玻璃整套挂在 **`::before`**（`content:""` / `inset:0` / `z-index:-1` / `pointer-events:none`），填充与模糊都在伪元素上 |
+| **宿主代码框表头 `_bannerWrap`** | 宿主样式表 | 代码块顶栏，12~14px 的字从底下滚过 | 数值来源：填充 `composerSurface`、模糊 `menuBlur`（宿主注释原话 *“at blur(50px) it is gone”*）、带 `saturate` |
+| **宿主 `.pageBar::before`** | 宿主样式表 | 插件页表头自己的底色板 | `content:""` / `position:absolute` / `inset: 0 0 auto` / `height: var(--plugin-header-paint-height)` / `background: var(--dsw-alias-bg-base)` |
+
+前两条是「怎么做」，第三条是「做在哪」。这也是这次复刻的全部：**做法抄第一条，数值抄第二条，
+落点用第三条。**
+
+### 二、参考实现的核心逻辑：为什么模糊不能挂在带子上
+
+`backdrop-filter` 会为该元素建立**包含块**（containing block）。带子里的按钮 tooltip 是
+`position: fixed` 且**不带 portal**，坐标系本来是视口 —— 一旦带子自己带了 `backdrop-filter`，
+这些 tooltip 就改成以带子的 padding box 为原点。1.3.25 修标签栏时量到过 100px 的偏移，就是它。
+
+所以参考实现的分工是：**带子负责定位和一个隔离上下文，伪元素负责玻璃**。伪元素里没有定位于孙，
+带这个 filter 没有任何副作用。
+
+### 三、适配当前项目：三处必须改，三处必须不改
+
+**必须改：**
+
+1. **不能加 `position: relative`。** 标签栏是普通块，表头是 `position: sticky`（宿主要它吸附）。
+   盖掉定位就丢吸附。只取 `isolation: isolate`。
+2. **不能新插一个伪元素。** `::before`（底色板）和 `::after`（`border-bottom: .5px` 底边线）
+   都被宿主占了。占位不了新元素，就**接管** `::before`：它本来就是「一条贴在顶上、垫在内容
+   下面的面」，几何和职责都对得上。接管要连带覆盖几何 —— 宿主用 `inset: 0 0 auto` 加高度
+   变量做收缩动画，我们补 `inset: 0` + `height: 100%`，否则玻璃只有半个头高。
+3. **填充从 `surface`(50) 降到 `PANE_FILL`(22)。** 1.3.26 抄了宿主那层底色的值，可那个 50%
+   是给**没有壁纸的实心主题**调的；壁纸铺上来之后，它把壁纸压到 0.56 亮度，屏幕上就是一块
+   压暗的板 —— 用户那句「没让你画」量出来是 81/145。同一页上每个 pane（卡片、面板）都是
+   22%，表头和它们在同一张壁纸上，就该同一个数。
+
+**必须不改：**
+
+1. **不加 `saturate`。** 另外两个参考实现都带饱和，看着像漏写；实测在 22% 这么薄的填充上
+   提 150%，蓝通道从 134.7 涨到 148.8（+14），红通道反降 7.6 —— 带子会比壁纸本身更蓝，
+   与「透背景」正好相反。
+2. **不自带描边。** 宿主 `::after` 已经画了底边线，再叠一条就是双线。
+3. **不改 `z-index`/`position`。** `installConfigHead` 已经把带子在必要时提到 `z-index: 4`，
+   再动会和吸附打架。
+
+### 四、证据
+
+**视觉等价**（`lab/repro-head-finish.html`，同一页两次渲染逐像素相减）：
+
+| 配方 | 表头/壁纸亮度 | 透出峰值 |
+|---|---|---|
+| 1.3.26：玻璃挂 bar 本体，fill 50% | 0.67 | 5.0 |
+| 22% + blur 50，玻璃挂 bar 本体 | 0.94 | 7.3 |
+| 22% + blur 50，玻璃挂 `::before` | **0.94** | **7.3** |
+
+第三行和第二行逐像素相同（`leak 4.83` vs `4.84`，只差舍入）—— 换挂法**没有**改变外观，
+只改变了副作用。
+
+**副作用确实消失了**（探针是一个 `position: fixed; left: 420px` 的元素，放进带子内部；
+`off=240` 把整页右移，模拟真实应用里表头左边还有一列侧栏）：
+
+| 配方 | 探针 left |
+|---|---|
+| 玻璃挂 `::before` | **420**（视口坐标，正确） |
+| 玻璃挂 bar 本体 | **660**（= 420 + 240，被包含块吃了 240px） |
+
+### 五、这一轮改了什么
+
+- `configHeadCss` 改成两段规则：bar 本体只留 `background: transparent` + `isolation: isolate`，
+  填充与模糊整套搬到 `::before`，并接管它的几何（`inset: 0` / `height: 100%` / `z-index: -1`）。
+- 断言从 384 到 **385**：原来的「宿主底色被清空」改成「宿主那层板被接管」，新增「玻璃必须挂在
+  伪元素上、bar 本体不许有 `backdrop-filter`」；填充/模糊类断言从读 bar 改成读 `::before`
+  （新增 `frostOf()` / `bandOf()`，描边类断言仍读 bar 本体）。
+- 填充断言改成从源码里取 `PANE_FILL` 的数值再比对，并加「三条滑杆（`sidebarFill` / `surface`）
+  都推不动它」—— 这三格正是 1.3.25、1.3.26 各自踩过的坑。
+
+### 学到的
+
+**「复刻」不是把别人的数值抄过来，是把别人的分工抄过来。** 这两轮先后抄错过两次数值（侧栏的
+alpha、宿主的 surface），而真正的答案一直是同一个结构问题：谁负责定位、谁负责玻璃、谁负责
+几何。分工照抄之后，数值才有地方落脚 —— 而落点早就在宿主自己的 `::before` 里等着了。
+
+## 1.3.28 · 一个不重启就能「全去掉」的开关
+
+用户说「你把这一块的东西全去了，我看看什么样」。这块表面已经改过七轮，而**每次判断都是在
+拿截图和记忆里的截图比** —— 1.3.25 和 1.3.26 各错了一次，都是这么错出来的。所以这次不再
+靠猜，给一个能当场对折的开关：
+
+```js
+window.__dshbgHeadGlass(false)   // 把这根带子还给宿主，立刻生效
+window.__dshbgHeadGlass(true)    // 收回来
+window.__dshbgHead()             // 看看它现在认的是哪一根，suspended 是什么
+```
+
+**为什么「拿掉标记」就等于「全去了」。** `configHeadCss` 里每一条规则都以
+`[data-dshbg-head]` 打头 —— 包括接管 `::before` 的那条。属性一摘，整段 CSS 就不匹配任何
+元素，宿主的 `::before`（`background: var(--dsw-alias-bg-base)`，50%）和 `::after`
+（`border-bottom: .5px`）原封不动地回来，连 `backdrop-filter` 的每帧开销都一起消失。
+
+**这件事量出来的结论，比预期重要：** 把我们的处理全去掉之后，这块还是暗的 —— 宿主自己
+就画了一层 50% 的底（`none` 在夹具里的相对亮度是 0.68）。用户看到的「一块板」，有一半是
+宿主原生就有的，我们能选的只有「接管它」或「不管它」，没有第三种。
+
+- 夹具有了 `none`（不注入任何 CSS）与 `band`（1.3.27）可以直接并排，
+  `lab/head-off-vs-on.png` 是这一轮的对折图。
+- 断言 385 → **386**：`the treatment can be parked and resumed without a restart`，
+  同时钉住 `sync()` 必须在 `data-dshbg-on` 判断**之前**处理 `suspended`
+  （放在后面的话，壁纸关掉时开关会被跳过）。
+
+### 学到的
+
+**可对折的开关，比第七次调参值钱。** 七轮里有两次错误不是「调错了值」，而是「没得比」——
+没有基线的时候，任何变化都只能靠形容词描述。一个能当场 A/B 的入口，把「我觉得还是不对」
+变成「上面这条和下面这条，差在哪儿」。
+
+## 1.3.29 · 「透背景」不是调那个百分数 —— 叠色换成乘性滤镜
+
+用户看完 1.3.28 的对折之后问：「没有任何方法可用嘛？就只能这样？去网上搜索解决办法」。
+所以这一节先列外面通用做法与其出处，再说为什么八轮里**一直在调错的那个维度**。
+
+### 一、外面有哪几条路（按能不能用在「宿主自己还画了一层底」的前提下排序）
+
+| 来源 | 做法 | 能不能用在这里 |
+|---|---|---|
+| `backdrop-filter` 的无底色用法（MDN / W3C Filter Effects L2，stackoverflow 7868841 里最常被引用那一版） | `header { background: transparent; backdrop-filter: blur(Npx) }`——**元素不需要背景色，只要它是透明的**，滤镜直接作用在真实合成的背景上 | ✅ 就是本次采纳的骨架 |
+| 同一篇里 `brightness()/contrast()/saturate()` 的说明 | 「Pair `brightness(80%)` with a sticky header to add depth **without a solid background**」——用**滤镜**代替一层色 | ✅ 这是关键发现 |
+| Scott Sawyer 的「表头贴同一张背景图」（stackoverflow 10353448） | `#header { background-image: url(image.jpg) }`，背景是 `fixed` 大图 → 表头看起来透明，内容被挡住 | ❌ **本项目的壁纸是我们自己画的**：`[data-dshbg-stack]` 比视口大 `bleed`（`blur*2+12`）且 `background-size: cover`，`cover` 的定位框是「视口+bleed」；表头里再画一份，定位框是表头自己 —— 缩放比差约 1.5%，纹理与下方壁纸对不上，出来是**错位双影**，比压暗更糟 |
+| 分层结构（php.cn 2311659：中间层只放 blur、上层 `::before` 单独放 rgba 调明暗） | 把「糊」和「暗」拆到两层，互不干扰 | ⭕️ 结构对，但我们只有一个可用伪元素（宿主占了 `::before` 底色板、`::after` 底边线），拆不开；而且本次证明**明暗根本不该用 rgba**，所以不用拆 |
+| Electron 的 `vibrancy` / `backgroundMaterial` | 窗口级毛玻璃 | ❌ 是整窗效果，作用不到「一根 sticky 带子」；而且会连侧栏、内容区一起改 |
+
+### 二、为什么前八轮一直在调错的东西
+
+前八轮所有方案（`sidebarFill` 40 / `surface` 50 / `PANE_FILL` 22 / 6% / 12% …）都在调
+**同一个数**：`background: color-mix(base N%)` 里的 N。这次把每一档都拿去量 Lab，才发现
+**N 乘的根本不是「暗」**：
+
+```text
+alpha 混合：result = bg*(1-a) + base*a
+```
+
+`base` 是 `--dshbg-raw-base`（近黑中性色）。所以每加一点 a，壁纸就是**向一个中性色插值**一步：
+彩度被稀释、色相被拽向那个中性色。量出来：
+
+```text
+                         ΔL*（亮度）   ΔC*（彩度，相对壁纸）
+宿主原样 a=50%             -20.8           -43.4%
+我们的   a=22%              -7.5           -22.8%
+```
+
+**亮度只掉 7.5，彩度掉了 23。** 屏幕上读到的就是「一块灰扑扑的板」——不管它多亮。
+这就是为什么七次调参都在同一个区间里打转：那个百分数控制的是「变灰多少」。
+
+而 `backdrop-filter` 的这几个函数是**乘性**的：
+
+```text
+brightness(k)：result = bg * k      ← 色相、彩度的**关系**原样保留
+```
+
+于是「暗一点」终于可以是「壁纸本身暗一点」，而不是「上面盖了一层」。
+
+### 三、三条路都量了（`lab/repro-head-finish.html`，同一页两次渲染逐像素相减 + Lab）
+
+基准取「内容 `visibility:hidden` 且表头全透明」的同一区域 = 纯壁纸，不用卡片区域当基准
+（第一遍量错了，卡片把基准拉暗，所有 blur 方案都读成「比壁纸亮」）。
+
+```text
+                                    ΔL*      ΔC*      透出峰值      备注
+宿主原样 50% 底盘                  -20.8    -43.4%     20.7       一条暗带
+1.3.27/28  22% 叠色 + blur 50       -7.5    -22.8%      7.3       仍是一条能看见的带
+本式：0 叠色 + blur 50 + bri .94    -0.6     +5.2       9.0       ±1 L* 以内，边没了
+纯透明（对照组，不挡内容）          +2.6     +5.3      41.0       内容直接穿过去
+```
+
+最后两行的 ΔC* 是模糊把周边更饱和的区域平均进来造成的，**对照组也有**，不是本式引入的。
+关键看 ΔL*：`-0.6` 落在肉眼阈值（约 ±1 L*）以内。
+
+### 四、改了什么
+
+```diff
+- background: color-mix(in srgb, var(--dshbg-raw-base) 22%, transparent) !important;
+- backdrop-filter: blur(50px) !important;
++ background: transparent !important;
++ backdrop-filter: blur(50px) brightness(0.94) !important;
+```
+
+挂在 `::before` 上这一点**不变**（1.3.27 的结论仍然成立：玻璃不能挂在 bar 本体上，
+`backdrop-filter` 会建包含块）。夹具里用线上逐字生成的规则复验：`off=240` 把整页右移模拟
+侧栏时，带子里的 fixed 探针仍然报 `420,200`（视口坐标），`::before` 的计算值是
+`blur(50px) brightness(0.94)`。
+
+`brightness(0.94)` 为什么不是 1：表头文字是浅色的，全靠壁纸自己兜底，遇到很亮的壁纸会读不出来。
+0.94 是量出来的那个点 —— 它让未滚动时的台阶落到 `-0.6`，而不是把它推到「压暗」那一侧。
+`fullWindow` 关掉时（没有壁纸铺满窗口）仍然退回 `STICKY_FILL` 那层 alpha：那时没有东西可透。
+
+### 五、断言：388 项
+
+- 删掉 `the bar is drawn at the density every pane on the page uses`（那个目标本身就不成立）。
+- 新增 `the bar carries no alpha tint at all`：`::before` 里**连 1% 的 color-mix 都不许出现**，
+  且必须是 `background: transparent`。
+- 新增 `the dimming is multiplicative, so the wallpaper keeps its chroma`：
+  `blur(Npx) brightness(0.x)` 必须在位 —— 写成 `color-mix(... 6%)` 就红，哪怕只有 6%。
+- 新增 `the dim is a light touch, not a mask`：`HEAD_DIM` 必须落在 `(0.9, 1)`。
+- `no slider can turn the bar back into a slab` 保留（三条滑杆两端仍须逐字相同）。
+
+⚠️ 这一轮还踩到一个测试自己的坑：`bandOf()` 返回的**已经是规则体**，我又对它做了一次
+选择器提取，于是 `frostOf(headFull)` 永远是空的 —— 四条断言「红得莫名其妙」。量测代码也会
+这样骗人，看到空字符串先怀疑自己那次提取，别怀疑被测对象。
+
+### 学到的
+
+**「用户说的不对」有时候是真的不对，但原因往往不在他看得见的那一维。**
+前八轮我们一直在回答「要暗到多少」，而用户抱怨的是「像画上去的」—— 那是**彩度**。
+
+**调参调不动的时候，换一个维度量，比换一个数值快。** 亮度量了八次都是「可以接受」，
+换成 Lab 的 C* 一次就看见了 43%。
+## 待办 · 圆角：面板是「上圆下方」（几何已量死，元素仍未知）
+
+用户报「圆角渲染未处理干净」，截图是一块**上两角圆、下两角直**的面板，那颗「回到最下面」的圆钮正好贴在右下那个角里。
+
+### 上一轮的量测是错的，先把错在哪记下来
+
+上一版这张表写的是「左下角也有弧，只有右下是直角」。**错了。** 量左下角时，扫描窗口里除了描边还有别的东西，那一串「弧」的坐标 `(26,676)→(36,682)` 被当成了圆角弧。这次把右下角整块打成字符画才看清：
+
+- 右下那颗圆钮（`.V4vHZW_toBottom`，宿主写死 `34×34` / `border-radius:100px`）的**圆边**正好落在扫描窗口右侧，`y=675` 时右缘在 `x≈1040`。上一轮量到的「半径 20 的弧」里，有相当一部分是**这颗钮**。
+- 于是「左下也有弧」不成立：左下和右下是**同样**的 90°。
+
+**教训：一次扫描窗里出现第二个几何体时，先出字符画，再谈半径。**
+
+### 这次的结果（截图 1084×696，`PIL`，逐像素）
+
+面板描边：`left=20..21`、`right=1054..1055`、`top=3..4`、`bottom=683..684`。四个角各自的描边走向：
+
+| 角 | 描边轨迹 | 拟合 |
+|---|---|---|
+| 左上 | `(38,3) → (33,5) → (24,12) → (21,19)`，切线在 `x=21` 竖直 | 圆心 `(37,21)`，**r ≈ 16** |
+| 右上 | `(1040,5) → (1048,9) → (1053,14)`，切线在 `x=1054` 竖直 | 圆心 `(1038,21)`，**r ≈ 16** |
+| 左下 | `x=20` 的竖线与 `y=683` 的横线在 `(20,683)` 处**直接成 90°**，全程无偏移 | **r = 0** |
+| 右下 | 同上，`x=1054` 与 `y=683` 在 `(1054,683)` 成 90° | **r = 0** |
+
+两条附加事实，这两条比半径本身更有用：
+
+1. **下边那条亮线横贯整个宽度，而且正好停在右边框上（`x=1055` 之后就没有了）。** 所以它不是底部状态栏的上沿（那个是 `grid-column:1/-1`，会一直铺到窗口右边），**是这块面板自己的下沿。** 面板真的在这里结束。
+2. 描边亮度：上 96/79、左 79、右 58、下 58 —— 跟着壁纸的明暗走，说明描边是半透明的、压在壁纸上的一层，而不是实色 border。
+
+**结论：屏幕上这个形状是 `border-radius: 16px 16px 0 0`。** 不是「一个方盒子盖住了一个角」—— 被切的是**整条底边**，两个下角一起没了。
+
+### 宿主这边是什么形状
+
+全应用（`app.asar` 里 76 个文件 302 处 `0 0;`）只找出**三处分角圆角**：
+
+| 选择器 | 值 | 位置 |
+|---|---|---|
+| `[data-windows-titlebar] .mP3x-q_centerCol` | `var(--dsh-windows-content-radius) 0 0 0` | `dsh-client-ui-layout` |
+| `[data-windows-titlebar] .acoR2W_panel[data-sidebar-right-panel=fullscreen] [data-dockkit-column="0"][data-dockkit-pane]` | 同上 | `dsh-client-ui-sidebar-right` |
+| `.F07MqG_panel`（QueueDock，排队消息条） | `var(--dsw-radius-lg) var(--dsw-radius-lg) 0 0` | `dsh-client-ui-conversation` |
+
+`--dsh-windows-content-radius` 在 `.frame` 上定义为 **16px**；`--dsw-radius-lg` 也是 **16px**。宿主自己的 README 把话说明白了：
+
+> Windows Electron 的 `data-windows-titlebar` 标记……**内容区仅左上角保留 16px 圆角，其余角和内部交界处保持直角。**
+
+所以：**「下两角是直角」是宿主的设计**，不是插件渲染坏的。而唯一那条「上圆下方」的声明（QueueDock）是宽 `min(264px,…)` 的浮层，不是这块一千像素宽的面板。
+
+### 插件这边已经把半径压成 0 了
+
+`chromeCss()` 最后一行：
+
+```js
+html[data-dshbg-on][data-windows-titlebar] ${frameSelector()} { --dsh-windows-content-radius: 0px; }
+```
+
+`frameSelector()` = `#root div:has(> [data-shell-overlay])`，而 `data-shell-overlay` 挂在 `.overlayLayer` 上、它是 `.frame` 的直接子节点 —— 这条规则命中的就是 `.frame` 本身，特异性也高于宿主的 `[data-windows-titlebar] .mP3x-q_frame`。**所以按样式表算，`centerCol` 应该是 `0 0 0 0`，一个圆角都不该有。**
+
+### 于是出现了一个说不通的地方（这才是本轮真正的结论）
+
+三种「按样式表应该出」的状态，屏幕上一个都不是：
+
+| 假设 | 应有形状 | 实测 |
+|---|---|---|
+| 宿主原样（插件那条 0px 没生效） | `16 / 0 / 0 / 0` | ✗ 右上也是 16 |
+| 插件意图（0px 生效） | `0 / 0 / 0 / 0` | ✗ 上两角是圆的 |
+| QueueDock 那条 | `16 / 16 / 0 / 0` | ✓ 形状对，但元素不对（宽度差一个数量级） |
+
+**没有任何一条打包进 asar 的声明能给出屏幕上这个形状。** 生产包里也不存在 `border-radius:16px` 打在聊天容器上的地方，`borderRadius`（内联写法）在 layout / chat / sidebar-right 三个模块里一次都没出现。
+
+所以下一步不是改 CSS，是**读活的 DOM**。一行：
+
+```js
+// 面板内 2px，读它自己的形状；再从外到内列出所有「有圆角或有背景」的祖先
+[...document.elementsFromPoint(1052, 681)].map(e => [e.tagName, (e.className||'').slice(0,40),
+  getComputedStyle(e).borderRadius, getComputedStyle(e).borderTopRightRadius, getComputedStyle(e).backgroundColor])
+```
+
+再补一句，把「谁给了这个半径」直接问出来 —— 取上面列表里第一个 `borderRadius` 非 0 的元素 `el`：
+
+```js
+[...document.styleSheets].flatMap(s => { try { return [...s.cssRules] } catch { return [] } })
+  .filter(r => r.selectorText && el.matches(r.selectorText) && /radius/.test(r.style.cssText))
+  .map(r => r.cssText.slice(0, 200));
+```
+
+### 两条互斥的修法，代价不同，得让用户选
+
+**A · 四个角都圆**（`border-radius:16px` + `overflow: clip` 打在 `${frameSelector()} > div:nth-of-type(2)`）。
+- 半径不猜：直接用宿主自己那个常数，和现在上两角完全同源。
+- 代价：面板变成一张完整的圆角卡，下沿那道**密度台阶**（`bottomRowCss()` 把底部栏画成不透明 `--dshbg-raw-base`，上面一列是半透明）会在缺口处露出来，得一起处理，否则换成一个「圆角卡包着一条硬边」的新毛病。
+
+**B · 四个角都压平**（`border-radius: 0 !important` 打在同一个元素）。
+- 这正是插件自己那条 `--dsh-windows-content-radius: 0px` 想干的事 —— 只是它没生效。等于把意图落地，面板与窗口齐平，**根本没有角，也就没有「角没处理干净」**。
+- 代价：如果用户其实喜欢那张卡的样子，这就是把好看的那两个角也拿掉了，屏幕上几乎看不出变化（下角本来就是直的）——**改完用户可能觉得没修**。
+
+⚠️ **两条都能修，但不能都修，也不该替他选。** 这个项目已经因为方向猜反被否过一次（#19「回滚，不对」）；这次的分歧不在半径数值，在**要不要这张卡**，属于设计决定，不属于实现细节。
+
+
+断言按这个边界写，最关键的是三条 —— 它们钉的是这一页的构造，不是审美：
+
+
+
+- **`the host's own backdrop on the bar is cleared, not left underneath`**：`::before` 那条必须原样在。**这条是本轮唯一「删掉就退回板子、而其余断言全绿」的断言**，所以它单独占一条，不跟别的混。
+- **`the bar is filled with the sidebar’s own alpha, not a number of its own`**：`sidebarFill` 取 20 / 40 / 60，输出里必须原样出现 `20%` / `40%` / `60%`。三个点同时钉住「原样传递」——写成常数、写成 `1-(1-a)²`、写成 `a×2` 都会红。
+- **`the bar does not fade out, which would leave the rows bare at its bottom`**：规则体里不许出现 `linear-gradient`。渐变把底边归零，滚上来的行在带子下半截就裸着 —— 那正是「没有覆盖，非常清晰」的形状。
+- **`the bar is only ever the element carrying the plugin page’s own header variables`**：钉 `HEAD_VARS` 那三个名字、`node.style.getPropertyValue(HEAD_VARS[i]) !== ''` 那句判断、`barOf(candidate)` 这次调用，以及向上爬的 `found = found.parentElement`。这四条少任何一条，「落错页面」就重新变成可能 —— 而它的后果不是多一条带子，是**别人的表头变空**。
+
+剩下的照旧：模糊用 `blur:7, menuBlur:20` 验输出是 `blur(7px)`，再把 `menuBlur` 从 0 改到 77，表头规则必须一个字符都不变；`blur:500` 必须收在 40。规则体里一个 `saturate(` 都不许有、而市场页的必须有——否则「把饱和加回来」会全绿。市场页自己的 `8%` / 乘二 / 32 下限 / 64 上限在市场页的段落里验，不能借插件页的断言「顺便」覆盖。
+
+⚠️ **还有一条是关于断言本身怎么写的，比上面任何一条都容易骗过自己。** `the plugin bar reads the wallpaper blur` 原本写成对某行源码的**文本匹配**。结果「把顶部厚度写死」这类变异全部先踩到它 —— 真正的行为断言一次都没轮到执行，而输出照样是 `23/23 caught`。**「变异被抓」和「被对的那条断言抓」是两件事**，后者只能靠把每条变异命中的断言名全部打出来才看得见（`lab/mutate-head.cjs` 现在会打）。
+
+**复现这一页，起点是把宿主的源码取出来**（前六轮缺的就是这一步）：
+
+    node lab/asar-get.cjs "/dsh/node_modules/@deepseek-ai/dsh-client-ui-plugin-manager/lib/client.js" lab/pm-client.js
+
+⚠️ Git Bash 会把 `/dsh/...` 当成本地路径改写，必须 `MSYS_NO_PATHCONV=1`。`lab/asar-ls.cjs` 用来列全部 22 101 个文件和它们的偏移（asar 布局：4 字节 + pickle 头长度 + JSON 长度 + JSON + 数据，`offset` 相对数据起点）。
+
+然后 `lab/repro-head.html` 用**宿主自己的样式表**（`lab/host-pm.css`，从 `client.js` 里原样抽出来）把这一页连同壁纸复刻出来，角上打出命中结果：
+
+    chrome --headless=new --hide-scrollbars --force-device-scale-factor=1 \
+           --window-size=1200,700 --virtual-time-budget=1200 \
+           --screenshot=lab/repro-takeover-1.png \
+           "file:///.../lab/repro-head.html?takeover=1&blur=10&scroll=60"
+
+参数：`fill=N` 走「自己画一层」的老配方，`takeover=1` 走现在的（清 `::before` + 只留模糊），`mode=natural|plain` 切换宿主那两套表头布局。对照图 `repro-fill-40.png`（70% 的板子）vs `repro-takeover-1.png`（同色，只更糊）。
+
+⚠️ 复刻里两个坑都踩过：**body 不能有背景色**（负 z-index 的壁纸层会被整块盖掉），**`--dsw-alias-bg-base` 必须写成 `color-mix(..., 50%, ...)`** 而不是 `#151517` —— 后者会复刻出一块比真机深一倍的板子，而那一倍的差正好是这一轮要找的东西。
+
+早先那两个脚本仍然有效，只是结论已被推翻（它们只画了我们那一层）：`lab/head-density.py` 从用户截图反推底图看密度，`lab/head-trial.py` 量纯填充的台阶。`after.png` / `after-zoom.png` / `pick2.png` / `band-zoom.png` 是那几轮留下的对照。
+
+**为什么它敢带 `backdrop-filter`。** `glassPane` 那条「壁纸已经糊过了，别再糊一遍」说的是 pane：底下只有壁纸，再糊一次纯粹白买一张快照。表头不一样，底下滑过的是**没糊过的正文**，快照在做实事。代价是每帧一张，所以只覆盖这一条 52px 的带子。
+
+**怎么指到它**：指不到，所以走**运行时测量**——`installConfigHead` 量出那个盒子、给它打 `data-dshbg-head`，样式只认这个标记。
+
+⚠️ **第一版量错了，而错误的形状是「什么都没发生」。** 那一版把锚点写成了 `[class*="_scrollBody"]`。这个名字是从**别的页面**的探针里抄来的：它既不是这一页的滚动体，也不保证下次构建还在。结果是 `scrollBody()` 返回 null → `unmark()` → 屏幕上和没写这段代码完全一样，而样式表断言全绿。同一条错误还带出一个「关系选择器兜底」（`:has(+ [class*="_scrollBody"])`），它在真正需要它的那一页上同样匹配零个元素——**看不见它失败的东西不叫兜底，叫假覆盖**。兜底已经删掉，现在样式表里只有 `[data-dshbg-head]` 这一条。
+
+**现在的锚点是**「页面上真正能滚的那个盒子」，靠**计算样式**找，不靠类名：
+
+- `overflow-y` ∈ {`auto`, `scroll`, `overlay`}，且 `scrollHeight > clientHeight + 8`（真的能滚，不是写着 `auto` 而已）；
+- 可见（`checkVisibility({ checkOpacity: true })`）、面积够大（≥ 320×240）、与视口相交；
+- 取面积最大的那个。`[class*="scroll" i]` 只是省掉全文档遍历的快捷方式，走不到时仍会退化成全量扫描。
+
+带子 = 与滚动体**左右对齐**、并且**跨在它上沿**的那一条：
+
+| 判据 | 值 | 挡掉的是 |
+|---|---|---|
+| `height` | 18–140 | 薄到不是带子 / 高到是区块 |
+| `width` | ≥ 滚动体宽 × 0.9 | 半宽的按钮、右侧浮层 |
+| `left` | 滚动体左沿 −12 … +64 | **窗口标题栏**（它从 x=0 起，不是从内容左沿起） |
+| `right` | ≥ 滚动体右沿 −24 | 只贴在左半边的盒子 |
+| `top` | ≤ 滚动体上沿 + 4 | **列表行**（行总是从上沿之下开始，滚出去一半也一样） |
+| `bottom` | ≥ 滚动体上沿 − 4 | 上沿之上的无关元素 |
+
+另外两条 `contains` 排除是安全线，缺了就不是「糊错地方」而是「糊一整列」：
+
+- `node.contains(body)` —— 包着滚动体的**列**不是带子。在列上挂 `backdrop-filter` 会把整页变成一个 backdrop root，挂在它外面的菜单采样到空白、静默丢掉模糊（第 18 条那个坑），而屏幕上看起来只是「今天菜单不糊了」。
+- `body.contains(node)` —— 滚动体里的**行**不是带子。但带子本身完全可能**住在**滚动体里（`position: sticky`，很常见的一种写法），所以这里判的是**在不在流里**而不是归属：`static` 的行排掉，`sticky` / `fixed` / `absolute` 的留下。一刀切按「是不是滚动体的后代」排掉，那种布局就会整片失去玻璃。
+
+**两条探测路径**，因为任一条单独都会失败：
+
+- `elementFromPoint`：在滚动体上沿 **+16 / +34 / −12** 三个高度各取一个点。带子盖在内容上、并且画在内容**上面**时，这一条最准（它顺便证明了「带子确实在上面」）。
+- 沿祖先链往上、逐层扫**所有兄弟**：宿主把行画在带子**上面**时（行有自己的 z-index），取点落在行上，只有树还知道带子在哪；带子被包在一个 block 里时也只有这一条能找到（找到的是外层 block，视觉上等价）。
+
+找到带子之后还要看**画序**：如果带子与滚动体在垂直方向重叠，而它的 `z-index` 还是 `auto`、`position` 已经不是 `static`，就抬到 `4`。不抬的话磨砂会藏在它该盖住的文字**底下**——屏幕上和「没改」一模一样。宿主自己设过的层级不动（那是故意的）。抬过的会在 `unmark()` 里还原。
+
+验证用 `lab/head-cases.html` + `lab/head-locate.cjs`（十三个形状，类名故意叫 `qq_list` / `zz_head`，**只要还依赖宿主那个拼写就会在这里失败**）：
+
+| 形状 | 期望 | 结果 |
+|---|---|---|
+| 同一 flex column，不重叠 | 带子 | ✓ |
+| 绝对定位覆盖在滚动体上（画在上面） | 带子 | ✓ |
+| 带子包在一层 block 里 | 带子 / 外层 block | ✓ |
+| 没有带子（对照） | 不标记 | ✓ |
+| 对话页（有 composer 卡片） | 不标记 | ✓ |
+| 行画在带子上面 | 带子 + 抬到 `z-index: 4` | ✓ |
+| 两个滚动体（侧栏 + 主列） | 主列的带子 | ✓ |
+| 列表不满一屏（不可滚） | 不标记 | ✓ |
+| 窗口标题栏从 x=0 起 | 只标主列带子 | ✓ |
+| 带子是滚动体内部的 sticky 子元素 | 带子 | ✓ |
+| 列表滚到 200px、没有带子 | 不标记（跨在上沿的那一行不许中） | ✓ |
+| **`l`：和第一例几何完全相同，但不带 `--plugin-header-*`** | **不标记**（这是「工作区」那种页） | ✓ |
+| **`m`：插件页的 bar + 树里还挂着一个 composer 卡片** | 照样标记（判据是正面的） | ✓ |
+
+十三例全过，没有一次多标。最后两例是第 8 步加的：`l` 和第一例几何**完全一样**，唯一的区别是它不带那三个变量。倒数第三例（`k`）是「行 vs 带子」这条边界唯一能验的地方：滚动之后总会有一行正好跨在上沿。这个脚本跑的是**从 `client.js` 里切出来的真函数**，不是副本。
+
+**排不中时可以问它。** 控制台里 `__dshbgHead()` 直接给出 `{ on, vars, scroller, scrollerRect, marked, markedRect, lifted }`（`vars` 是「标记到的那个元素身上确实有插件页的变量」，判据本身的自检）——页面形状是这个仓库唯一读不到的东西，有这一行，下一轮就是测量而不是猜。
+
+**但「找到一条带子」不等于「可以改它」。** 前缀放宽到全站之后，定位逻辑会在每一页跑，而这条规则是**拆掉宿主画的那层**（`::before` 清成透明），落错页面就是让别人的表头**变空**。所以标记前面有一道**正面**判据：只有携带 `--plugin-header-*`（宿主 `attach()` 写在 bar 自己内联样式上的三个变量）的那个元素才许标记。
+
+⚠️ 这里原来写的是反面判据 —— `isChat()`，去找 `[data-composer-card]`，找不到就认为安全。它有两个毛病：**只能挡住它想到过的页面**（工作区那一页就漏了），以及**一个留在后台的对话面板会把规则一直关掉**（表现是「每一页都一样」，比不写还难查）。现在后台有没有 composer 完全不影响判定（形状 `m`）。
+
+**开销**：观察器盯的是整个 `documentElement` 的 `childList + subtree`，流式回复时每个 token 都会触发。所以 `schedule()` 先做一次 `hasAttribute('data-dshbg-on')` 就返回，真正要量的那一段只在「壁纸开着、且还没标记」时才跑，而且走 90ms 防抖——拖滑杆时每次 store commit 都会调 `paint()`，不防抖就是每帧一次强制布局。
 
 ## 五、右上角那三个按钮是怎么改的
 
@@ -1045,11 +2102,11 @@ select option, select optgroup {
 ## 九、改了代码之后
 
 ```bash
-node tools/smoke-test.cjs     # 样式表：306 项
+node tools/smoke-test.cjs     # 样式表：331 项
 node tools/store-test.cjs     # 状态层：94 项
 ```
 
-306 项检查，覆盖：模块契约、样式表注入、**壁纸的叠层结构（容器 + 每张图一个盒子；稳态只有一个盒子；淡入挂元素而不是样式表；压暗走 brightness 而不是黑层；关掉壁纸连容器一起收走）**、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、**分源参数的三张名单（全集 = 各子集之并、无重叠、玻璃模糊留在全局）与设置页那句「滑杆属于当前这张背景」**、液态玻璃五档归属与四套配方（面板 / 芯片 / 悬浮控件 / 深色玻璃）、底部状态栏、头部胶囊、用户气泡、费用明细胶囊与头部那颗的隐藏、回到最下面圆钮、侧栏历史块（随内容收缩、行一条规则都没有、三处边缘对齐、关掉宿主 `_fade`、**和计费器共用同一个 `paneFill()`**）、计费器宽度与 Windows 下的按钮内缩、悬停预览卡的玻璃与 50% 填充下限（外加「别再钉回不透明」）、菜单的玻璃画在表面而非材料层、材料层让位、**输入框的玻璃画在卡片自己身上、菜单开着时由 `installComposerMenuGuard` 让出模糊、浓度走 `composerSurface`**（伪元素那条路试过两次，填充上屏、模糊从未上屏）、右侧侧边栏的玻璃（**只在打开时**）与下层停止画底色、悬停卡的填充下限、**菜单模糊能一路进到样式表、上限 320**、**侧栏自己的浓度档与「列不再重复画底」**、**弹窗打开时背后几乎不压暗（0.95，不是 0.52）**、**费用明细弹窗的玻璃由打过补丁的它自己负责，本插件不再插手**、悬停卡与 tooltip 的深色玻璃（描边不用 border）、团队面板（portal 与内层 token 重混）、代码块三处底色与标题栏、**没有表头的代码块（.md-code-block 兜底）**、**表头壳是盖子不是窗口（借对话框的 composerSurface + menuBlur，断言比对的是「两处相等」而不是某个常数）**、**代码块的模糊挂在 `pre` 上而不是块上（块带 backdrop-filter 会让表头采不到 `pre`）**、**弹窗打开时 `#root` 只压暗不模糊、`::backdrop` 只压暗不磨（两条否定断言，滑杆够不到的整窗 filter 一律不许有）**、**配方里一次真 `border` 都不许有、面板的环必须是 inset 阴影（真 border 在 content-box 上撑宽 2px，2px 就够起一条横向滚动条）**、**诊断开关和它的管道都不在了**、标题的「放得下就不滚」与 `max-width` 还原时机、选择器 / 测量方式 / 无缝循环 / 自激防护 / 声明式动效与关键帧、配置页实际渲染、五种字体模式、cost-meter 兼容层、**壁纸层的盒子走 vw/vh 而不是 inset（滚动条进出它不动）、且带 will-change: filter**、**「底下只有糊过的壁纸」的表面一律不许有 backdrop-filter（六个选择器逐个查规则体）、侧栏 pane 同样不许**、**代码块用 overflow: clip 自己裁圆角（不是 hidden，那会杀掉 sticky 表头）**、**表头一个角都不许自己声明（扫出所有 border*radius 声明，非零值一个都不许有，且显式压平上两角）**、**动图与视频三种来源各自的落地方式（照片写 data URL；动图写 blob URL 而不是封面，否则「动图」只显示第一帧；视频在盒子里放一个真的 `<video>`，封面先写在 `background-image` 上兜底）**、**`<video>` 的四个属性一起才算壁纸（muted / loop / autoplay / playsinline），且 `muted` 必须同时写属性 —— 这个 IDL 属性不反射，自动播放策略读的是元素解析时的静音状态**、**减少动态效果时一律退回封面（不是「动得快一点」，是根本不动）**、**取景位置同时落到 `background-position` 和 `object-position`（同一张图和同一段视频不能按两套构图显示）**、**底部状态栏是唯一保留真 backdrop-filter 的 pane，且它的模糊值必须和输入框卡片一起随 `menuBlur` 变化（不是两处各写一个数）**、**设置弹窗的合成不透明度（面板 + 它自带的那层遮罩算的是屏幕上的值，不是任何单层）与弹窗内卡片改用标签纱而不是重混中性色**、**费用分区的 section 自己不许有底色（它是弹窗的子元素，弹窗已经画过一遍；`rgb(from … / 1)` 会把重混吞掉）**、**原生 `<select>` 下拉列表的底色必须不透明（它画在文档之外，读不到底下是什么；半透明会退回弹层自己的白背板）且控件切进暗色**、**插件市场的底画在 `[data-dsh-market-root]` 上，浓度 45%（这页的正文是 12px 小字直接坐在页面上，22% 那种「只负责给转录区上色」的浓度在这里读不清）**、**⚠️ 而且它绝不能挂在 `[data-dsh-market-plugins-tab][data-dsh-market-fullscreen]` 上 —— 市场自己的渲染里 `fullscreen` 只在 `tab === "themes"` 时写，插件页上一个元素都不匹配。那条规则在样式表里、断言全绿、屏幕上一像素都没变（22% 调成 45% 也一样），整页一直在吃祖先的底色**、**滚动容器自己的 `padding-top` 要摘掉（那 8px 在吸顶栏盒子之外，只吃到根元素的填充，密度低一截，屏幕上就是搜索框上面那条浅带子）**、**吸顶栏是「磨砂窗」不是「抬起来的面」：它上面是页面（更浅），填充一重就变成一条带硬边的深色横条 —— 缝只是往下挪一行。抹掉卡片靠的是模糊，而且要远大于 `menuBlur`（一条 1px 的 16% 白描边在 `menuBlur` 下会活成一道软弧），所以填充 8% + `max(menuBlur*2, 32)`**、**吸顶栏只圆下面两个角（上面两个角紧贴同一密度的页面，圆了就是在顶上挖两个浅色缺口，又是一个缝）**、**市场卡片是标签纱不是重混中性色（底下是糊过的壁纸，加 blur 看不出区别；让它从塑料变玻璃的是填充）**、**市场吸顶栏必须真遮住滚过去的内容（它底下是文字不是壁纸，所以它跟底部状态栏一样拿同一份填充 + `menuBlur`）**、**而且它必须是「一个盒子」：宿主那条 14px 的 `::before` 要摘掉而不是补模糊（补了就是两个各自模糊、各自加填充的层，交界处是硬台阶），盒子再往上拉 `padding-top` 那么多把滚动容器的 8px 内边距盖住 —— 否则它上面留一条「只有页面填充」的带子，密度差一截，屏幕上就是一道缝**、**吸顶栏下面要有填充出来的空隙（padding 不是 margin，margin 留的是能看见卡片滚过去的洞）**、**左栏入口是 `main` + `sidebar.panellist` 两个注册项，id 必须同一个字符串 —— 宿主按 id 去 `main` 找面板，找不到时 `selectPanel` 抛错并**保留当前选中态**，屏幕上就是「图标点不动」，没有任何提示（所以「只注册图标」比「一个都不注册」更糟）**、**面板自带内边距与滚动（配置页自己没有 padding，插件详情页那边是宿主给的；直接塞进 `main` 会贴窗口边且滚不动）**、**图标是内联 SVG，不为了一个 16px 的形状多 inject 一个图标库模块（那条 inject 写错会让整个插件启动失败）**、**重复上传的入口没被拆掉：指纹在存之前算、比的是 `record.digest`、取的是存下来的那份而不是原文件、拒绝会变成一句给用户看的话、老图库的指纹会被补上**、**「居中」是普通按钮不是图库格子（`.dshbg-add` 带 `aspect-ratio: 16 / 10`，复用到普通按钮上会把它拉成跟窗口一样高的虚线大框）**、**文件夹扫描一次列整个目录、已加过的不列出来（靠 `source` 的 name/size/mtime 三元组，不是路径 —— 浏览器根本不给路径）、缩略图的 object URL 成批释放（按格释放会把还在列表里的那张弄空）**、生命周期、CSS 语法与选择器前缀。
+325 项检查，覆盖：模块契约、样式表注入、**壁纸的叠层结构（容器 + 每张图一个盒子；稳态只有一个盒子；淡入挂元素而不是样式表；压暗走 brightness 而不是黑层；关掉壁纸连容器一起收走）**、token 捕获与重混、**作用范围（左栏是否被重混）**、对话区与输入框独立不透明度、标题栏通栏、标题栏按钮探针、设置页及其作用域、**分源参数的三张名单（全集 = 各子集之并、无重叠、玻璃模糊留在全局）与设置页那句「滑杆属于当前这张背景」**、液态玻璃五档归属与四套配方（面板 / 芯片 / 悬浮控件 / 深色玻璃）、底部状态栏、头部胶囊、用户气泡、费用明细胶囊与头部那颗的隐藏、回到最下面圆钮、侧栏历史块（随内容收缩、行一条规则都没有、三处边缘对齐、关掉宿主 `_fade`、**和计费器共用同一个 `paneFill()`**）、计费器宽度与 Windows 下的按钮内缩、悬停预览卡的玻璃与 50% 填充下限（外加「别再钉回不透明」）、菜单的玻璃画在表面而非材料层、材料层让位、**输入框的玻璃画在卡片自己身上、菜单开着时由 `installComposerMenuGuard` 让出模糊、浓度走 `composerSurface`**（伪元素那条路试过两次，填充上屏、模糊从未上屏）、右侧侧边栏的玻璃（**只在打开时**）与下层停止画底色、悬停卡的填充下限、**菜单模糊能一路进到样式表、上限 320**、**侧栏自己的浓度档与「列不再重复画底」**、**弹窗打开时背后几乎不压暗（0.95，不是 0.52）**、**费用明细弹窗的玻璃由打过补丁的它自己负责，本插件不再插手**、悬停卡与 tooltip 的深色玻璃（描边不用 border）、团队面板（portal 与内层 token 重混）、代码块三处底色与标题栏、**没有表头的代码块（.md-code-block 兜底）**、**表头壳是盖子不是窗口（借对话框的 composerSurface + menuBlur，断言比对的是「两处相等」而不是某个常数）**、**代码块的模糊挂在 `pre` 上而不是块上（块带 backdrop-filter 会让表头采不到 `pre`）**、**弹窗打开时 `#root` 只压暗不模糊、`::backdrop` 只压暗不磨（两条否定断言，滑杆够不到的整窗 filter 一律不许有）**、**配方里一次真 `border` 都不许有、面板的环必须是 inset 阴影（真 border 在 content-box 上撑宽 2px，2px 就够起一条横向滚动条）**、**诊断开关和它的管道都不在了**、标题的「放得下就不滚」与 `max-width` 还原时机、选择器 / 测量方式 / 无缝循环 / 自激防护 / 声明式动效与关键帧、配置页实际渲染、五种字体模式、cost-meter 兼容层、**壁纸层的盒子走 vw/vh 而不是 inset（滚动条进出它不动）、且带 will-change: filter**、**「底下只有糊过的壁纸」的表面一律不许有 backdrop-filter（六个选择器逐个查规则体）、侧栏 pane 同样不许**、**代码块用 overflow: clip 自己裁圆角（不是 hidden，那会杀掉 sticky 表头）**、**表头一个角都不许自己声明（扫出所有 border*radius 声明，非零值一个都不许有，且显式压平上两角）**、**动图与视频三种来源各自的落地方式（照片写 data URL；动图写 blob URL 而不是封面，否则「动图」只显示第一帧；视频在盒子里放一个真的 `<video>`，封面先写在 `background-image` 上兜底）**、**`<video>` 的四个属性一起才算壁纸（muted / loop / autoplay / playsinline），且 `muted` 必须同时写属性 —— 这个 IDL 属性不反射，自动播放策略读的是元素解析时的静音状态**、**减少动态效果时一律退回封面（不是「动得快一点」，是根本不动）**、**取景位置同时落到 `background-position` 和 `object-position`（同一张图和同一段视频不能按两套构图显示）**、**底部状态栏是唯一保留真 backdrop-filter 的 pane，且它的模糊值必须和输入框卡片一起随 `menuBlur` 变化（不是两处各写一个数）**、**设置弹窗的合成不透明度（面板 + 它自带的那层遮罩算的是屏幕上的值，不是任何单层）与弹窗内卡片改用标签纱而不是重混中性色**、**费用分区的 section 自己不许有底色（它是弹窗的子元素，弹窗已经画过一遍；`rgb(from … / 1)` 会把重混吞掉）**、**原生 `<select>` 下拉列表的底色必须不透明（它画在文档之外，读不到底下是什么；半透明会退回弹层自己的白背板）且控件切进暗色**、**插件市场的底画在 `[data-dsh-market-root]` 上，浓度 45%（这页的正文是 12px 小字直接坐在页面上，22% 那种「只负责给转录区上色」的浓度在这里读不清）**、**⚠️ 而且它绝不能挂在 `[data-dsh-market-plugins-tab][data-dsh-market-fullscreen]` 上 —— 市场自己的渲染里 `fullscreen` 只在 `tab === "themes"` 时写，插件页上一个元素都不匹配。那条规则在样式表里、断言全绿、屏幕上一像素都没变（22% 调成 45% 也一样），整页一直在吃祖先的底色**、**滚动容器自己的 `padding-top` 要摘掉（那 8px 在吸顶栏盒子之外，只吃到根元素的填充，密度低一截，屏幕上就是搜索框上面那条浅带子）**、**吸顶栏是「磨砂窗」不是「抬起来的面」：它上面是页面（更浅），填充一重就变成一条带硬边的深色横条 —— 缝只是往下挪一行。抹掉卡片靠的是模糊，而且要远大于 `menuBlur`（一条 1px 的 16% 白描边在 `menuBlur` 下会活成一道软弧），所以填充 8% + `max(menuBlur*2, 32)`**、**吸顶栏只圆下面两个角（上面两个角紧贴同一密度的页面，圆了就是在顶上挖两个浅色缺口，又是一个缝）**、**市场卡片是标签纱不是重混中性色（底下是糊过的壁纸，加 blur 看不出区别；让它从塑料变玻璃的是填充）**、**市场吸顶栏必须真遮住滚过去的内容（它底下是文字不是壁纸，所以它跟底部状态栏一样拿同一份填充 + `menuBlur`）**、**而且它必须是「一个盒子」：宿主那条 14px 的 `::before` 要摘掉而不是补模糊（补了就是两个各自模糊、各自加填充的层，交界处是硬台阶），盒子再往上拉 `padding-top` 那么多把滚动容器的 8px 内边距盖住 —— 否则它上面留一条「只有页面填充」的带子，密度差一截，屏幕上就是一道缝**、**吸顶栏下面要有填充出来的空隙（padding 不是 margin，margin 留的是能看见卡片滚过去的洞）**、**左栏入口是 `main` + `sidebar.panellist` 两个注册项，id 必须同一个字符串 —— 宿主按 id 去 `main` 找面板，找不到时 `selectPanel` 抛错并**保留当前选中态**，屏幕上就是「图标点不动」，没有任何提示（所以「只注册图标」比「一个都不注册」更糟）**、**面板自带内边距与滚动（配置页自己没有 padding，插件详情页那边是宿主给的；直接塞进 `main` 会贴窗口边且滚不动）**、**图标是内联 SVG，不为了一个 16px 的形状多 inject 一个图标库模块（那条 inject 写错会让整个插件启动失败）**、**重复上传的入口没被拆掉：指纹在存之前算、比的是 `record.digest`、取的是存下来的那份而不是原文件、拒绝会变成一句给用户看的话、老图库的指纹会被补上**、**「居中」是普通按钮不是图库格子（`.dshbg-add` 带 `aspect-ratio: 16 / 10`，复用到普通按钮上会把它拉成跟窗口一样高的虚线大框）**、**文件夹扫描一次列整个目录、已加过的不列出来（靠 `source` 的 name/size/mtime 三元组，不是路径 —— 浏览器根本不给路径）、缩略图的 object URL 成批释放（按格释放会把还在列表里的那张弄空）**、**插件页表头是运行时量出来的（宿主给的是裸 `<div>`，没有语义可指）——锚点按计算样式找「真正能滚的那个盒子」（写死 `_scrollBody` 正是上一版「一个都没匹配上」的原因）、条子必须跨在滚动体上沿且既不是列也不是行（两条 `contains` 排除缺一不可）、标记真的被写、规则真的只认标记、⚠️ 前缀只能是 `html[data-dshbg-on]`（带上 `[data-dshbg-config]` 就会在真正需要它的那一页上永远不匹配）、对话页显式排除且要求它可见、被行压住的条子要抬一层、关系选择器兜底不许再出现、模糊不为零、必须同时有填充、**⚠️ 插件页表头的填充是**侧栏那一列的密度**（`headDensity` = `1-(1-sidebarFill)²`，40 → 64%，30 → 51%），跟着滑杆走（20 → 36、60 → 84），不是共享的 `STICKY_FILL = 8`（那只在市场页，以及 `fullWindow` 关闭时兜底）；模糊必须逐值跟随 `settings.blur`（`blur:7 → 7`），`menuBlur` 从 0 到 77 都不能改变它，上限 40；**带子上一律不许有 `saturate`（市场页必须有，反之亦然）**；市场页自己的乘二 / 下限 32 / 上限 64 仍各验一次；也不许画成一列 pane（`glassPane()` 的四面内环 + 投影会让它变成一张浮起的卡片）**、且条子内部不许再糊第二层**、生命周期、CSS 语法与选择器前缀。
 
 94 项状态层检查，覆盖：持久化与迁移（v4 / 退回 v3 / 每个源各自一套滑杆）、分源参数的三张名单（全集 = 各子集之并、无重叠、玻璃模糊留在全局）、删图规则，以及**壁纸的叠层模型** —— 第一张单独上屏、换图留下旧图、新图叠在上面、滑杆只落在顶层、下面那层保留自己的模糊、淡完只剩一张、下一次叠在幸存者上、重选顶层不加层、关掉清空、重开一张不淡；再加两组连点（3 层 / 5 层 / 护栏丢最老 / 塌成最后点的那张 / 十连点不饿死 / 落到最后一次点击）；再加一组**取景位置**（一张图从居中开始、拖动只改这一张不叠层、偏移写在这张图名下、换一张图用自己的偏移、换回来能恢复），以及**上传不继承偏移**（模糊继承、取景不继承 —— 前者是「界面长什么样」，后者是「这张图怎么裁」）；最后是**上传分流**（png 走照片、gif / webp / apng 走原始字节、mp4 / webm 走视频、超 96 MB 在解码前就拒绝、照片不受这个上限约束）—— 走错分支不会报错，只会让动图不动。再加一组**重复上传**（同一份产物第二次被拒绝、图库不增长、切到已经存在的那一张、不同内容照常进去、老图库补完指纹之后同样拦得住、补指纹是幂等的、**每条上传都记下 name/size/mtime 三元组**、**改名换 size 也躲不过指纹**）。
 

@@ -14,8 +14,12 @@
  *   node tools/smoke-test.js ["D:/dsh-plugins/custom-background/client.js"] [--dump]
  */
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const vm = require('vm');
+
+const ROOT = process.env.DSHBG_ROOT ? path.resolve(process.env.DSHBG_ROOT) : path.join(__dirname, '..');
 
 const CLIENT = path.resolve(
   process.argv[2] && !process.argv[2].startsWith('--')
@@ -27,7 +31,7 @@ const CODE = fs.readFileSync(CLIENT, 'utf8');
 // The package name is compared, not hard-coded: it changed once already (the `@local/`
 // scope was a local-development convention, not something to publish under), and an
 // assertion that pins the literal only ever proves the literal is still there.
-const MANIFEST = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+const MANIFEST = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 
 const BASE_SETTINGS = {
   mode: 'gradient',
@@ -341,7 +345,7 @@ async function main() {
   // host resolves `name:` out of the profile's node_modules, so a stale literal here is a
   // plugin that simply never loads. It is a separate string from the module id, which is
   // exactly why renaming the package missed it once already.
-  const PATCH = fs.readFileSync(path.join(__dirname, '..', 'cordis.patch.yml'), 'utf8');
+  const PATCH = fs.readFileSync(path.join(ROOT, 'cordis.patch.yml'), 'utf8');
   const patchNames = [...PATCH.matchAll(/^\s*name:\s*(.+)$/gm)].map((match) => match[1].trim().replace(/^['"]|['"]$/g, ''));
   check('the bundle patch names the package', patchNames.length === 1 && patchNames[0] === MANIFEST.name, patchNames.join(', '));
   check('factory is a function', base.definition && typeof base.definition.factory === 'function');
@@ -665,7 +669,10 @@ async function main() {
 
   // 转写区的表面是内容、不是外壳：输入框切回实心是「输入框」的决定，不该连带把所有
   // 代码块和文件卡也拉回实色。所以这两类与输入框的开关解耦，常开。
-  check('solid mode leaves the message box flat', !/\[data-composer-card\][^{]*\{[^}]*backdrop-filter/.test(base.css));
+  // 「实心」这一档的判据是**不加模糊**，不是「一个 backdrop-filter 字样都不许有」：
+  // `hostPanelCss` 会在宿主整页预览开着的时候显式写 `backdrop-filter: none` 把别人的模糊
+  // 撤掉，那一条正是实心模式要的「平」，把它算成加料会把好人抓了。
+  check('solid mode leaves the message box flat', !/\[data-composer-card\][^{]*\{[^}]*backdrop-filter:\s*blur/.test(base.css));
   // ⭐ v2.47.0：这些表面**不许**再自带 backdrop-filter。
   //
   // 它们底下只有「已经在 `html::before` 糊过的壁纸」，所以自带一份等于花一次全尺寸
@@ -1092,8 +1099,8 @@ async function main() {
     'jump-to-bottom disc keeps its drop shadow',
     /_toBottomSlot"\]\)\s*\{[^}]*0 10px 30px -14px/.test(glass.css),
   );
-  check('jump-to-bottom disc follows the finish switch', !base.css.includes('_toBottom'));
-  check('status row stays flat in solid mode', !/\[data-composer-dock\][^{]*\{[^}]*backdrop-filter/.test(base.css));
+  check('jump-to-bottom disc follows the finish switch', !/\[class\*="_toBottom"\][^{]*\{[^}]*backdrop-filter:\s*blur/.test(base.css));
+  check('status row stays flat in solid mode', !/\[data-composer-dock\][^{]*\{[^}]*backdrop-filter:\s*blur/.test(base.css));
   // 「费用明细」是计费器自己的 .cm-btn，画 --dsw-alias-button-elevated-fill；这个 token
   // 不在 SURFACE_TOKENS 里，暗色主题下它解析成静态的 #43454a，重混够不到，所以它一直
   // 是黑胶囊。计费器把这个按钮注册了两处 —— 头部槽里一颗、这条状态栏里一颗，用户只留
@@ -1378,11 +1385,440 @@ async function main() {
   check('both work-area columns are scoped', (base.css.match(/html\[data-dshbg-on\]\[data-dshbg-config\][^{},]*nth-of-type\([23]\)/g) || []).length === 2);
   check('restores theme text on the page', base.css.includes('--dsw-alias-label-primary: var(--dshbg-raw-label-0) !important'));
   check('does not target the centred detail block', !base.css.includes('[data-plugin-detail]'));
+
+  console.log('\nsettings page title bar');
+  // 那一栏在宿主里是**裸 `<div>`**：没有 `<header>`、没有 `role`、没有 `data-*`，类名还是
+  // 构建 hash 的（`anW5wG_scrollBody` 这种）。没有名字可以指，所以插件在运行时量出那个
+  // 盒子、打上 `data-dshbg-head`，样式只认这个标记。断言分两半：标记真的被写，规则真的
+  // 只认标记 —— 少了任何一半，这条规则都会静默地什么都不匹配。
+  check(
+    'the title bar is marked at runtime, not guessed from a class name',
+    /setAttribute\('data-dshbg-head', ''\)/.test(CODE) && /removeAttribute\('data-dshbg-head'\)/.test(CODE),
+  );
+  // 锚点是「真正能滚的那个盒子」，靠计算样式找：类名是构建 hash，而且每一页的滚动体根本
+  // 不是同一个元素。上一版写死了 `_scrollBody`，在真正需要它的那一页上一个都没匹配上 ——
+  // 因为那个名字本来就不是这一页的。
+  check(
+    'the scroller is found by computed style, never by a hashed class',
+    /getComputedStyle\(node\)/.test(CODE) &&
+      /overflowY === 'auto'/.test(CODE) &&
+      !/querySelector(All)?\('\[class\*="_scrollBody"\]'\)/.test(CODE),
+  );
+  // 条子 = 与滚动体左右对齐、并且**跨在它上沿**的那一条。两条 contain 排除是安全线：
+  // 包着滚动体的那一列如果加上 backdrop-filter，整页会变成一个 backdrop root，挂在它外面
+  // 的菜单就再也采不到壁纸、静默丢掉模糊；而滚动体里的行更不该被糊。
+  check(
+    'the bar must straddle the scroller top edge, and be neither column nor row',
+    /node\.contains\(body\)/.test(CODE) &&
+      /body\.contains\(node\)/.test(CODE) &&
+      /box\.top > area\.top/.test(CODE) &&
+      /box\.bottom < area\.top/.test(CODE),
+  );
+  // 带子也可能**就住在滚动体里面**（`position: sticky`），那时它是滚动体的子元素 —— 光按
+  // 「是不是滚动体的后代」一刀切会把它和列表行一起排掉。区分的是**在不在流里**：行是
+  // `static`，带子不是。
+  check(
+    'a bar that is sticky inside the scroller is still recognised',
+    /if \(body\.contains\(node\)\) \{/.test(CODE) && /pos !== 'sticky'/.test(CODE),
+  );
+  check(
+    'the title bar style is keyed on that mark alone',
+    /\[data-dshbg-head\]\s*\{/.test(base.css) && !/\[class\*="_header"\]/.test(base.css),
+  );
+  // ⚠️ 前缀只能是 `html[data-dshbg-on]`。挂到 `[data-dshbg-config]` 上是**错的** ——
+  // 那个属性只有本插件自己的设置页会写，而这一栏在宿主的插件管理页上；用错前缀的结果
+  // 是规则在样式表里、断言全绿、那一页一个像素都不变。
+  check(
+    'the title bar is scoped to the wallpaper being on, not to this plugin’s own page',
+    /html\[data-dshbg-on\] \[data-dshbg-head\] \{/.test(base.css) &&
+      !/\[data-dshbg-config\] \[data-dshbg-head\]/.test(base.css),
+  );
+  // ⚠️ 这一条是**范围**线，比配方更靠前：这条规则不是"加一层表面"，而是**拆掉宿主自己画的那
+  // 一层**（`configHeadCss` 把 `::before` 清成透明）。所以标记一旦落错页面，那一页的表头不会
+  // 变玻璃，而是**变空**。用户的原话：「你要改的是插件页面的那个表头，不是聊天的，工作区的，
+  // 这两个的表头是好的」。
+  //
+  // 判据必须是**正面**的：插件页的 bar 会把 `--plugin-header-rest-height` 这类只属于它自己的
+  // 变量写成**内联样式**（宿主 `attach()` 里 `bar.style.setProperty(...)`，全应用只有这一处会
+  // 写这三个名字）。旧版用的是反面的 `isChat()` —— 去找 composer 卡片，找不到就认为"安全"，
+  // 于是"工作区"这种没人想到过的页面全部中招。反面判断赢不了它没见过的那一页。
+  check(
+    'the bar is only ever the element carrying the plugin page’s own header variables',
+    /const HEAD_VARS = \[/.test(CODE) &&
+      /'--plugin-header-rest-height',/.test(CODE) &&
+      /'--plugin-header-paint-height',/.test(CODE) &&
+      /node\.style\.getPropertyValue\(HEAD_VARS\[i\]\) !== ''/.test(CODE) &&
+      /const head = candidate === null \? null : barOf\(candidate\);/.test(CODE) &&
+      /found = found\.parentElement;/.test(CODE),
+  );
+  // 反面：不许再出现"靠认页面来排除"的写法。`isChat` 一旦回来，就等于又给"落错页面"开了一道
+  // 门；而 `[data-composer-card]` 本身在别处是合法的（消息框玻璃），所以只钉这个名字。
+  // ⚠️ 只钉**定义**和**调用**，不钉这个裸名字 —— client.js 的注释里要解释为什么删掉它，那行
+  // 注释会让裸名字一直命中，然后这条断言就永远假设"已经改回来了"。
+  check(
+    'the mark is not gated on recognising which page it is instead',
+    !/const isChat = \(\) =>/.test(CODE) && !/\|\| isChat\(\)/.test(CODE),
+  );
+  // 关系选择器兜底删掉了。它在真正需要它的那一页上匹配零个元素，而断言全绿 —— 这种"兜底"
+  // 读起来像覆盖，实际只覆盖四种形状里的一种，还可能糊掉整列。现在样式表里只认那一个标记。
+  check(
+    'no relationship fallback is left to fire on the wrong element',
+    !/_scrollBody/.test(base.css) && (base.css.match(/\[data-dshbg-head\]\s*\{/g) || []).length === 1,
+  );
+  // 条子有可能被宿主画在行**下面**（行有自己的 z-index）—— 那时磨砂藏在它该盖住的文字底下，
+  // 屏幕上和"没改"一模一样。命中测试找不到就按树找，找到后只在 position 早已不是 static、
+  // z-index 还是 auto 时抬一层：宿主自己设定的层级是故意的，不动。
+  check(
+    'an overlapping bar is lifted above the rows it has to hide',
+    /style\.position === 'static' \|\| style\.zIndex !== 'auto'/.test(CODE) &&
+      /style\.zIndex = '4'/.test(CODE),
+  );
+  check('the locator can be asked what it found', /window\.__dshbgHead = report;/.test(CODE));
+  // A/B 开关：`__dshbgHeadGlass(false)` 要能在不重启的情况下把这块还给宿主 —— 拿掉标记就够，
+  // 因为这条链上**所有**规则都 keyed on `[data-dshbg-head]`。断言两件事：开关存在，且
+  // `sync()` 在最前面就处理它（放在 `data-dshbg-on` 判断之后的话，壁纸关掉时会被跳过）。
+  check(
+    'the treatment can be parked and resumed without a restart',
+    /window\.__dshbgHeadGlass = \(on\) => \{[\s\S]{0,320}?suspended = on === false;/.test(CODE) &&
+      /const sync = \(\) => \{\s*if \(disposed\) return;[\s\S]{0,700}?if \(suspended\) \{\s*unmark\(\);\s*return;/.test(CODE),
+  );
+  check(
+    'the title bar frosts the rows that scroll under it',
+    /\[data-dshbg-head\]::before \{[^}]*backdrop-filter: blur\((?!0px)\d+px\)/.test(base.css),
+  );
+  // ⚠️ 这条带子是**有**填充的，而且那个数就是侧栏那条滑杆本身 —— 具体见下面几条。
+  // 反面的一半：不许是渐变。渐变把底边归零，滚上来的行在带子下半截就会裸着露出来，
+  // 而那正是「没有覆盖，非常清晰」的形状。
+  check(
+    'the bar does not fade out, which would leave the rows bare at its bottom',
+    !/\[data-dshbg-head\] \{[^}]*background: linear-gradient/.test(base.css),
+  );
+  const barBody = (/\[data-dshbg-head\] \{([^}]*)\}/.exec(base.css) || ['', ''])[1];
+  const marketBody = (/\[class\$="_stickyHead"\] \{([^}]*)\}/.exec(base.css) || ['', ''])[1];
+  const barOf = (css) => (/\[data-dshbg-head\] \{([^}]*)\}/.exec(css) || ['', ''])[1];
+  // 1.3.27：玻璃已经挪到伪元素上（宿主那个底色板），所以「填充/模糊」类的断言要看
+  // `::before`，而「不许有描边/饱和」仍然看 bar 本体 —— 两者分开，才不会一条断言兼管两件事。
+  const frostOf = (css) => (/\[data-dshbg-head\]::before \{([^}]*)\}/.exec(css) || ['', ''])[1];
+  const bandOf = (css) => barOf(css) + frostOf(css);
+  // ⚠️ 必须显式 `fullWindow: true`：默认设置下这块玻璃是关的（退回 `STICKY_FILL`），
+  // 拿 `base.css` 里的正文去断言只会读到那条退路。
+  const headFull = bandOf((await emit({ fullWindow: true })).css);
+  // ⚠️ 1.3.29：这一格钉过三个数（`sidebarFill` 40 / `surface` 50 / `PANE_FILL` 22），三次
+  // 都是同一个错误 —— 钉的是**别的表面的数值**。而真正错的是目标本身：「和某个表面同密度」
+  // 在这个位置上不成立，因为**密度这个维度就不对**。
+  //
+  // alpha 混合是 `bg*(1-a) + base*a`，也就是**向一个中性色插值**：每加一点 a，壁纸的彩度
+  // 就被稀释一点、色相被拽向那个中性色一点。量出来宿主原样（a=50%）吃掉 43% 的彩度、
+  // 22% 吃掉 23%，而亮度只掉 12 点 —— 屏幕上读作「一块灰板」，不管它多亮。前七轮一直在
+  // 调那个百分数，可**那个百分数乘的是「变灰的量」，不是「变暗的量」**。
+  //
+  // `backdrop-filter` 的 `brightness()` 是乘性的（`bg*k`），只缩放通道，色相与彩度关系原样
+  // 保留。所以这条带子现在**一点 alpha 都不叠**，压暗交给滤镜。
+  check(
+    "the host's own backdrop on the bar is taken over, not left above the glass",
+    !/\[data-dshbg-head\]::before \{[^}]*background: var\(--dsw-alias-bg-base\)/.test(base.css) &&
+      /background: transparent !important/.test(headFull),
+  );
+  // 玻璃挂在伪元素上，**不挂在 bar 上**：`backdrop-filter` 会建包含块，bar 里那些不带
+  // `portal` 的 fixed tooltip 会整体挪位（`frostedBandCss` 那边实测过 100px 的偏移）。
+  // 这条同时钉住「别为了省事把 blur 搬回 bar 本体」。
+  check(
+    'the glass rides the pseudo-element so the bar stays out of the containing-block business',
+    !/backdrop-filter/.test(barBody) && /backdrop-filter: blur\(\d+px\)/.test(headFull),
+  );
+  // 「一点 alpha 都不叠」：宿主那条 50% 和我们曾经写过的 22% 都是 `color-mix(... N%)`，
+  // 这里连 1% 都不许出现 —— 推导见上面 `bg*(1-a)+base*a`。
+  check(
+    'the bar carries no alpha tint at all',
+    !/background:\s*(?!transparent)color-mix\(in srgb,\s*var\(--dshbg-raw-base\)/.test(headFull) &&
+      /background: transparent !important/.test(headFull),
+  );
+  // 反面：压暗必须是**乘性**的。写成 `color-mix(... 6%)` 就又是叠色 —— 哪怕只有 6%，
+  // 它乘的仍然是「变灰的量」。
+  check(
+    'the dimming is multiplicative, so the wallpaper keeps its chroma',
+    /backdrop-filter: blur\(\d+px\) brightness\(0\.\d+\) !important/.test(headFull),
+  );
+  // 0.9 是下限、1 是上限：再低就成了「压暗」（台阶又会看得见），等于 1 就是纯模糊
+  // （浅色壁纸上的浅色字会读不出来）。0.94 的出处见 `HEAD_DIM` 的注释 —— 它让未滚动时
+  // 表头与旁边壁纸的 L* 台阶落到 -0.6，在肉眼阈值以内。
+  const headDim = Number((/const HEAD_DIM = ([0-9.]+);/.exec(CODE) || [0, 0])[1]);
+  check('the dim is a light touch, not a mask', headDim > 0.9 && headDim < 1);
+  // 反面：三条滑杆都不许把它推回「一块板」。`surface` 那条是 1.3.26 的错，`sidebarFill` 是
+  // 1.3.25 的；两边各取相差 70 点的两端，输出必须逐字相同。
+  const headBar = headFull;
+  check(
+    'no slider can turn the bar back into a slab',
+    bandOf((await emit({ fullWindow: true, sidebarFill: 20 })).css) === headBar &&
+      bandOf((await emit({ fullWindow: true, sidebarFill: 80 })).css) === headBar &&
+      bandOf((await emit({ fullWindow: true, surface: 10 })).css) === headBar &&
+      bandOf((await emit({ fullWindow: true, surface: 90 })).css) === headBar,
+  );
+  // 没有壁纸铺满窗口时，侧栏是宿主的实心列，没有东西可对齐 —— 退回那条共享薄填充。
+  check(
+    'without the wallpaper in the window the bar falls back to the shared thin fill',
+    bandOf((await emit({ fullWindow: false })).css).includes('var(--dshbg-raw-base) 8%, transparent'),
+  );
+  // 反面：不许接市场页那份配方（`stickyHeadRecipe` 的模糊是 `menuBlur×2`、下限 32）。这条
+  // 带子要的是 `menuBlur` 本身 —— 和代码框表头同一个数，不是它的两倍。
+  // ⚠️ 这里只钉"没接错函数"，**不**去匹配具体写法 —— 否则每条变异都会先踩到文本检查，
+  // 真正的行为断言永远轮不到执行，看起来全抓，其实那些格子是空的。
+  check(
+    'the bar does not borrow the market header recipe',
+    !/stickyHeadRecipe\(settings\)/.test(
+      (/function configHeadCss[\s\S]*?\n    \}\n/.exec(CODE) || [''])[0],
+    ),
+  );
+  // 市场页那条吸顶栏是另一回事：它的底色就在自己身上，所以继续用那条共享薄填充。
+  check(
+    'the market header keeps its own thin fill',
+    marketBody.includes('var(--dshbg-raw-base) 8%, transparent'),
+  );
+  // 反面的一半：**不许**有 pane 的四面内环和投影。少了这条，改回 `glassPane()` 也会绿。
+  // 另外**不许**自带描边：宿主 `.pageBar[data-natural][data-compact]:after` 已经画了一条
+  // `border-bottom: .5px solid var(--dsw-alias-border-l3)`，我们再叠一条就是双线。
+  check(
+    'a bar that content scrolls under gets blur, not a raised card',
+    !/inset 0 0 0 1px/.test(barBody) && !/0 10px 30px/.test(barBody) && !/inset 0 -?1px/.test(barBody),
+  );
+  // 饱和是第五轮才发现的第三个差异：侧栏从不加饱和，而薄填充之上再提饱和，会让带子比
+  // 它旁边的玻璃更蓝 —— 截图里那一带的蓝通道比屏幕上任何别的表面高 20 点。这条仍然成立：
+  // 借数不是加料，表头不参与「玻璃更蓝」这件事。
+  check(
+    'the bar does not push saturation the way no column does',
+    !/saturate\(/.test(barBody) && /saturate\(/.test(marketBody),
+  );
+  // ⚠️ 1.3.26：这两条原来是**反面**的（「模糊必须跟壁纸那条滑杆」「菜单滑杆不许动它」）。
+  // 反过来的理由：壁纸那条滑杆是给整幅糊过的大色块调的，20px 糊不掉从底下滚过去的 12~14px
+  // 文字 —— 这根带子是全应用唯一一处「带子里的字还留着形状」的地方。代码框表头干的是同一件
+  // 差事，用的是 `menuBlur`。所以现在：跟菜单滑杆，且**不**跟壁纸滑杆。
+  check(
+    'the bar frosts with the same number the code-block header uses',
+    bandOf((await emit({ blur: 7, menuBlur: 20 })).css).includes('blur(20px) !important'),
+  );
+  const quietMenuBar = bandOf((await emit({ blur: 17, menuBlur: 4 })).css);
+  const loudMenuBar = bandOf((await emit({ blur: 17, menuBlur: 77 })).css);
+  check(
+    'the wallpaper slider cannot move the bar away from that number',
+    quietMenuBar.includes('blur(4px)') &&
+      loudMenuBar.includes('blur(77px)') &&
+      quietMenuBar === bandOf((await emit({ blur: 40, menuBlur: 4 })).css),
+  );
+  check(
+    'the bar respects the menu blur ceiling, not the wallpaper one',
+    bandOf((await emit({ menuBlur: 500 })).css).includes('blur(320px)'),
+  );
+  // 每多一个 `backdrop-filter` 就多一次每帧取快照（档案第 18 条）。这一处是例外——它
+  // 底下滑过的是**没模糊过的文字**，快照在做实事——但例外只能有一个：不能再往条子内部糊
+  // 第二层，那只是给已经糊过的东西再买一张纹理。
+  check(
+    'nothing inside the bar is frosted a second time',
+    !/\[data-dshbg-head\]\s+[^{,]+\{[^}]*backdrop-filter/.test(base.css),
+  );
   // Whole-window scope: the sidebar is glass there, so the opaque page must cover it too
   // or the page sits beside a see-through strip.
   const wideConfig = /html\[data-dshbg-on\]\[data-dshbg-config\][^{},]*div:has\(> \[data-shell-overlay\]\)\s*\{/.test(wide.css);
   const wideConfigStillColumnar = /html\[data-dshbg-on\]\[data-dshbg-config\][^{}]*nth-of-type/.test(wide.css);
   check('whole-window scope covers the sidebar as well', wideConfig && !wideConfigStillColumnar);
+
+  console.log('\ndocument preview header');
+  // 预览面板的表头（`.preview` column flex + `.header{flex:none;height:38px}` + `.content{flex:auto}`）
+  // 是正常流里的 chrome：文档在它下面自己滚，永不从它底下过，也没有东西从它背后滚过去。
+  //
+  // ⚠️ 1.3.25 之前这里的断言是**反面**的：「本插件的样式表里不许出现这个锚点」。理由是两次
+  // 失败：60% 填充变成「贴在文档上的深色横杠」；换成透明 + `backdrop-filter` 之后，**这一行
+  // 自己的 12px 路径变成双影**（同一串路径画了两遍、差几个像素、都是满亮度，所以不是「背后
+  // 透出来的」）。宿主 `PathLabel` 的 `_path` 带 `mask-image`
+  // （`._path_1kiio_3[data-path-clipped]{mask-image:linear-gradient(to right,transparent,black 28px)}`），
+  // 而带 mask 的子树嵌在一个**自带 `backdrop-filter` 的元素里**，正是 Chromium 会重复合成的那一对。
+  //
+  // 1.3.25 换了挂法：模糊挂 `::before`（叶子），表头自己**不**带 `backdrop-filter` ——
+  // 带 mask 的路径因此不在任何 backdrop-filter 元素**里面**，那一对就凑不齐了。用户这一轮
+  // 要的就是这两行有底色（「在侧边栏展示文件的这两行加上背景磨砂」），所以约束从「别碰」改成
+  // 「怎么碰」：锚点在、但模糊只能在伪元素上。
+  const headSkin = /:has\(> \[data-textpreview-path\]\)::before \{[^}]*\}/.exec(base.css)?.[0] ?? '';
+  check(
+    'the file path bar gets a surface of its own',
+    headSkin.includes('backdrop-filter: blur(') && headSkin.includes('color-mix'),
+  );
+  // 宿主 `_path` 带 `mask-image`，带 mask 的子树嵌进一个自带 `backdrop-filter` 的元素
+  // 就会被 Chromium 重复合成（1.3.18 的双影）。这里逐条把「提到路径条的选择器」过一遍：
+  // 除了 `::before` 那一条，任何一条都不许自己带模糊。
+  const pathRules = [...base.css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter((m) =>
+    m[1].includes('data-textpreview-path'),
+  );
+  const pathCarriesFilter = pathRules.some(
+    (m) => !m[1].includes('::before') && m[2].includes('backdrop-filter'),
+  );
+  check(
+    'and the masked path never ends up inside a backdrop-filter element - that is what doubled it',
+    pathRules.length > 0 && !pathCarriesFilter,
+  );
+  // 反面：不许顺手把这个面板的正文也糊上（正文里是代码，逐帧重栅格化没有收益）。
+  check('the preview body is left alone', !/data-textpreview-content\s*[^{]*\{[^}]*backdrop-filter/.test(base.css));
+
+  // ------------------------------------------------------------------ 层叠
+  //
+  // 一页文档铺满窗口时，「谁在上面」不能取决于谁碰巧是合成层。用户 11-10 的截图：白纸
+  // 文档上飘着一条「代码块」表头、一张文件卡、一个输入框 —— 它们全是中间那一列里自带
+  // 合成层的零件（模糊 + 宿主的 `z-index: 6`），而列自己什么都不建，于是它们的层被提到
+  // 帧里去排。下面三条钉的就是这个现场，量的是**规则在不在**和**模糊有没有被撤**。
+  console.log('\nstacking order');
+  check(
+    'the conversation column is a layer of its own',
+    /html\[data-dshbg-on\][^{]*> div:nth-of-type\(2\) \{[^}]*isolation: isolate/.test(base.css),
+  );
+  // 它是层叠上下文，**不是** backdrop root：`isolation` 不建背景根，玻璃的模糊一点不变，
+  // 也不多买一张每帧快照。这条是防止有人「顺手」把它换成 filter / backdrop-filter。
+  check(
+    'and it is isolated without becoming a backdrop root',
+    !/nth-of-type\(2\) \{[^}]*(?:filter:|backdrop-filter:)/.test(base.css),
+  );
+  const panelRule = (() => {
+    const at = base.css.indexOf('data-dshbg-panel');
+    if (at < 0) return '';
+    const open = base.css.lastIndexOf('{', at + 400);
+    return base.css.slice(base.css.lastIndexOf('\n', at - 200) < 0 ? 0 : base.css.lastIndexOf('\n', at - 200), base.css.indexOf('}', at) + 1);
+  })();
+  check('a host document preview has a rule of its own', panelRule.length > 0);
+  // 五个模糊点一个都不能漏：漏掉的那个就是屏幕上还飘着的那一件。
+  const frostSites = [
+    '[data-composer-card]',
+    '[data-composer-dock]',
+    '[data-sidebar-right-panel]',
+    '[class*="_bannerWrap"]',
+    '[class*="_toBottom"]:not([class*="_toBottomSlot"])',
+  ];
+  check(
+    'every plugin frost yields while a document preview owns the window',
+    frostSites.every((site) => base.css.includes(`[data-dshbg-panel] ${site}`)),
+  );
+  check(
+    'the yielded rule only ever turns blur off, never on',
+    /\[data-dshbg-panel\][^{]*\{[^}]*backdrop-filter: none/.test(base.css) &&
+      !/\[data-dshbg-panel\][^{]*\{[^}]*backdrop-filter:\s*(?:blur|saturate)/.test(base.css),
+  );
+  // 面板自己装着预览时也不许糊：带 mask 的路径条嵌在 backdrop root 里会被重复合成一遍。
+  const previewPanel = (await emit({ menuFill: 30 })).css;
+  check(
+    'a panel holding a preview is not frosted, only filled',
+    /:has\(\[data-document-preview\]\)[^{]*\{[^}]*backdrop-filter: none/.test(previewPanel) &&
+      /:has\(\[data-document-preview\]\)[^{]*\{[^}]*background: color-mix/.test(previewPanel),
+  );
+  check(
+    'and its fill is a step denser than the plain panel',
+    (() => {
+      const plain = /\[data-sidebar-right-panel\]\[data-sidebar-right-open\] \{[^}]*var\(--dshbg-raw-l1\) (\d+)%/.exec(previewPanel);
+      const held = /:has\(\[data-document-preview\]\)[^{]*\{[^}]*var\(--dshbg-raw-l1\) (\d+)%/.exec(previewPanel);
+      return plain !== null && held !== null && Number(held[1]) > Number(plain[1]);
+    })(),
+  );
+  check('the panel is isolated so nothing inside it escapes', /:has\(\[data-document-preview\]\)[^{]*\{[^}]*isolation: isolate/.test(previewPanel));
+  // 守卫本身：写标记 / 撤标记 / 只在插件启用时写 / 防抖。
+  const guardCode = CODE.slice(
+    CODE.indexOf('function installHostPanelGuard('),
+    CODE.indexOf('const STACK_SELECTOR'),
+  );
+  check('the panel guard writes its marker', guardCode.includes("setAttribute('data-dshbg-panel', '')"));
+  check('the panel guard clears the marker again', guardCode.includes("removeAttribute('data-dshbg-panel')"));
+  check('the marker never survives the plugin being off', /!root\.hasAttribute\('data-dshbg-on'\)[\s\S]{0,120}removeAttribute\('data-dshbg-panel'\)/.test(guardCode));
+  check('the guard is debounced like the menu guard', guardCode.includes('setTimeout(sync, 120)'));
+  check('the guard is wired into paint and dispose', CODE.includes('hostPanel.sync();') && CODE.includes('hostPanel.dispose();'));
+
+
+  console.log('\nquestion card + dock strip');
+  // 提问工具的「已答」回执。它借的是用户气泡，但 flow kind 是 `question-reply`，
+  // 上面那三条 flow 规则一条都不沾，所以只能靠宿主给的 `data-question-reply` 认。
+  check(
+    'an answered question card becomes a pane',
+    base.css.includes('[data-question-reply] [class*="_bubble"]'),
+  );
+  check(
+    'and it is on the same 22% pane recipe as the user bubble',
+    /\[data-question-reply\] \[class\*="_bubble"\][^{]*\{[^}]*22%/.test(base.css),
+  );
+  // 1.3.24：这张卡的 DOM 是 `_row > _bubbleWidth > _bubble`，而 `[class*="_bubble"]` 是
+  // **子串**匹配 —— `BfLV8a_bubbleWidth` 里含 `_bubble`，会被一起画上。那个壳没有圆角、
+  // 尺寸却和气泡一模一样，于是同一圈描边一次画成弧、一次画成直角（用户截图里的方框）。
+  check(
+    'the width shell around the bubble is not painted',
+    base.css.includes('[data-question-reply] [class*="_bubble"]:not([class*="_bubbleWidth"])'),
+  );
+  check(
+    'so the pane lands exactly once - a second ring on a square shell costs a right angle',
+    !/\[data-question-reply\] \[class\*="_bubble"\]\s*[,{]/.test(base.css),
+  );
+  // 标签栏：`_tab` 自己没有 overflow，唯一裁字的是标题；标题的 mask 是「重复合成一遍」
+  // 的开关（1.3.18 的路径条同一个病），所以裁切下沉到标签、mask 摘掉。
+  check('the tab clips its own title', /\[data-dockkit-tab\] \{[^}]*overflow: clip/.test(base.css));
+  check(
+    'the tab title loses the fade mask',
+    /\[data-dockkit-tab-title\] \{[^}]*(?:-webkit-)?mask-image: none/.test(base.css),
+  );
+  check(
+    'but the strip keeps its own mask - it is the only "more tabs" hint',
+    !/\[data-dockkit-strip-tabs\][^{]*\{[^}]*mask-image: none/.test(base.css),
+  );
+  // 1.3.22：整条标签栏自己磨一层。宿主这条带子**一个底色都没有**，一直靠下面 pane 的
+  // `--dsw-alias-bg-base` 当底；那个 token 被我们改成半透明之后，压在底下的**别的面板
+  // 的标题栏**就从标签栏里透出来了（用户截图里那句「团队 ▸ AI 业务模式」）。
+  //
+  // 断言的是三条性质，不是写法：①底下是字，所以必须有模糊（只加填充是治标）；②填充
+  // 必须是半透明的（整条不透明就是一档更深的横带，又是一道缝）；③模糊必须走
+  // `stickyHeadRecipe`，跟着 `menuBlur` 走到 64 上限 —— 和吸顶栏共用一份配方。
+  const stripRule = /\[data-dockkit-strip\]::before \{[^}]*\}/.exec(base.css)?.[0] ?? '';
+  check(
+    'the tab strip frosts what is behind it',
+    stripRule.includes('backdrop-filter: blur(') && stripRule.includes('color-mix'),
+  );
+  check(
+    'and the fill stays translucent - a solid band would read as a seam',
+    /background: color-mix\(in srgb, var\(--dshbg-raw-base\) \d+%, transparent\)/.test(stripRule),
+  );
+  check('the frost is the sticky-head recipe (floor 32)', stripRule.includes('blur(32px)'));
+  // 1.3.25：模糊**必须**在 `::before` 上，不能在 strip 自己身上。
+  //
+  // `backdrop-filter` 会让元素成为**固定定位后代的包含块**，而宿主的 Tooltip 是
+  // `position: fixed` + 视口坐标，`portal` 又默认 false（`Tooltip({...portal: f=!1})`），
+  // 所以「新建标签」「分屏」这些提示就躺在这条 strip 里。实测：直接糊在 strip 上，
+  // tooltip 从 (420,200) 跑到 (500,320)，正好整平移了 strip 自己的偏移。
+  check(
+    'the strip itself is never a backdrop root - its inline tooltips are position:fixed',
+    !/\[data-dockkit-strip\] \{[^}]*backdrop-filter/.test(base.css),
+  );
+  check(
+    'the frost layer sits under the content instead of over it',
+    /\[data-dockkit-strip\]::before \{[^}]*z-index: -1/.test(base.css) &&
+      /\[data-dockkit-strip\] \{[^}]*isolation: isolate/.test(base.css),
+  );
+  const stripWide = (await emit({ menuBlur: 40 })).css;
+  check(
+    'and it follows the menu blur up to the 64 cap',
+    /\[data-dockkit-strip\]::before \{[^}]*blur\(64px\)/.test(stripWide),
+  );
+
+  // 1.3.23 起：**提问中、还没答**的那张卡自己接管表面。
+  //
+  // ⚠️ 1.3.24 纠正：它不是用户截图里那张。截图那张是**已答回执**
+  // （`[data-question-reply]` → `QuestionReplyView`），出在消息流里；这张出在输入区
+  // （`.wnLwla_frame` 带 composer clearance）。1.3.23 曾把「圆角外套直角」判给它，
+  // 因此还写了「摘掉输入框两层壳」的规则 —— 那两张壳根本不是它的祖先，规则一次都没
+  // 匹配过。真凶在 `question card + dock strip` 那一段：`[class*="_bubble"]` 子串命中
+  // 限宽壳 `_bubbleWidth`。假的修法已经删掉，别再加回来。
+  const qCard = /\[data-question-key\] > section \{[^}]*\}/.exec(base.css)?.[0] ?? '';
+  check('the question card owns its own surface', qCard.includes('background-color'));
+  check(
+    'and it frosts the wallpaper instead of inheriting the input token',
+    qCard.includes('backdrop-filter: blur(') && qCard.includes('22%'),
+  );
+  check(
+    'its ring is an inset shadow - an outer one is the thing that went square',
+    qCard.includes('inset 0 0 0 1px') && !qCard.includes('--dsw-elevation-panel'),
+  );
+  check(
+    'and nothing is stood down behind it - the composer-shell theory was wrong',
+    !base.css.includes(':has([data-question-key])'),
+  );
 
   console.log('\ntext colour');
   // Theme mode must leave the label tokens alone. The caption symbols are a separate
@@ -1412,9 +1848,10 @@ async function main() {
     'the sidebar cost meter blocks keep theirs',
     /html\[data-dshbg-on\] body \.cm-footer-stack\.simple[^{]*\{[^}]*color-mix/.test(base.css),
   );
-  // 弹窗玻璃**不再由本插件负责**：费用明细自己的样式表在安装时已经打了补丁（ENGINEERING.md
-  // 里有完整记录）。两边同时上色只会互相盖，而且它的规则永远更靠近宿主，所以这里断言本插件
-  // 的样式表**不再提** `.cm-stat-dialog` —— 谁改了这条，都会把弹窗重新推回互相覆盖。
+  // 弹窗玻璃**不再由本插件负责**：费用明细自己的样式表里有一份补丁，由宿主半边在每次装配时
+  // 查一遍签名、被升级冲掉就补回去（ENGINEERING.md 里有完整记录）。两边同时上色只会互相盖，
+  // 而且它的规则永远更靠近宿主，所以这里断言本插件的样式表**不再提** `.cm-stat-dialog` ——
+  // 谁改了这条，都会把弹窗重新推回互相覆盖。
   check('the dialog itself is left to the plugin', !base.css.includes('.cm-stat-dialog'));
   let installedCostMeter = null;
   try {
@@ -1430,6 +1867,99 @@ async function main() {
     installedCostMeter === null || installedCostMeter.includes('color-mix(in srgb,#ffffff 14%,transparent)'),
     installedCostMeter === null ? 'not installed on this machine - skipped' : '',
   );
+
+  // 补丁会被 cost-meter 的每一次升级冲掉，所以它现在由宿主半边在装配时自己补回去。
+  // 下面测的是**行为**：拿一个假包在临时目录里跑，逐个状态验，而不是断言源码里有某句话。
+  console.log('\ncost-meter self-repair');
+  const heal = await import(pathToFileURL(path.join(ROOT, 'cost-meter-patch.js')).href);
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'dshbg-heal-'));
+  const fake = path.join(scratch, 'client.js');
+  // 形状照抄真包（压缩过的 `Ɓ` 前缀、`/ 1` 结尾都保留）：锚点是在这段文本里找的。
+  const ORIGINAL =
+    'const css="Ɓsection,Ɓstat-dialog{Ƃƹ;Ƃrgb(from ƀbg-layer-2,ƀbg-base,#fff)) r g b / 1)}Ɓtoday-values{Ɠinline-flex}";';
+
+  // ⚠️ 补丁是插在一个字符串字面量中间的。多一个引号 = 整个 cost-meter 从界面上消失，
+  // 不只是弹窗。这条比任何样式断言都重要，所以放第一条。
+  check(
+    'the patch text cannot terminate the string literal it is spliced into',
+    !/["'`\\]/.test(heal.PATCH),
+  );
+
+  fs.writeFileSync(fake, ORIGINAL, 'utf8');
+  const first = heal.apply({ target: fake });
+  const patched = fs.readFileSync(fake, 'utf8');
+  check('a wiped patch is re-applied', first.status === 'patched');
+  // ⚠️ 位置是这条补丁的全部内容。同一段 CSS 追加到文件结尾（CSS 字符串外面）在语法上
+  // 完全合法、`replace` 也照样能反推回原文，所以「可逆」这条抓不住它 —— 必须单独钉住
+  // 「紧跟在强制 alpha 的那条规则后面」。
+  const cut = ORIGINAL.indexOf(heal.MARKER) + heal.MARKER.length;
+  check(
+    'and it lands inside the stylesheet, right after the rule that forces the alpha back to 1',
+    patched.slice(0, cut) === ORIGINAL.slice(0, cut) && patched.slice(cut, cut + heal.PATCH.length) === heal.PATCH,
+  );
+  check(
+    'and the splice is exactly reversible, so nothing else in the bundle moved',
+    patched.replace(heal.PATCH, '') === ORIGINAL,
+  );
+  check('one copy only, never two', patched.split(heal.SIGNATURE).length === 2);
+  check(
+    'the pristine copy is kept next to it',
+    fs.readFileSync(fake + heal.BACKUP_SUFFIX, 'utf8') === ORIGINAL,
+  );
+
+  const second = heal.apply({ target: fake });
+  check('running it again is a no-op, not a second coat', second.status === 'already' && fs.readFileSync(fake, 'utf8') === patched);
+
+  const untouched = path.join(scratch, 'no-anchor.js');
+  fs.writeFileSync(untouched, 'const css=".cm-stat-dialog{background:#2c2c2e}";', 'utf8');
+  const blind = heal.apply({ target: untouched });
+  check(
+    'a bundle that changed shape is reported, not blind-spliced',
+    blind.status === 'anchor-missing' && fs.readFileSync(untouched, 'utf8') === 'const css=".cm-stat-dialog{background:#2c2c2e}";',
+  );
+  check('no backup is left behind when nothing was written', !fs.existsSync(untouched + heal.BACKUP_SUFFIX));
+
+  check('an uninstalled cost meter is silent', heal.apply({ target: path.join(scratch, 'nope.js') }).status === 'missing');
+
+  const undone = heal.revert({ target: fake });
+  check('revert restores the original bytes', undone.status === 'restored' && fs.readFileSync(fake, 'utf8') === ORIGINAL);
+  check('and stops the next boot from undoing the undo', heal.apply({ target: fake }).status === 'off');
+  check(
+    'the manual door still opens past that marker',
+    heal.apply({ target: fake, force: true }).status === 'patched',
+  );
+
+  // 运行期间被升级也要补回来。01:46 那次 1.9.58 → 1.9.64 就是整包重写，而自愈只在启动时跑过
+  // 一次，所以用户看到的是「这个更新了，又没了」。这里真的写一遍文件，等监听回调自己动手。
+  fs.writeFileSync(fake, ORIGINAL, 'utf8');
+  const seen = [];
+  const watcher = heal.watchForWipe({ target: fake }, (r) => seen.push(r.status));
+  check('a watcher is installed next to the bundle', watcher !== null && typeof watcher.close === 'function');
+  await new Promise((r) => setTimeout(r, 120));
+  fs.writeFileSync(fake, ORIGINAL, 'utf8'); // 模拟升级：整包重写，补丁没了
+  await new Promise((r) => setTimeout(r, 900));
+  check(
+    'an upgrade installed while the app is running is repaired without a restart',
+    fs.readFileSync(fake, 'utf8').includes(heal.SIGNATURE) && seen.includes('patched'),
+  );
+  // 兄弟文件的写入不许被当成升级：补丁自己就会写 `.dshbg-orig`，认错了就会自己叫自己。
+  const settled = seen.length;
+  fs.writeFileSync(fake + heal.BACKUP_SUFFIX, fs.readFileSync(fake, 'utf8'), 'utf8');
+  await new Promise((r) => setTimeout(r, 700));
+  check('writing a sibling file is not mistaken for an upgrade', seen.length === settled);
+  watcher?.close();
+
+  const INDEX = fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8');
+  check(
+    'the host half repairs it while assembling, not when the user opens the dialog',
+    /from '\.\/cost-meter-patch\.js'/.test(INDEX) && /try \{[\s\S]{0,240}healCostMeter\(\)/.test(INDEX),
+  );
+  check(
+    'and keeps a watcher for upgrades that land while the app is running',
+    /watchForWipe/.test(INDEX) && /watcher = watchForWipe\(/.test(INDEX),
+  );
+  check('the repair module ships with the plugin', MANIFEST.files.includes('cost-meter-patch.js'));
+  fs.rmSync(scratch, { recursive: true, force: true });
 
   // 插件市场的全屏页：它自己用 layer-1 画底，而 layer-1 的语义是「比 pane 高一层」，
   // 带着 +8 的 lift。它不是 pane 之上的面板，它**就是**页面本身 —— 打开市场整窗比刚才的
@@ -1489,6 +2019,17 @@ async function main() {
     'and that blur is well past the menu value, because it has to erase 12px card titles',
     headBlur !== null && Number(headBlur[1]) >= 32,
     headBlur === null ? 'no blur' : `blur ${headBlur[1]}px`,
+  );
+  // 插件页表头改跟壁纸滑杆之后，市场页的上限必须在这里自己接受检验，不能再借另一条
+  // 规则的断言「顺便」覆盖；那条路一断，删掉 `Math.min(64, …)` 就会静默全绿。
+  const marketHeadAt = async (menuBlur) => {
+    const css = (await emit({ menuBlur })).css;
+    const rule = /\[data-dsh-market-root\] \[class\$="_stickyHead"\] \{([^}]*)\}/.exec(css);
+    return rule === null ? '' : rule[1];
+  };
+  check(
+    'the market header keeps its own 64px ceiling',
+    (await marketHeadAt(77)).includes('blur(64px) saturate(150%)'),
   );
   check(
     "and the header's own box starts at the scroller's top edge, flush",

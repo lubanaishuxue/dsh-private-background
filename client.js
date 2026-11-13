@@ -1440,6 +1440,34 @@ html[data-dshbg-on] ${frameSelector()} > div:nth-of-type(2) {
     }
 
     /**
+     * 中间那一列自己是一个层 —— 「谁在上面」由 DOM 决定，不由谁碰巧是合成层决定。
+     *
+     * 这一列里装着插件所有**浮起来的东西**：输入框卡片（`position: relative` + 模糊）、
+     * 代码块的 sticky 表头（宿主给 `z-index: 6`，我们又给它加了模糊）、文件卡、交付卡、
+     * 底部状态栏。它们共同点是**每一件自带一个合成层**。而列本身只是一个 `position: static`
+     * 的普通盒子，什么都不建 —— 于是这些层被提到**帧**的层叠顺序里去排，谁先被合成谁就在
+     * 前面。正常流里那套「谁在 DOM 后面谁在上面」的规矩，对合成层根本不生效。
+     *
+     * 后果就是用户截图里的那一幕：宿主的文档预览（`[data-document-preview]`）铺满窗口，
+     * 它本来排在后面、永远该压住聊天；但聊天这边先被合成的那几层跑到它上面去了 ——
+     * 白纸文档上于是飘着一条「代码块」表头、一张文件卡、一个输入框。
+     *
+     * `isolation: isolate` 让这一列成为一个层叠上下文：**列里所有的层都封在列里**，列与
+     * 别人的上下关系回到由 DOM 顺序决定。它不建 backdrop root（那是 `backdrop-filter` 的
+     * 副作用，见 `glassPane` 的警告），所以玻璃的模糊一点没变，也不多一次快照。
+     *
+     * 只封中间这一列：左栏、右栏里没有跨列浮起来的东西，而多封一列就多一次被自己的
+     * `z-index` 困住的机会。
+     */
+    function stackingCss() {
+      return `
+html[data-dshbg-on] ${frameSelector()} > div:nth-of-type(2) {
+  isolation: isolate;
+}
+`;
+    }
+
+    /**
      * The message box gets its own opacity too.
      *
      * `[data-composer-card]` is the element that paints `background: var(--dsw-specific-input-major)`,
@@ -1739,6 +1767,27 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
         '[data-chat-flow-kind="steering"] [class*="_bubble"]',
         '[data-chat-flow-kind="turn-trigger"] [class*="_bubble"]',
         '[class*="_userRow"] [class*="_bubble"]',
+        // 提问工具的回执（`QuestionReplyBubble`，一行问题一行答案的那张卡）。
+        //
+        // 它长得像用户气泡、也确实借了宿主的 `UserMessageBubble`，但它的 flow kind 是
+        // `question-reply` —— 上面三种一个都不匹配，而气泡的底色是
+        // `--dsw-specific-bubble`，那个 token 不在重混名单里。两头都错过，于是它一直是
+        // 主题那块不透明的灰（用户：「这个文本框没适配（这是提出问题的那个）」）。
+        // 用宿主给的 `data-question-reply` 认它，比再猜一个类名稳。
+        //
+        // ⚠️ **`_bubbleWidth` 必须排掉。** 这张卡的 DOM 是
+        // `div.BfLV8a_row > div.BfLV8a_bubbleWidth > (UserMessageBubble).BfLV8a_bubble`，
+        // 外层那个 `bubbleWidth` 只是限宽壳（`max-width` + `min-width:0`，**没有
+        // `border-radius`**），尺寸和气泡**完全一样**。而 `[class*="_bubble"]` 是按子串
+        // 匹配的，`BfLV8a_bubbleWidth` 里就含 `_bubble` —— 于是 `glassPane()` 的填充和
+        // 那圈 `inset 0 0 0 1px` 白环被画了两遍：一遍在圆角 20px 的气泡上（弧线），
+        // 一遍在方角的壳上（**同一圈的直角**）。屏幕上就是「圆角里套一个方框」。
+        //
+        // 逐像素验过（1.3.23 的截图，DPR=1）：直边比弧线亮。单圈 16% 白画在底色上应该
+        // 是 ~62，实测弧线 57–60（单圈，直边一侧还是斜线、有抗锯齿衰减），方边 84（两圈
+        // 叠着：1−0.84² ≈ 29% → ~93），顶边 120（两圈的 `inset 0 1px` 高光也叠）
+        // —— 亮度差就是「画了两遍」的指纹。
+        '[data-question-reply] [class*="_bubble"]:not([class*="_bubbleWidth"])',
       ];
       // Separate array entries, never one comma-joined string: `prefixed()` prefixes each
       // *item*, so a comma inside an item would leave its tail unprefixed.
@@ -1893,11 +1942,30 @@ ${prefixed('html[data-dshbg-on][data-dshbg-menu]', ['[data-composer-card]'])} {
       const blur = menuBlurOf(settings);
       const fill = menuFillOf(settings);
       const panel = '[data-sidebar-right-panel]';
+      // 面板里装的是宿主的预览（文档 / 文本）时，这一层**不许糊**，只留填充。
+      //
+      // 理由是这块表头的路径条：`PathLabel` 的 `_path` 带 `mask-image`，而「带 mask 的子树
+      // 嵌在一个自带 `backdrop-filter` 的元素里」正是 Chromium 会**把整层重复合成一遍**的
+      // 那一对。屏幕上就是同一行路径变成两套字叠在一起（1.3.18 的现场，量过：灰层和白色
+      // 那一段同一基线、同一右端、满亮度 —— 不在填充下面，所以是重复合成，不是透出来）。
+      //
+      // 面板自己不糊也读得清：它背后是聊天正文，但填充在（`menuFill + 12`，一档更浓），
+      // 预览页面本身是白的、满覆盖，真正需要挡的只有面板没铺满的那圈边。
+      const preview = [
+        `${panel}[data-sidebar-right-open]:has([data-document-preview])`,
+        `${panel}[data-sidebar-right-open]:has([data-textpreview-body])`,
+      ];
       return `
 ${prefixed('html[data-dshbg-on]', [`${panel}[data-sidebar-right-open]`])} {
   background: color-mix(in srgb, var(--dshbg-raw-l1) ${fill}%, transparent) !important;
   -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
   backdrop-filter: blur(${blur}px) saturate(150%) !important;
+}
+${prefixed('html[data-dshbg-on]', preview)} {
+  background: color-mix(in srgb, var(--dshbg-raw-l1) ${Math.min(100, fill + 12)}%, transparent) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  isolation: isolate !important;
 }
 ${prefixed('html[data-dshbg-on]', [
   `${panel} [data-dockkit-host]`,
@@ -2145,6 +2213,185 @@ ${prefixed('html[data-dshbg-on]', [`${CRUMB}[data-dshbg-mq]`])} {
     }
 
     /**
+     * 一条「磨砂带」：模糊挂在 `::before` 上，**不挂在元素自己身上**。
+     *
+     * ⚠️ 这条不是洁癖，是 1.3.22 留下的一个真 bug（1.3.25 修）。`backdrop-filter`
+     * 会让元素成为**固定定位后代的包含块**，而宿主的 Tooltip 恰好是
+     * `position: fixed` + 视口坐标（`_bubble_44yfq_1{position:fixed}`），并且
+     * `Tooltip` 的 `portal` **默认是 false**：
+     *
+     *     function Mn({ …, portal: f = !1, … }) { … f ? createPortal(te, document.body) : te }
+     *
+     * 所以标签栏里的「新建标签」「分屏」提示、文件表头里的「自动刷新」「在…中打开」
+     * 提示，全都躺在我们糊的那根 bar 子树里。真 Chromium 实测（`C:/tmp/bf.html`）：
+     * 给 bar 直接加 `blur(20px)`，它里面的 tooltip 从 `(420,200)` 跑到 `(500,320)` ——
+     * 正好整平移了 bar 自己的偏移。
+     *
+     * 挪到 `::before`（叶子，没有后代）上就没有这个副作用：同一份夹具里 tooltip
+     * 老老实实待在 `(420,200)`。代价是伪元素得盖在内容**下面**，于是需要三件套：
+     *
+     *   - `position: relative` —— 给伪元素当定位包含块。它**不**建立 fixed 的包含块，
+     *     所以对 tooltip 仍然无害；
+     *   - `isolation: isolate` —— 把 `z-index:-1` 关在自己的层叠上下文里。不加这条
+     *     伪元素会漏到最近的那个祖先去，实测直接跑到 `position: fixed` 的壁纸层**后面**，
+     *     整条带子看不见（`C:/tmp/bf2.png` 之前那一版就是这样）；
+     *   - `z-index: 1` —— 抬一层。有了 `isolation`，子树（含 fixed tooltip）成了**一个
+     *     整体**，而 `[data-textpreview-content]` / `_paneBody` 是它后面的兄弟，会把
+     *     tooltip 盖住。
+     *
+     * 顺带还躲开另一件旧事：这样路径条（`_path`，带 `mask-image`）**不会**落进一个
+     * `backdrop-filter` 祖先里，也就不会触发 `rightPanelGlassCss` 里记的那次
+     * 「带 mask 的子树被重复合成」（1.3.18 的现场）。
+     */
+    function frostedBandCss(selectors, recipe) {
+      const bar = prefixed('html[data-dshbg-on]', selectors);
+      const skin = prefixed(
+        'html[data-dshbg-on]',
+        selectors.map((selector) => `${selector}::before`),
+      );
+      return `
+${bar} {
+  position: relative !important;
+  z-index: 1 !important;
+  isolation: isolate !important;
+}
+${skin} {
+  content: "" !important;
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: -1 !important;
+  pointer-events: none !important;
+  background: color-mix(in srgb, var(--dshbg-raw-base) ${recipe.fill}%, transparent) !important;
+  -webkit-backdrop-filter: blur(${recipe.blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${recipe.blur}px) saturate(150%) !important;
+}
+`;
+    }
+
+    /**
+     * The dock's tab strip (1.3.21).
+     *
+     * 用户报的是「侧边依旧很乱，和背景重叠了」：标签的标题**画到了标签自己的圆角底色
+     * 外面**，压在隔壁的胶囊和壁纸上。宿主的样式表里有两个细节能指认它：
+     *
+     *  1. `_tab` **一个 `overflow` 都没有** —— 唯一裁字的是里面的 `_tabTitle`；
+     *  2. `_tabTitle` 在「被截断」和「活动标签」两种状态下都带 `mask-image`
+     *     （右侧 14~30px 的渐隐）。带 mask 的子树在这个宿主里会被**重复合成一遍**：
+     *     1.3.18 的路径条（`PathLabel`，同样的形状）就是「同一行字画两套」，而这一行的
+     *     渐隐段还会被画到父级底色之外 —— 屏幕上就是文字和隔壁、和壁纸叠在一起。
+     *
+     * 所以修法不是调颜色，是**把渲染路径改回一条**：mask 摘掉（渐隐只是锦上添花，
+     * 文字本来就被 `overflow` 裁住），裁切下沉一层到标签自己身上 —— 无论标题因为什么
+     * 变宽，都不可能再画到自己的底色外面。
+     *
+     * ⚠️ `overflow: clip` 不是 `hidden`：`hidden` 会在标签上再建一个滚动容器，把
+     * `_stripTabs` 的横向滚动和拖拽都改掉。`clip` 只按圆角裁，不建滚动容器。
+     * ⚠️ 只碰标签和它的标题，**不碰 `[data-dockkit-strip-tabs]`**：那条 mask 是
+     * 「右边还有标签」的唯一提示，而且它自己就是滚动容器，动它风险不成比例。
+     *
+     * ---
+     *
+     * **1.3.22：整条标签栏要自己「磨」一层。**
+     *
+     * 用户对比开关两版截图后说：标签右边还会透出「团队 ▸ AI 业务模式」这种**别的面板
+     * 的字**，并自己给出了方向 —— 给这一层画个磨砂底。判断是对的，而且能指认来源：
+     * 标签栏这一条**宿主自己一个底色都没有**（`_stripFill` 只有 `flex:1 1 0`，
+     * `_tabStrip` 只有 padding），它一直靠**下面那个 pane 的 `background:
+     * var(--dsw-alias-bg-base)`** 当底。我们把那个 token 改成半透明的之后，底下压着的
+     * 那层就成了可见的背景 —— 于是别人的标题栏从标签栏里浮出来。
+     *
+     * 这跟市场页吸顶栏是同一道题，用的是同一个配方：**「底下的东西是内容就加模糊」**。
+     * 填充只给一点点（`STICKY_FILL` 的量级），真正吃掉字的是模糊 —— 而且要比
+     * `menuBlur` 大得多，`stickyHeadRecipe()` 那个 `max(menu*2, 32)` 就是为这种
+     * 「12~14px 的字从底下滑过去」定的。
+     *
+     * ⚠️ **为什么不给圆角**：这条 strip 横跨 pane 的整个宽度，两个上角正好落在工作区
+     * 那对圆角上。但工作区外面**有带圆角的裁切祖先** —— 证据是开着插件时 pane 的底色
+     * 已经铺到角上，屏幕上却仍然是圆的（底色是方的，圆只能来自祖先的 `overflow`）。
+     * 所以这里画方块填充是安全的：多出来的部分会被祖先按同一条弧裁掉，不需要我们
+     * 自己再猜一个半径去对齐（猜错就是两道弧，正是 1.3.20 记过的坑）。
+     *
+     * ⚠️ **1.3.22 的原始写法（模糊直接挂在 strip 上）在 1.3.25 被换掉了。**
+     * 当时只核对了「标签右键菜单是 portal 出去的」，就下结论说这块包含块安全 ——
+     * 漏掉了**内联 Tooltip**（`portal` 默认 false，`position: fixed` 视口坐标），
+     * 它就在这条 strip 里，会整体平移。现在模糊挪到 `::before` 上，见
+     * `frostedBandCss` 的注释。
+     */
+    function dockStripCss(settings) {
+      return `
+${prefixed('html[data-dshbg-on]', ['[data-dockkit-tab]'])} {
+  overflow: clip !important;
+}
+${prefixed('html[data-dshbg-on]', ['[data-dockkit-tab-title]'])} {
+  -webkit-mask-image: none !important;
+  mask-image: none !important;
+}
+${frostedBandCss(['[data-dockkit-strip]'], stickyHeadRecipe(settings))}`;
+    }
+
+    /**
+     * 侧栏里「正在看的这个文件」的那两行：标签栏 + 路径表头。
+     *
+     * 标签栏是 `[data-dockkit-strip]`，`dockStripCss` 已经磨了。这里补的是它下面那一行：
+     * `PreviewFrame` 的 header —— 宿主的原话是
+     * `._3R73eq_header{border-bottom:.5px solid …;height:38px;padding:0 6px 0 16px}`
+     * **一个底色都没有**（整份 `TextPreview.module.css` 里 header 只有尺寸和描边），
+     * 所以壁纸直接从这一行穿过：用户看到的就是路径和右边四个按钮浮在花纹上。
+     *
+     * 认的锚点是宿主写死的 `data-textpreview-path`（`PathLabel` 上的字面量），
+     * 它是 header 的**直接子元素**，而且 `PreviewFrame` 被所有预览模式共用
+     * （文本 / 代码 / 图片 / PDF / Office），所以一行 `:has(> …)` 就够，不必猜
+     * `_3R73eq_*` 那串哈希。
+     *
+     * ⚠️ 这一行里塞着 4 个内联 Tooltip（自动刷新 / 换行 / 重新加载 / 在…中打开），
+     * 所以模糊只能走 `::before`；直接糊在 header 上会让这些提示整体偏移。
+     * ⚠️ `relative` 在这里不改变 header 里那些 `position: fixed` 的 tooltip 的包含块，
+     * 但它会让 header 成为绝对定位后代的包含块 —— 已核对：这一行里没有绝对定位的子元素
+     * （唯一的 `position: absolute` 是正文里的 `_lineMark`，不在 header 里）。
+     */
+    function filePreviewBarsCss(settings) {
+      return frostedBandCss([':has(> [data-textpreview-path])'], stickyHeadRecipe(settings));
+    }
+
+    /**
+     * 提问卡片 —— 「向用户提出了几个问题」那张卡（提问中、还没答的那一张）。
+     *
+     * ⚠️ **它和「已答回执」是两张卡，别弄混。**（1.3.24 的教训）
+     *   - 这张：`div.wnLwla_frame[data-question-key] > section.wnLwla_card`，出在**输入区**
+     *     （`.wnLwla_frame` 带 composer clearance 内边距），只在等你作答时存在。
+     *   - 回执：`div.BfLV8a_row[data-question-reply] > div.BfLV8a_bubbleWidth > UserMessageBubble`，
+     *     出在**消息流**里，答完就一直在。用户截图里那张「有问题、有答案、右下角 21:05」
+     *     的是它 —— 当初按这张（`wnLwla_card`）找直角，方向就是错的。
+     *
+     * 本文这一段解决的是**这张**的问题：它的底色是 `var(--dsw-specific-input-major)`，跟着
+     * 「输入框不透明度」的滑块走 —— 提问卡片不是输入框，不该继承输入框的稀薄度。改用
+     * 代码块表头与吸顶栏共用的配方：`paneFill()` 22% 打底 + `stickyHeadRecipe()` 的模糊
+     * （`max(menu*2, 32)`，封顶 64）。底下是壁纸的大色块，22% 压不平，吃掉它的是模糊。
+     *
+     * ⚠️ 描边自己给：`glassPane()` 那套 inset 环（16%）+ 顶部高光，替换掉宿主的
+     * `--dsw-elevation-panel`。inset 环只可能跟着自己的 20px 圆角走。
+     * ⚠️ 模糊挂在这张卡上是安全的：它内部没有 `createPortal` 出去的菜单，不会被
+     * backdrop root 带走（`wnLwla_*` 里没有任何 portal）。
+     *
+     * 那条「圆角外面套一个直角」——真正的元凶见 `chatSurfaceCss` 里 `bubble` 数组下面
+     * 关于 `_bubbleWidth` 的注释：`[class*="_bubble"]` 是子串匹配，把限宽壳也画了一遍。
+     */
+    function questionCardCss(settings) {
+      const { blur } = stickyHeadRecipe(settings);
+      return `
+${prefixed('html[data-dshbg-on]', ['[data-question-key] > section'])} {
+  background-color: ${paneFill()} !important;
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  box-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.10),
+    inset 0 0 0 1px color-mix(in srgb, var(--dshbg-raw-label-0, #fff) 16%, transparent),
+    0 10px 30px -14px rgb(0 0 0 / 0.55) !important;
+}
+`;
+    }
+
+    /**
      * Window chrome: the drag strip and the title-bar buttons.
      *
      * In work-area scope the strip is left exactly as the layout paints it - one solid slice
@@ -2306,6 +2553,323 @@ ${restores}
     }
 
     /**
+     * The thin fill the market page's sticky header uses.
+     *
+     * The market page is a grid of cards on a bright wallpaper, so its bar can be almost
+     * bare: blur is what hides the text scrolling under it, and a fill is only there to stop
+     * the bar being pure glass. Any thicker and the bar turns into a dark band with a hard
+     * edge at its top, which is a *new* seam one row down.
+     *
+     * ⚠️ **This number is not "how glassy a header should be", and the plugin page's bar no
+     * longer uses it at all.** Six passes went into sizing that one from a column density,
+     * which turned out to be painted on a layer our rule could not reach (see
+     * `configHeadCss`). It now carries no fill; the only thing it sets is the blur.
+     */
+    const STICKY_FILL = 8;
+
+    /**
+     * The market page's sticky header, which is a different case from the plugin page's.
+     *
+     * It sits on top of 12px card titles with a 1px 16%-white stroke scrolling past, so its
+     * frost has to be much stronger than the menus' value: at `menuBlur` that stroke
+     * survives as a soft arc instead of disappearing. Hence `2x`, floored at 32 and capped at
+     * 64 - past 64 the backdrop is a flat wash and the extra pixels buy nothing but GPU time.
+     *
+     * ENGINEERING.md 附录 A.9 has the derivation; the density argument is above
+     * `STICKY_FILL`.
+     */
+    function stickyHeadRecipe(settings) {
+      return {
+        fill: STICKY_FILL,
+        blur: Math.min(64, Math.max(menuBlurOf(settings) * 2, 32)),
+      };
+    }
+
+    /**
+     * ⚠️ There is no "how thick is the plugin page's bar" number any more, and it is worth
+     * writing down why, because two of them lived here and both were wrong:
+     *
+     * - `headDensity` returned `1-(1-sidebarFill)²` = 64%, on the theory that the sidebar is
+     *   painted twice. `chromeCss` had already stopped the second paint, so the column really
+     *   is 40%, and 64% is the value that comment calls *"read as a black column"*.
+     * - `headTop` then returned `sidebarFill` = 40%, as the top stop of a gradient.
+     *
+     * Both were fitting a fill to a surface whose fill is drawn somewhere else entirely - on
+     * the marked element's `::before`, above our rule no matter what we set. See
+     * `configHeadCss`. The bar now carries **no fill at all**; its colour is the wallpaper's,
+     * through `backdrop-filter`, so there is nothing here to tune.
+     */
+
+    /**
+     * The title bar of the plugin page - the strip that carries the "plugins" heading and
+     * its refresh / add buttons.
+     *
+     * ⚠️ **The element is marked at runtime, it is not matched by a selector.** The bar is a
+     * bare `<div>`: no `<header>`, no `role`, no `data-*`, and a build-hashed class
+     * (`anW5wG_scrollBody` today, something else after the next build). There is no name to
+     * point at.
+     *
+     * There used to be a relationship rule next to this one - `:has(+ [class*="_scrollBody"])`
+     * and friends - kept as "belt and braces" for the shapes where the bar happens to be a
+     * sibling of the scroll body. It has been removed, and the reason is worth keeping: on
+     * the page that actually needed the glass it matched **nothing**, so the bar stayed bare
+     * while the rule sat in the stylesheet and every assertion on it stayed green. A fallback
+     * that cannot be observed failing is worse than no fallback - it reads as coverage while
+     * covering one shape out of four, and the day a hash happens to line up it will frost a
+     * whole column instead. Measure the box, mark it, and let this rule trust the mark.
+     *
+     * ⚠️ **A bar across the top of a scroller is not a pane, and painting it like one is
+     * wrong in a way that is easy to see and hard to name.** Eight passes went into this, and
+     * every wrong one is worth keeping because each looked plausible at the time:
+     *
+     * 1. A pair of numbers of its own (34% fill, `blur(24px)`). Read as a different
+     *    material - a milky straight-edged band, no ring, no top highlight.
+     * 2. `glassPane()` plus `menuBlurOf` - i.e. *borrow from a column*. That made it worse,
+     *    not better: a fill thick enough to work on a column (22%) turns a bar into a raised
+     *    card with a hard line on all four sides and a drop shadow under it. On screen it is
+     *    a lit slab floating over the page. "More consistent" is not the same as "same
+     *    recipe as everything else" - the recipe has to match what the surface *does*.
+     * 3. `STICKY_FILL` + the market header's frost (8% + `min(64, max(menu*2, 32))`). The
+     *    shape was right, the frost was not: 64px erases the wallpaper behind the bar, so it
+     *    stopped matching the columns beside it. 「你直接把数值调到和侧边栏一样的模糊数值」.
+     * 4. `STICKY_FILL` + the wallpaper's own blur. Right about the frost (the columns have no
+     *    `backdrop-filter` at all - what shows through them is the wallpaper, blurred once by
+     *    `paintWall()` at `settings.blur`, so "the sidebar's blur" *is* that slider), wrong
+     *    about the fill, and the fill is what the eye actually reads as "same material".
+     * 5. The sidebar column's *on-screen* density, `1-(1-sidebarFill)²` = 64%. Wrong: that
+     *    doubling had already been fixed (see `chromeCss`), and a flat 64% is a −61 step
+     *    against the wallpaper below it - a black bar lying on a lit page. 「还是有些怪」.
+     * 6. A gradient from `sidebarFill` at the top to zero at the bottom. Measured properly
+     *    this time (render the candidates 1:1, compare the **step** across the bar's bottom
+     *    edge rather than the colour inside it), it was the best a fill could do: −2 against
+     *    −35 for a flat 40% and −61 for a flat 64%. 「还是不对」.
+     * 7. **No fill at all** - clear the host's backdrop and keep only `backdrop-filter`.
+     *    「你不要去画，你让他模糊的反馈壁纸的颜色」. 「还是不对」.
+     * 8. **What it uses now: the sidebar's own fill, flat, plus the wallpaper's blur - with
+     *    the host's `::before` cleared.** This combination had never once been on screen: for
+     *    six passes the host's 50% slab sat *on top of* whatever we set, so a 40% fill reached
+     *    the eye as ~70% - a slab, never a panel. Clearing the pseudo is what finally makes a
+     *    fill mean what it says.
+     *
+     * Step 7 is worth keeping in the record because it fails in a way that looks like progress.
+     * With the fill at zero the only thing left is `backdrop-filter`, and a backdrop-filter is
+     * a window onto **whatever is behind** - the rows scrolling under the bar included. On the
+     * user's next screenshot that showed up as a bright smudge shaped like the list, floating
+     * with nothing around it and fading out mid-bar where the rows stop: 「换了个背景仍然很奇怪」.
+     * Measured, the smudge is `+19,+19,+19` - a *neutral* wash, i.e. blurred white text. It is
+     * not the wallpaper, and no amount of blur tuning turns it into the wallpaper.
+     *
+     * 「我不要求他能显示出后面的文字，我只要求显示出背景」 is the spec in one line, and it rules
+     * out both extremes: a colour plate is not the background (passes 1-6), and an empty bar is
+     * not the background either, it is a window onto the list (pass 7). What is left is the
+     * fill the **sidebar itself** is drawn with - one number, already on a slider, already on
+     * screen 200px to the left. The bar and the column then agree by construction rather than
+     * by taste, and there is nothing left here to fit by eye.
+     *
+     * Division of labour, and it is the whole design: **the fill hides the rows, the blur
+     * softens them.** Neither is asked to do the other's job, which is why this rule is four
+     * lines and not a gradient.
+     *
+     * **Why six of those were measured on a layer that was not ours.** The bar's background is
+     * not painted on the bar. The host paints it on a pseudo-element of the box we mark:
+     *
+     *     .pageBar[data-natural]:before {
+     *       content: "";
+     *       height: var(--plugin-header-paint-height, var(--plugin-header-rest-height));
+     *       background: var(--dsw-alias-bg-base);      ← 半透明底, `surface` 滑杆
+     *       position: absolute; inset: 0 0 auto;
+     *     }
+     *
+     * `::before` is *content* of the element, so it paints **above** the element's own
+     * background and **above** the result of its `backdrop-filter`. And `--dsw-alias-bg-base`
+     * is a token this plugin already rewrites (`tokenCss`), so what actually reached the screen
+     * was `color-mix(base 50%, transparent)`. Which means, for six passes:
+     *
+     * - every fill we set was composited *under* that 50%, never instead of it - a 40% fill
+     *   read as ~70%, which is why no number on the slider could ever look right;
+     * - and `backdrop-filter` was working the whole time, with its result buried under a 50%
+     *   slab - which is why 「没有覆盖，非常清晰」 kept coming back even when the blur demonstrably
+     *   was running.
+     *
+     * The mark really does land on the sticky container and not on something empty: `isBand`
+     * rejects `.pageHead` (it is `position: relative`, and a row inside the scroller has to be
+     * out of flow), so the walk up the tree settles on the box that owns the pseudo element.
+     * `lab/repro-head.html` rebuilds the page from the host's own stylesheet and prints
+     * `hit=div.bar`, `::before h=56px bg=.../0.5` in its corner readout.
+     *
+     * ⚠️ Clearing `::before` is load-bearing, not tidying. Without that line the fill comes
+     * back at `surface`'s value and the bar is a slab again - see the two screenshots
+     * `lab/repro-fill-40.png` (a 70% slab) and `lab/repro-takeover-1.png` (same wallpaper,
+     * only softer).
+     *
+     * ⚠️ **And it is scoped, because this rule subtracts rather than adds.** It removes the
+     * host's own backdrop instead of putting one on top, so landing on the wrong element does
+     * not frost that element - it strips it. `installConfigHead` therefore only marks a box
+     * that carries the plugin page's own `--plugin-header-*` variables; see the note there.
+     * 「你要改的是插件页面的那个表头，不是聊天的，工作区的，这两个的表头是好的」.
+     *
+     * ⚠️ **1.3.26：上面第 3 条和第 8 条里有两个数是错的，改掉了。** 这一节里大半的论证
+     * 都建立在「表头该和侧栏那一列一样」上，而屏幕上的证据不支持这个前提（同一个 x 上，
+     * 表头比它下面那一页亮 20 点；底下滚过去的卡片，连左边那条竖边都在带子里看得出斜坡）。
+     * 具体错在两处，都是「抄了一个不属于这根带子的数」：
+     *
+     *   - **填充抄了侧栏的 `sidebarFill`（40）。** 宿主给这根表头画的底色本来就是
+     *     `var(--dsw-alias-bg-base)` —— 也就是 **`surface` 这条滑杆**（默认 50）。我们清掉
+     *     那个伪元素之后自己画，就该照宿主自己的密度画；换成侧栏那个数等于悄悄减掉 10 点，
+     *     于是表头比它原本该有的样子亮一截。两根滑杆不是一回事，别互相借。
+     *   - **模糊抄了壁纸的那条滑杆（`clamp(blur,0,40)`，默认 20）。** 壁纸是**整幅**糊过的
+     *     大色块，20px 对它是合适的；而这条带子底下滑过的是 12~14px 的**文字**，20px 根本
+     *     糊不掉它 —— 这是全应用唯一一处「带子里的字还留着形状」的地方。干同一件差事的
+     *     代码框表头（`_bannerWrap`）用的是 `menuBlurOf`，宿主自己的注释原话是
+     *     「at blur(50px) it is gone」。同一个差事，抄同一个数。
+     *
+     * 两条都**不**改成「更糊/更暗到看不见」：填充仍然是宿主原值、模糊仍然是共享的那个数，
+     * 没有一个是新拟合出来的。saturate 依旧不加（见下），描边依旧不自带（宿主 `::after`
+     * 已经画了一条 `border-bottom: .5px`，我们再画一条就是双线）。
+     *
+     * ⚠️ **1.3.27：模糊留着，填充从 `surface`(50) 降回 `PANE_FILL`(22)。** 1.3.26 修对了
+     * 「别借侧栏的数」，却把对齐对象选错了 —— 它对齐的是**宿主在另一套材质里的数值**，不是
+     * 屏幕上的东西。
+     *
+     * `--dsw-alias-bg-base` 那个 50% 是给**没有壁纸的实心主题**设计的：底色本来就是窗口底色，
+     * 半透明只是让滚过去的内容若隐若现。壁纸铺上来之后，同一个 50% 就变成「把壁纸压到 56%
+     * 亮度的一块板」—— 用户截图里量出来表头 81 / 壁纸 145 = **0.56**，而那句话是
+     * 「让你透背景，没让你画啊」。板上没有壁纸的颜色，只有一层压暗的灰。
+     *
+     * 屏幕上真正该对齐的是**同一页上的 pane**：卡片、面板、列表块全用 `PANE_FILL`。
+     * 同一张壁纸、同一屏、同一类差事（一块横在页面上的面），就该同一个密度 —— 而不是回到
+     * 宿主在没有壁纸时的那个值。宿主那个数是给另一套材质的，跨材质照抄就是这次的问题。
+     *
+     * 五档填充，模糊固定 50px（`lab/repro-head-finish.html`，同页渲染两次做逐像素相减）：
+     *
+     * ```text
+     * 填充   表头/壁纸亮度   透出峰值
+     *  50%      0.67          5.0     ← 1.3.26，一块压暗的板
+     *  38%      0.78          6.3
+     *  30%      0.86          6.7
+     *  22%      0.94          7.3     ← 现在这个
+     *  12%      1.04          8.3     ← 已经没有壁纸的暗部，带子和页面糊成一片
+     * ```
+     *
+     * 22% 不是折中数，是**唯一有出处的那个点**（pane 密度）。它两头都不靠极端：比 1.3.26
+     * 透得多（0.94 vs 0.67），又比被抱怨「透出内容」的 1.3.25（40% + blur 20，透出峰值
+     * **12.0**）更挡事 —— 因为挡内容是 `blur(50)` 的活，不是填充的活。填充只负责把壁纸压
+     * 暗一点点（6%），让带子读作「一层」而不是「另一页」。
+     *
+     * ⚠️ **1.3.29：22% 也还是「画」，因为问题从头到尾不在**亮度**，在**彩度**。**
+     * 用户看完 1.3.28 的对折（「全去掉」vs「22%」）之后仍然说不对，于是把两条路都拿去量
+     * Lab 而不是亮度 —— 结论是：**alpha 混合本质上是在向一个中性色插值**。
+     *
+     *   `bg*(1-a) + base*a`
+     *
+     * `base` 是 `--dshbg-raw-base`（近黑的中性色），所以这个式子每加一点 a，壁纸的彩度就被
+     * 稀释一点、色相被拽向那个中性色一点。量出来：宿主原样（a=50%）吃掉 **43%** 的彩度，
+     * 我们 22% 吃掉 **23%**。亮度只掉 12 点，彩度掉 23% —— 屏幕上读到的就是「一块灰扑扑
+     * 的板」，不管它多亮。这就是为什么前七轮一直在调那个百分数却永远调不对：
+     * **那个百分数乘的是「变灰」的量，不是「变暗」的量。**
+     *
+     * `backdrop-filter` 的 `brightness()` / `saturate()` 是**乘性**的：
+     *
+     *   `bg*k`
+     *
+     * 它只缩放通道，色相与彩度**关系**原样保留。所以「暗一点」终于可以是「壁纸本身暗一点」，
+     * 而不是「上面盖了一层」。同一次量测（未滚动，表头与它正下方同一张壁纸的台阶，Lab）：
+     *
+     * ```text
+     *                                    ΔL*      ΔC*
+     *   宿主原样 50% 底盘               -20.8     -3.83
+     *   1.3.27 / 1.3.28 的 22% 叠色      -7.5     +1.01
+     *   本式：无填充 + brightness(.94)   -0.6     +5.21
+     *   什么都不加（纯壁纸，对照组）      +2.6     +5.28
+     * ```
+     *
+     * 最后两行的 ΔC* 是模糊把周边更饱和的区域平均进来造成的，连对照组都有，不是本式引入的。
+     * 关键是 ΔL*：**-0.6 已经落在肉眼阈值（约 ±1 L*）以内**，那条边不存在了；而 22% 的
+     * -7.5 正是用户截图里那条能看见的暗带。
+     *
+     * 为什么不是「什么都不加」：表头文字是浅色的，全靠壁纸自己的亮度兜底，遇到很亮的壁纸
+     * 会读不出来。6% 的乘性压暗在暗壁纸上量不出差、在亮壁纸上刚好救命。为什么不加
+     * `saturate`：1.3.25 实测过，薄面之上再提饱和会让它比旁边任何表面都蓝 —— 而叠色一去掉，
+     * 彩度本来就回来了（-23% → -4%），不需要补。
+     */
+    const HEAD_DIM = 0.94;
+
+    function configHeadCss(settings) {
+      // 代码框表头那一个（见上面第二条）。`menuBlurOf` 自带 0~320 的钳位。
+      const blur = menuBlurOf(settings);
+      // ⚠️ 1.3.29：不再用它自己的**填充**，改用一条**乘性压暗**。理由见上面最后一段，
+      // 以及 `HEAD_DIM` 的注释：alpha 混合是「向一个中性色插值」，它把壁纸的彩度一起
+      // 稀释掉 —— 那才是「一块板」的手感来源，不是亮度。
+      //
+      // 没有壁纸铺满窗口时没有东西可透：这一页本来就是实心的，透也透不出壁纸来，
+      // 退回所有吸顶栏共用的那条薄填充（保持 1.3.25 之前的行为）。
+      const glass = settings.fullWindow
+        ? `background: transparent !important;
+  -webkit-backdrop-filter: blur(${blur}px) brightness(${HEAD_DIM}) !important;
+  backdrop-filter: blur(${blur}px) brightness(${HEAD_DIM}) !important;`
+        : `background: color-mix(in srgb, var(--dshbg-raw-base) ${STICKY_FILL}%, transparent) !important;
+  -webkit-backdrop-filter: blur(${blur}px) !important;
+  backdrop-filter: blur(${blur}px) !important;`;
+      // ⚠️ 1.3.27：玻璃挂在 `::before` 上，不挂在 bar 上 —— 这是 `frostedBandCss` 的结构
+      // （见它那段注释：`backdrop-filter` 会建包含块，把 bar 里那些不带 `portal` 的 fixed
+      // tooltip 挪位）。宿主已经把这个伪元素占成底色板（`inset: 0 0 auto` + 高度变量），
+      // 正好是「一条贴在顶上、垫在内容下面的面」，接管它比自己插一层 DOM 更省：不用动
+      // React 的子树，也不会被重渲染删掉。
+      return `
+html[data-dshbg-on] [data-dshbg-head] {
+  background: transparent !important;
+  isolation: isolate !important;
+}
+html[data-dshbg-on] [data-dshbg-head]::before {
+  content: "" !important;
+  position: absolute !important;
+  inset: 0 !important;
+  height: 100% !important;
+  z-index: -1 !important;
+  pointer-events: none !important;
+  ${glass}
+}
+`;
+    }
+
+    /**
+     * The document preview's path bar: **deliberately not styled.**
+     *
+     * This is the third bar in the app whose correct treatment is "leave it exactly as the
+     * host built it", and it took three attempts to accept that.
+     *
+     * Its structure (from `dsh-client-ui-sidebar-documentpreview`):
+     *
+     *   .preview  { display: flex; flex-direction: column; height: 100% }
+     *   .header   { flex: none; height: 38px; border-bottom: .5px solid … }   ← no background
+     *   .content  { flex: auto; min-height: 0 }
+     *
+     * The row is chrome in normal flow with the scrolling document **below** it, never under
+     * it, and nothing scrolls behind it either - so it needs neither fill nor frost to stay
+     * legible. Both attempts to give it one made the screen worse in a different way:
+     *
+     *   1. `menuFill` + 60% floor -> a dark band wedged between the fully transparent file
+     *      tab strip above and the pure white page below. Measured `(25,26,34)` on a band
+     *      whose neighbours are the wallpaper's own `(29,33,56)`: a bar pasted on the
+     *      document. Two adjacent chrome rows must be the same tone; a thinner fill is still
+     *      a step, so the answer is no fill.
+     *   2. transparent + `backdrop-filter` -> the row's own 12px label came back **doubled**,
+     *      two copies of the same path a couple of pixels apart, both at full brightness (so
+     *      not something behind a fill: our fill would have dimmed it). The host's `PathLabel`
+     *      puts `mask-image` on its `_path` (`[data-path-clipped]`), and a masked subtree
+     *      inside an element that has its own `backdrop-filter` is exactly the combination
+     *      Chromium double-composites - and this header sits inside a pane that already has
+     *      one, so we were nesting two.
+     *
+     * Nothing to blur + a host mask inside + a doubled label = the only move that cannot
+     * produce an artifact of its own is to add nothing. This is also what the two headers the
+     * user calls correct (chat, workspace) already are: bare text on the wallpaper.
+     *
+     * If this row ever needs work again, the lever is **not** a surface on the header - it is
+     * the pane behind it (`glassPane`) or the host's own mask.
+     */
+
+    /**
      * Host dialogs and everything else popup-shaped.
      *
      * The settings modal is the one surface that had no recipe here, so it stayed a nearly
@@ -2396,6 +2960,37 @@ html[data-dshbg-on] dialog::backdrop {
 html[data-dshbg-on]:has([role="dialog"][aria-modal="true"]) ${frameSelector()}::before,
 html[data-dshbg-on]:has(dialog[open]) ${frameSelector()}::before {
   box-shadow: inset 0 0 0 100vmax var(--dsw-alias-bg-mask-1, rgb(0 0 0 / 46%)) !important;
+}
+`;
+    }
+
+    /**
+     * 宿主把一整页东西铺在窗口上时，插件停止合成。
+     *
+     * 这一段是上面 `stackingCss` 的另一半。那一半解决「列里的层跑出列」，这一半解决
+     * 「列里的层本来就该消失」—— 文档预览一开，聊天只是背景，可它上面凡是带
+     * `backdrop-filter` 的东西（输入框、底部 dock、代码块表头、回到底部圆钮）**每一个都是
+     * 独立合成层**。它们抢在预览前面画出来，就变成白纸上飘着聊天零件。
+     *
+     * 把模糊撤掉的代价是这几块在这一页变实一点，收益是**屏幕上没有第二套层**：
+     * 填充、描边、阴影全留着，字照样清楚，只是不再取背景快照。这和 `/` 菜单那条守卫
+     * （`installComposerMenuGuard`）是同一条规矩、同一个理由 —— 两个模糊不可能同时成立时，
+     * 让不该在那儿的那个让位。
+     *
+     * 标记由 `installHostPanelGuard` 写在 `<html>` 上，只在这一页挂。
+     */
+    function hostPanelCss() {
+      const frost = [
+        '[data-composer-card]',
+        '[data-composer-dock]',
+        '[data-sidebar-right-panel]',
+        '[class*="_bannerWrap"]',
+        '[class*="_toBottom"]:not([class*="_toBottomSlot"])',
+      ];
+      return `
+${prefixed('html[data-dshbg-on][data-dshbg-panel]', frost)} {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 `;
     }
@@ -2544,7 +3139,8 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       //
       // So: a whisper of fill (enough that the bar is not pure glass) and a big blur. The
       // header's density then equals the page's, which is the whole point - there is no
-      // step left to see.
+      // step left to see. Only the thin fill is shared with the plugin page's bar, through
+      // `STICKY_FILL`; this heavier frost deliberately stays local to the market recipe.
       //
       // `::before` is the host's 14px strip above the header, `bottom: 100%`,
       // `background: inherit`. `inherit` copies the colour and **not** `backdrop-filter`,
@@ -2553,8 +3149,7 @@ ${prefixed('html[data-dshbg-on]', [CM_HEADER_ENTRY])} {
       // independently and each adds its own fill, so the boundary between them is a hard
       // step. It is removed, and the scroller's own `padding-top` is removed with it, so
       // there is no strip left for it to cover.
-      const headerFill = 8;
-      const headerBlur = Math.min(64, Math.max(menuBlurOf(settings) * 2, 32));
+      const { fill: headerFill, blur: headerBlur } = stickyHeadRecipe(settings);
       const headerPad = 12;
       const headerGap = 10;
       return `
@@ -2630,28 +3225,40 @@ html[data-dshbg-on] select option:checked {
         wallpaperCss(layer),
         tokenCss(settings),
         chatSurfaceCss(settings),
+        stackingCss(),
         composerCss(settings),
         chromeCss(settings),
         captionCss(settings, tone),
         bottomRowCss(settings),
         configPageCss(settings),
+        configHeadCss(settings),
         fontCss(settings, tone),
         costMeterCss(settings),
         marketPageCss(settings),
         formControlCss(),
         titleCss(),
+        dockStripCss(settings),
+        // 侧栏文件预览的第二行（路径 + 工具按钮）。紧挨着 `dockStripCss`，两条带子
+        // 用同一份配方，中间隔着别的规则容易被人改歪。
+        filePreviewBarsCss(settings),
         // Last, so the frosted panes are not re-painted by anything above.
         transcriptGlassCss(settings),
         previewCardCss(settings),
         menuSurfaceCss(settings),
         tooltipGlassCss(settings),
         composerGlassCss(settings),
+        // 必须在 `composerGlassCss` 之后：那张卡上「摘壳」的规则和它同特异性（都是
+        // `html[data-dshbg-on] [data-composer-card]`），只有顺序能决定谁赢。
+        questionCardCss(settings),
         rightPanelGlassCss(settings),
         sidebarGlassCss(settings),
         statusGlassCss(settings),
         menuGlassCss(settings),
         dialogCss(settings),
         modalCss(settings),
+        // 宿主整页预览期间把插件的模糊全部撤掉（见 `hostPanelCss`）。放在弹窗之后，
+        // 因为它连 `dialogCss` 里的那点模糊也要一起让位。
+        hostPanelCss(),
         // Absolutely last: the diagnostic switch has to beat every recipe above.
       ].join('');
     }
@@ -2952,8 +3559,439 @@ html[data-dshbg-on] select option:checked {
       };
     }
 
+    /**
+     * 宿主把一整页文档铺在窗口上时给 `<html>` 打标记，给 `hostPanelCss` 用。
+     *
+     * 认的是宿主自己的属性，不是长相：文档预览的外框挂着 `data-document-preview`
+     * （`PreviewFrame` 把 `selected.id` 写在上面），文本预览的正文和路径条分别挂
+     * `data-textpreview-body` / `data-textpreview-path`。三个都是宿主写死在 JSX 字面量里的，
+     * 不随类名哈希变。
+     *
+     * ⚠️ **不能用 `html:has(...)` 在 CSS 里做这件事。** `:has()` 挂在 `<html>` 上、里面是
+     * 后代选择器，等于要求浏览器在**每一次 DOM 变动**时重算整棵树 —— 而转写区在流式输出时
+     * 每个 token 都在变。这里用一个 120ms 防抖的观察器，和 `installComposerMenuGuard` 同一
+     * 套节奏：热闹的时候它一次都不跑，安静下来才量一次。
+     *
+     * 认不到的时候什么都不会发生（标记不挂，规则不匹配）—— 这是有意的：这份文档预览的
+     * 三种形态里只要有一种换了属性，退化的结果也只是「和现在一样」，不会把别的页面弄坏。
+     */
+    function installHostPanelGuard() {
+      if (typeof MutationObserver === 'undefined') return { sync() {}, dispose() {} };
+      const root = document.documentElement;
+      const PANEL = '[data-document-preview], [data-textpreview-body], [data-textpreview-path]';
+      let timer = 0;
+      let disposed = false;
+
+      const sync = () => {
+        timer = 0;
+        if (disposed) return;
+        if (!root.hasAttribute('data-dshbg-on')) {
+          root.removeAttribute('data-dshbg-panel');
+          return;
+        }
+        const open = document.querySelector(PANEL) !== null;
+        if (open) root.setAttribute('data-dshbg-panel', '');
+        else root.removeAttribute('data-dshbg-panel');
+      };
+
+      const schedule = () => {
+        if (disposed || timer !== 0) return;
+        timer = setTimeout(sync, 120);
+      };
+
+      const observer = new MutationObserver(schedule);
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      return {
+        sync,
+        dispose() {
+          disposed = true;
+          if (timer !== 0) clearTimeout(timer);
+          observer.disconnect();
+          root.removeAttribute('data-dshbg-panel');
+        },
+      };
+    }
+
     const STACK_SELECTOR = '[data-dshbg-stack]';
     const STACK_ATTRIBUTE = 'data-dshbg-stack';
+    /**
+     * Find the plugin page's title bar and write `data-dshbg-head` on it.
+     *
+     * Nothing on that page can be selected by name (see `configHeadCss`), so the bar is
+     * found by measuring. The anchor is the page's scroll body - the biggest box that
+     * actually scrolls - and the bar is the strip that shares its left and right edges and
+     * *straddles its top edge*: it starts at or above that edge and reaches down to it.
+     * Those tests are what separate the bar from everything else:
+     *
+     *   - a row of the list starts below the scroller's top edge, so it fails the "starts at
+     *     or above" test even when it is scrolled half out of view;
+     *   - the window's title bar starts at x=0 instead of at the content's left edge;
+     *   - the column that holds the scroller is far taller than a strip, and it is rejected
+     *     outright for *containing* the scroller. That guard is the one that matters:
+     *     frosting a column that contains the list turns the whole page into one backdrop
+     *     root, and menus hanging outside it would then sample an empty area and silently
+     *     lose their blur (the trap `glassPane` warns about).
+     *
+     * ⚠️ **The scroller is found by computed style, not by class name.** Keying it on
+     * `_scrollBody` is exactly how the previous version managed to match nothing at all
+     * while passing every test: that name is a build hash, and it is not even the same
+     * element on every page. A locator that cannot be verified from the outside has to at
+     * least not depend on a spelling nobody can check.
+     *
+     * A mis-measure here costs the bar its glass; it never costs the page its layout.
+     *
+     * ⚠️ **Finding a strip is not permission to paint it.** The geometry above matches the
+     * header of *any* page built the same way - chat, workspace, whatever ships next - and
+     * what `configHeadCss` does is not add a surface but **remove the host's** (it clears
+     * `::before`). Landing on the wrong page therefore doesn't make that page's header
+     * glassy, it makes it bare. So the mark is gated on a positive test only one element in
+     * the app can pass: the bar writes its own `--plugin-header-*` variables onto itself.
+     * Everything else is left exactly as the host drew it.
+     */
+    function installConfigHead() {
+      const root = document.documentElement;
+      if (typeof MutationObserver === 'undefined') return { sync() {}, dispose() {} };
+
+      let marked = null;
+      let lifted = false;
+      let cached = null;
+      let cachedAt = 0;
+      let disposed = false;
+      /** `window.__dshbgHeadGlass(false)` - park the treatment without restarting the app. */
+      let suspended = false;
+
+      const unmark = () => {
+        if (marked === null) return;
+        if (lifted) {
+          marked.style.zIndex = '';
+          lifted = false;
+        }
+        marked.removeAttribute('data-dshbg-head');
+        marked = null;
+      };
+
+      /** A box the user can actually scroll, big enough to be a page body. */
+      const scrollable = (node, box) => {
+        if (node === root || node === document.body) return false;
+        if (box.width < 320 || box.height < 240) return false;
+        if (box.right < 4 || box.bottom < 4) return false;
+        if (box.left > window.innerWidth - 4 || box.top > window.innerHeight - 4) return false;
+        if (node.scrollHeight <= node.clientHeight + 8) return false;
+        if (typeof node.checkVisibility === 'function') {
+          if (!node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
+        }
+        const style = getComputedStyle(node);
+        return style.overflowY === 'auto' || style.overflowY === 'scroll' || style.overflowY === 'overlay';
+      };
+
+      /**
+       * The page's scroll body.
+       *
+       * `[class*="scroll"]` is only a shortcut that keeps the common case away from a full
+       * walk of the document; the walk is still there for the day the class says nothing.
+       * The answer is cached for a moment because the observer fires on every mutation and
+       * a miss costs a `getComputedStyle` per candidate - but it expires, so a pane that
+       * mounts later cannot pin the answer to the wrong page.
+       */
+      const scroller = () => {
+        if (cached !== null && cached.isConnected && Date.now() - cachedAt < 700) return cached;
+        const widest = (nodes) => {
+          let best = null;
+          let bestArea = 0;
+          for (let i = 0; i < nodes.length; i += 1) {
+            const node = nodes[i];
+            if (node.nodeType !== 1) continue;
+            if (node.scrollHeight <= node.clientHeight + 8) continue;
+            const box = node.getBoundingClientRect();
+            if (!scrollable(node, box)) continue;
+            const area = box.width * box.height;
+            if (area > bestArea) {
+              bestArea = area;
+              best = node;
+            }
+          }
+          return best;
+        };
+        const best =
+          widest(document.querySelectorAll('[class*="scroll" i]')) ||
+          widest(document.querySelectorAll('*'));
+        cached = best;
+        cachedAt = Date.now();
+        return best;
+      };
+
+      /** Is `node` the strip that sits on the scroller's top edge? */
+      const isBand = (node, body, area) => {
+        if (node === null || node.nodeType !== 1) return false;
+        if (node === root || node === document.body) return false;
+        // A column is not a strip - and a column that holds a scroller must never carry a
+        // backdrop-filter, see the note above.
+        if (node.contains(body)) return false;
+        // The rows belong to the scroller and the bar does not - except in the layouts where
+        // the bar is *sticky inside* the scroller, which is common enough to matter: there
+        // the bar is a child and the rows are its siblings. Being out of flow is what tells
+        // them apart, so the test is about position rather than containment. A plain row is
+        // `static` and is rejected, including one scrolled half out of view.
+        if (body.contains(node)) {
+          const pos = getComputedStyle(node).position;
+          if (pos !== 'sticky' && pos !== 'fixed' && pos !== 'absolute') return false;
+        }
+        const box = node.getBoundingClientRect();
+        if (box.height < 18 || box.height > 140) return false;
+        if (box.width < area.width * 0.9) return false;
+        if (box.left < area.left - 12 || box.left > area.left + 40) return false;
+        if (box.right < area.right - 40) return false;
+        if (box.top > area.top + 4) return false;
+        if (box.bottom < area.top - 4) return false;
+        return true;
+      };
+
+      /** The bar under the pointer - only works while it paints above the rows. */
+      const fromPoint = (body, area) => {
+        if (typeof document.elementFromPoint !== 'function') return null;
+        const x = Math.round(area.left + Math.min(area.width * 0.5, 320));
+        const ys = [Math.round(area.top + 16), Math.round(area.top + 34), Math.round(area.top - 12)];
+        for (let i = 0; i < ys.length; i += 1) {
+          const y = ys[i];
+          if (y < 2 || x < 2 || y > window.innerHeight - 2) continue;
+          let node = document.elementFromPoint(x, y);
+          let depth = 0;
+          while (node !== null && depth < 8) {
+            if (isBand(node, body, area)) return node;
+            node = node.parentElement;
+            depth += 1;
+          }
+        }
+        return null;
+      };
+
+      /**
+       * The bar as a sibling of the scroller, or of one of its ancestors.
+       *
+       * This is the probe that works when the host stacks the rows *above* the bar: the
+       * pointer then lands on a row, `fromPoint` gives up, and only the tree still knows
+       * where the bar is. It also covers the shapes where the bar is wrapped in a block of
+       * its own, because the walk goes up several levels and looks at every sibling there.
+       */
+      const fromNeighbours = (body, area) => {
+        let node = body;
+        let depth = 0;
+        while (node !== null && depth < 6) {
+          const parent = node.parentElement;
+          if (parent === null) return null;
+          const kids = parent.children;
+          for (let i = 0; i < kids.length; i += 1) {
+            if (kids[i] === node) continue;
+            if (isBand(kids[i], body, area)) return kids[i];
+          }
+          node = parent;
+          depth += 1;
+        }
+        return null;
+      };
+
+      /**
+       * A bar that overlaps the scroller has to paint above it, or the glass ends up under
+       * the very rows it is supposed to hide - which on screen is indistinguishable from
+       * "nothing happened". Only a positioned box takes a `z-index`, and only an `auto` one
+       * is safe to raise: a level the host already set was set on purpose.
+       */
+      const lift = (head, area) => {
+        const box = head.getBoundingClientRect();
+        if (box.bottom <= area.top + 2) return;
+        const style = getComputedStyle(head);
+        if (style.position === 'static' || style.zIndex !== 'auto') return;
+        head.style.zIndex = '4';
+        lifted = true;
+      };
+
+      /**
+       * The one thing that says "this strip is the plugin page's bar", with no class name in
+       * it.
+       *
+       * The bar measures itself and writes its own custom properties - `rest-height`,
+       * `compact-height`, `paint-height` - **onto itself**, as inline styles, from
+       * `attach()` and `scroll()` in the host. Nothing else in the whole app writes those
+       * three names; they appear in one package and one element. So "carries one of them" is
+       * an exact answer to "is this the plugin page's bar", and it is a *positive* answer.
+       *
+       * ⚠️ This replaced a guard that asked the opposite question. `isChat()` looked for a
+       * composer card and, if it found none, assumed the page was fair game - so every page
+       * nobody had thought of (the workspace browser, a chat pane whose composer was not
+       * mounted yet) got the bar treatment, and the treatment now *clears the host's own
+       * backdrop*. The user's report was exactly that: 「你要改的是插件页面的那个表头，不是
+       * 聊天的，工作区的，这两个的表头是好的」. A negative test cannot survive a page it has
+       * never seen; a positive one cannot be surprised by one.
+       */
+      const HEAD_VARS = [
+        '--plugin-header-rest-height',
+        '--plugin-header-paint-height',
+        '--plugin-header-compact-height',
+      ];
+      const ownsHeaderVars = (node) => {
+        if (node === null || node.nodeType !== 1) return false;
+        for (let i = 0; i < HEAD_VARS.length; i += 1) {
+          if (node.style.getPropertyValue(HEAD_VARS[i]) !== '') return true;
+        }
+        return false;
+      };
+
+      /**
+       * The bar itself, or `null` if this page has no plugin bar.
+       *
+       * The probes above can land on a child of the bar - `fromPoint` hit-tests whatever is
+       * under the pointer, and the bar is `pointer-events: none` so the hit is usually its
+       * `<header>`. The variables live on the bar, so climbing is what turns either answer
+       * into the same element.
+       */
+      const barOf = (node) => {
+        let found = node;
+        let depth = 0;
+        while (found !== null && depth < 6) {
+          if (ownsHeaderVars(found)) return found;
+          found = found.parentElement;
+          depth += 1;
+        }
+        return null;
+      };
+
+      const sync = () => {
+        if (disposed) return;
+        // `window.__dshbgHeadGlass(false)` parks the whole treatment. Taking the mark off is
+        // enough to hand the bar back to the host: every rule in `configHeadCss` is keyed on
+        // `[data-dshbg-head]`, including the one that takes over `::before`, so the host's own
+        // 50% backdrop and its `::after` hairline come back exactly as it built them.
+        if (suspended) {
+          unmark();
+          return;
+        }
+        if (!root.hasAttribute('data-dshbg-on')) {
+          unmark();
+          return;
+        }
+        const body = scroller();
+        if (body === null) {
+          unmark();
+          return;
+        }
+        const area = body.getBoundingClientRect();
+        const candidate = fromPoint(body, area) || fromNeighbours(body, area);
+        const head = candidate === null ? null : barOf(candidate);
+        if (head === marked) return;
+        unmark();
+        if (head === null) return;
+        head.setAttribute('data-dshbg-head', '');
+        marked = head;
+        lift(head, area);
+      };
+
+      /**
+       * `window.__dshbgHead()` - the one-line answer to "did it find the bar, and if not,
+       * what did it see". The page's shape is the one thing that cannot be read off this
+       * source, so when the host reshuffles its DOM this is what turns a guessing round into
+       * a measurement.
+       */
+      const report = () => {
+        const label = (node) => {
+          if (node === null) return 'none';
+          const cls = typeof node.className === 'string' ? node.className.split(/\s+/)[0] : '';
+          return node.tagName.toLowerCase() + (cls === '' ? '' : '.' + cls.slice(0, 28));
+        };
+        const rect = (node) => {
+          if (node === null) return null;
+          const box = node.getBoundingClientRect();
+          return [Math.round(box.left), Math.round(box.top), Math.round(box.width), Math.round(box.height)];
+        };
+        const body = cached !== null && cached.isConnected ? cached : scroller();
+        return {
+          on: root.hasAttribute('data-dshbg-on'),
+          vars: marked !== null && ownsHeaderVars(marked),
+          suspended,
+          scroller: label(body),
+          scrollerRect: rect(body),
+          marked: label(marked),
+          markedRect: rect(marked),
+          lifted,
+        };
+      };
+      window.__dshbgHead = report;
+
+      /**
+       * `window.__dshbgHeadGlass(false)` / `(true)` - hand this one bar back to the host, or
+       * take it back, **without a restart**.
+       *
+       * Written because "let me see it with nothing on it" is the only honest way to judge a
+       * surface that has been through six attempts: comparing a screenshot against a memory
+       * of a screenshot is how both 1.3.25 and 1.3.26 ended up shipping a wrong number. The
+       * switch flips the same mark the CSS is keyed on, so what comes back is not "our recipe
+       * with the numbers zeroed" - it is the host's own `::before` plate and `::after`
+       * hairline, untouched.
+       *
+       * Cost: none. The CSS rules stay in the sheet; with the attribute absent they match
+       * nothing, and no `backdrop-filter` is being paid for.
+       */
+      window.__dshbgHeadGlass = (on) => {
+        suspended = on === false;
+        if (suspended) unmark();
+        else settle();
+        return !suspended;
+      };
+
+      // The page mounts over several commits and the bar is not in the first one, so a
+      // single pass after the attribute flips is not enough. The retries stop on their own:
+      // a page with no plugin bar (chat, workspace) has nothing to mark either, and two
+      // extra passes that find nothing are cheaper than a guard that has to know which page
+      // it is on.
+      const settle = () => {
+        sync();
+        if (disposed) return;
+        if (marked === null && root.hasAttribute('data-dshbg-on')) {
+          setTimeout(sync, 70);
+          setTimeout(sync, 260);
+        }
+      };
+
+      let timer = 0;
+      const schedule = () => {
+        if (disposed) return;
+        // Parked by `__dshbgHeadGlass(false)`: nothing to mark, so nothing to measure.
+        if (suspended) return;
+        // The observer watches the whole document, so it fires for every streamed token.
+        // Bailing out here keeps that traffic down to a couple of cheap attribute reads -
+        // the measuring pass only runs on a page that could plausibly have the bar.
+        if (!root.hasAttribute('data-dshbg-on') && marked === null) return;
+        if (timer !== 0) clearTimeout(timer);
+        timer = setTimeout(() => {
+          timer = 0;
+          settle();
+        }, 90);
+      };
+
+      const observer = new MutationObserver(schedule);
+      observer.observe(root, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['data-dshbg-on'],
+      });
+      schedule();
+
+      return {
+        // `paint()` runs on every store commit - dragging a slider commits per frame - and
+        // each pass costs a `querySelectorAll` plus a handful of `getBoundingClientRect()`,
+        // which forces layout. The debounced entry point is the one `paint()` should use.
+        sync: schedule,
+        settle,
+        dispose() {
+          disposed = true;
+          if (timer !== 0) clearTimeout(timer);
+          observer.disconnect();
+          unmark();
+          if (window.__dshbgHead === report) delete window.__dshbgHead;
+          if (typeof window.__dshbgHeadGlass === 'function') delete window.__dshbgHeadGlass;
+        },
+      };
+    }
 
     function installStyles(ctx) {
       const stale = document.querySelector(`style[data-dshbg-css="${PACKAGE}"]`);
@@ -2965,6 +4003,8 @@ html[data-dshbg-on] select option:checked {
 
       const marquee = installTitleMarquee();
       const composerMenu = installComposerMenuGuard();
+      const hostPanel = installHostPanelGuard();
+      const configHead = installConfigHead();
 
       let disposed = false;
       let measureToken = 0;
@@ -3011,6 +4051,12 @@ html[data-dshbg-on] select option:checked {
         // Re-check the composer/menu trade whenever the sheet changes: a menu that stayed
         // open across a settings change still needs the card's blur dropped.
         composerMenu.sync();
+        // Same for the "a host panel owns the window" marker: the preview can be closed
+        // while a slider is being dragged, and the sheet has to follow it back.
+        hostPanel.sync();
+        // The settings page's title bar is marked from the DOM, not from the sheet, so a
+        // repaint is also the moment to re-measure it.
+        configHead.sync();
       };
 
       /**
@@ -3059,6 +4105,8 @@ html[data-dshbg-on] select option:checked {
             unsubscribe();
             marquee.dispose();
             composerMenu.dispose();
+            hostPanel.dispose();
+            configHead.dispose();
             tag.remove();
             const stack = document.querySelector(`body > ${STACK_SELECTOR}`);
             if (stack !== null) stack.remove();
