@@ -66,6 +66,30 @@ export function defaultTarget() {
 }
 
 /**
+ * Append one line to `$DSH_HOME/dshbg-cost-meter-heal.log`.
+ *
+ * Three different moments can touch this patch - assembly, the file watcher, and the login
+ * hook - and two of them have no console anyone ever looks at. A small append-only trail is
+ * the only way to answer "did this launch repair anything?" after the fact. Rolls over at
+ * 512 KB so a stuck condition cannot fill the disk.
+ *
+ * Never throws: a log that cannot be written must not affect the outcome it is describing.
+ */
+export function logLine(line) {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  // `DSHBG_LOG_FILE` keeps the test run out of the user's real trail.
+  const file = process.env.DSHBG_LOG_FILE || path.join(home, '.dsh', 'dshbg-cost-meter-heal.log');
+  try {
+    if (fs.existsSync(file) && fs.statSync(file).size > 512 * 1024) {
+      fs.renameSync(file, `${file}.1`);
+    }
+    fs.appendFileSync(file, `${new Date().toISOString()} ${line}\n`, 'utf8');
+  } catch {
+    /* nothing to do and nowhere to say it */
+  }
+}
+
+/**
  * Make the dialog glass. Never throws - the caller is the plugin's `apply()`, and a cosmetic
  * patch that throws there would take the whole plugin down with it.
  *

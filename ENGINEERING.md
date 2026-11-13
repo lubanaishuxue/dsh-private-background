@@ -3053,3 +3053,85 @@ video     → 盒子里放一颗 <video>，box 上写 filter   封面 wall.value
   （`requestVideoFrameCallback` + `drift > 0.06 || drift < -0.06` 两条都在源码里）
 - `the copy sits on the same box as the still path`（两个选择器共用同一条规则）
 - `reduced motion builds no live copy at all` / `a still wallpaper builds no live copy either`
+
+---
+
+## 1.3.34 · 费用弹窗的玻璃补丁：从「记得手动跑」变成「登录时自己跑」
+
+### 一句话
+
+`dsh-cost-meter` 的弹窗底色由它自己的样式表用 `... r g b / 1)` 钉死，本插件改不到，
+只能在它文件里插一段。这段插入**每次 cost-meter 升级都会被冲掉**。1.3.34 之前有两层自救
+（装配时补 + 运行时监视），2026-11-14 的实测证明**这两层在真实运行中的 DSH 里都没有生效**，
+所以加了第三层：一个不欠 DSH 任何东西的登录自启动脚本。
+
+### 实测：离线能修，线上不修
+
+先把 `lib/client.js` 备份，再用 `.dshbg-orig` 覆盖回去（模拟一次「更新把它冲掉了」），
+然后原地等：
+
+| 场景 | 0.6s | 1.5s | 3s |
+|---|---|---|---|
+| 真实 DSH 进程在跑（3 分钟前刚启动） | ✗ | ✗ | ✗ |
+| 离线 `node probe.mjs` 调同一个 `apply(ctx)` | — | ✓ | ✓ |
+
+离线那份的日志是 `[dshbg] cost-meter was upgraded while running - glass patch re-applied`，
+也就是说 **`watchForWipe` 的逻辑本身是对的**。差别只在「宿主到底有没有把 host 半边装起来」，
+而这从插件内部完全看不见（`dsh-console.log` 里没有任何一行提到本插件）。
+
+另外发现一处可疑：`index.js` 只导出了 `apply`，**没有 `export const name`**；
+而能正常工作的 `dsh-pnl` 导出了 `name` + `inject`。匿名插件在 patch-insert 的装配路径上
+是否能被调用，取决于 loader 的实现细节 —— 1.3.34 补上了 `name`，并把每次装配的结果
+写进日志，这样下次再出问题不用靠猜。
+
+### 为什么不写常驻守护
+
+补丁是插进一个**浏览器加载时才读**的文件。写得再晚也刷不动已经开着的窗口，
+所以真正有用的时刻只有「下次加载之前」。一个 60ms 的一次性进程足够覆盖，
+常驻守护要多花 ~40MB RSS 去买一个「重启就能解决」的场景。
+
+### 落地
+
+| 位置 | 作用 |
+|---|---|
+| `tools/cost-meter-heal.mjs` | 独立入口，幂等；`--quiet` 只在真的有变化时说话，`--revert` 撤掉 |
+| `index.js` | 补 `export const name`；装配 / 监视 / 监视不可用 三种情况各写一行日志 |
+| `cost-meter-patch.js` | 新增 `logLine()`，三处共用一套追加日志（512KB 滚动）；`DSHBG_LOG_FILE` 让测试不污染真日志 |
+| `HKCU\...\Run\DSHBG-CostMeterHeal` | 登录时 `node .../cost-meter-heal.mjs --quiet` |
+
+选 `HKCU\...\Run` 而不是计划任务：不需要管理员，也不用管任务计划的触发器语法，
+和这台机器上已有的 `WB360Watch`（pythonw 跑一个 watchdog 脚本）是同一种写法。
+
+### 退出码与日志
+
+- `0`：修好了、本来就是好的、或这台机器没装 cost-meter（`missing` 不算失败 ——
+  可选插件没装时让登录钩子报错，只会教人忽略它的退出码）。
+- `1`：`anchor-missing` / `no-backup` / `error`。
+
+`~/.dsh/dshbg-cost-meter-heal.log` 里三种前缀，一眼看出是谁干的：
+
+```
+assembly patched  ...   # 宿主装配时补的
+watcher patched   ...   # 运行中被升级，监视器补的
+login hook re-applied ... # 登录自启动补的
+```
+
+`already patched` 在 `--quiet` 下不落盘，否则每次登录一行废话。
+
+### 新增断言（8 项，397 → 405）
+
+- `the host half is registered under the package name, not anonymously`
+- `a login hook exists that needs nothing from the host`
+- `and it drives the same implementation rather than a second copy of the patch`
+  （断言脚本里**没有**第二份 `backdrop-filter:blur(46px)`）
+- `and it ignores the off-marker, or --revert would become permanent by accident`
+- `the login hook repairs a wiped file and exits 0`（真的用子进程跑一遍）
+- `and stays silent when there is nothing to do`
+- `while saying so on stdout when run by hand`
+- `the quiet run still leaves a trail of what it changed`
+
+### 还没被验证的那一半
+
+补 `export const name` 之后 host 半边是否真的开始装配，要**重启 DSH** 才知道 ——
+判据是 `~/.dsh/dshbg-cost-meter-heal.log` 里出现 `assembly ...` 那一行。
+在那之前，登录自启动是唯一确定可用的通道。

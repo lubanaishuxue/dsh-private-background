@@ -17,7 +17,16 @@
  *     upgraded while the app is running - that is not hypothetical, it is what happened at
  *     01:46 on 2026-11-11 (1.9.58 -> 1.9.64).
  */
-import { apply as healCostMeter, watchForWipe } from './cost-meter-patch.js';
+import { apply as healCostMeter, logLine, watchForWipe } from './cost-meter-patch.js';
+
+/**
+ * Cordis reads `name` when it registers a patch-inserted plugin. Without it the host half is
+ * anonymous, and an anonymous plugin that throws during assembly is not distinguishable from
+ * one that was never loaded - which is exactly the state that left the patch un-repaired on a
+ * live launch while the offline probe worked. Keeping the name identical to the package name
+ * is what `dsh-pnl` does, and it makes the log line self-identifying.
+ */
+export const name = 'dsh-private-background';
 
 /** One watcher per process, however many times the host assembles us. */
 let watcher = null;
@@ -25,6 +34,10 @@ let watcher = null;
 function repair(ctx, { quiet = false } = {}) {
   try {
     const result = healCostMeter();
+    // One line per launch, whatever the outcome: it is the only evidence that this code ran
+    // at all, and the reason the next "the patch went missing again" report can be answered
+    // without guessing.
+    logLine(`assembly ${result.status} ${result.target}`);
     if (result.status === 'patched') {
       // Worth one line: it means an upgrade happened, and it explains why the file's own
       // mtime moved. Everything else is either expected (`already`) or nothing to do.
@@ -49,6 +62,7 @@ export function apply(ctx) {
   if (watcher) return;
   watcher = watchForWipe({}, (result) => {
     try {
+      logLine(`watcher ${result.status} ${result.target}`);
       if (result.status === 'patched') {
         ctx?.logger?.info?.('[dshbg] cost-meter was upgraded while running - glass patch re-applied');
       } else if (result.status === 'anchor-missing') {
@@ -60,4 +74,8 @@ export function apply(ctx) {
       // Logging is the last thing that may throw here.
     }
   });
+  // A missing watcher is not fatal - the login hook covers a wipe that happens while the app
+  // is closed - but it must be visible, or the next report of "it went missing again" reads
+  // as if the watcher had been running all along.
+  if (!watcher) logLine('watcher unavailable - the login hook is the only guard');
 }

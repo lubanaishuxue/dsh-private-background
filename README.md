@@ -8,7 +8,7 @@
 
 > 非官方插件，由第三方开发，DSH 官方不提供支持。它通过官方插件接口注册面板与样式，不修改客户端文件、不注入脚本、不触碰账号与凭据 —— 但装任何插件前都建议先看一眼代码。
 
-> 版本 1.3.33 · 在 Windows + DSH 桌面版 **0.2.1-rc.2** 上开发和测试。
+> 版本 1.3.34 · 在 Windows + DSH 桌面版 **0.2.1-rc.2** 上开发和测试。
 
 ---
 
@@ -260,6 +260,31 @@ dsh plugin --profile desktop add D:/path/to/dsh-private-background
 | 图传上去变糊了 | 大图会被压到 2560px 宽再存，省内存 |
 | 换图后滑杆全变了 | 不是 bug，每张图各有一套参数 |
 | 左栏图标点了没反应 | 插件没加载成功。看 DSH 启动日志里有没有 `dsh-private-background` |
+| 费用明细弹窗变回深色板 | cost-meter 升级把补丁冲掉了。详见下一节，一般重启一次就好 |
+
+### 费用明细弹窗变回深色板
+
+费用弹窗的底色写在 **cost-meter 自己的样式表**里，末尾带一个 `/ 1` 把 alpha 强行压回不透明，所以从本插件的样式表改不到它 —— 只能改它的文件。代价是 **cost-meter 每升级一次，补丁就被冲掉一次**。
+
+为此有三层兜底，任何一层活着就够：
+
+| 层 | 时机 | 说明 |
+|---|---|---|
+| 装配 | 每次 DSH 启动 | 宿主半边 `apply()` 里查一次，缺就补 |
+| 监视 | 运行中 | 盯着那个目录，文件被重写后约 0.4 秒补回 |
+| **登录自启动** | 每次登录 Windows | 独立脚本，不依赖 DSH 是否装起来 |
+
+自启动项是 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\DSHBG-CostMeterHeal`，跑的是 `tools/cost-meter-heal.mjs`（幂等，静默）。
+
+补丁写进文件后，**已打开的窗口不会自己变** —— 它要在下次加载时才生效，所以最省事的判断是重启 DSH。日志在 `~/.dsh/dshbg-cost-meter-heal.log`，每次装配/修复各留一行：
+
+```bash
+# 立刻补一次（不重启）
+node "D:/dsh-plugins/custom-background/tools/cost-meter-heal.mjs"
+
+# 撤掉补丁并关掉自动修复
+node "D:/dsh-plugins/custom-background/tools/cost-meter-heal.mjs" --revert
+```
 
 ---
 
@@ -285,7 +310,7 @@ dsh plugin --profile desktop add D:/path/to/dsh-private-background
 ## 开发
 
 ```sh
-node tools/smoke-test.cjs   # 397 项：模块契约、槽位注册、样式表、层叠与状态机
+node tools/smoke-test.cjs   # 405 项：模块契约、槽位注册、样式表、层叠与状态机
 node tools/store-test.cjs   # 94 项：存储与判重
 ```
 

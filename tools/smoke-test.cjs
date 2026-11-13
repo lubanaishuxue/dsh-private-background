@@ -2087,6 +2087,54 @@ async function main() {
     /watchForWipe/.test(INDEX) && /watcher = watchForWipe\(/.test(INDEX),
   );
   check('the repair module ships with the plugin', MANIFEST.files.includes('cost-meter-patch.js'));
+
+  // 装配这条路依赖宿主真的把 host 半边装起来，而这件事从插件内部看不出来。2026-11-14 实测：
+  // 同一个函数离线调用 400ms 就修好了，真实运行中的 DSH 里却一直没修 —— 所以加了一条不欠
+  // DSH 任何东西的入口：登录时跑一次的独立脚本。
+  check(
+    'the host half is registered under the package name, not anonymously',
+    /export const name = 'dsh-private-background'/.test(INDEX),
+  );
+  const HEAL = path.join(ROOT, 'tools', 'cost-meter-heal.mjs');
+  check('a login hook exists that needs nothing from the host', fs.existsSync(HEAL));
+  const HEAL_SRC = fs.readFileSync(HEAL, 'utf8');
+  check(
+    'and it drives the same implementation rather than a second copy of the patch',
+    /\.\.\/cost-meter-patch\.js/.test(HEAL_SRC) && !/backdrop-filter:blur\(46px\)/.test(HEAL_SRC),
+  );
+  check(
+    'and it ignores the off-marker, or --revert would become permanent by accident',
+    /apply\(\{ force: true \}\)/.test(HEAL_SRC),
+  );
+
+  // 真的用子进程跑一遍：ESM 后缀、参数解析、退出码、以及「改完之后文件确实是补丁版」。
+  // 日志和 target 都指到临时目录，免得污染这台机器上真实的那份。
+  const runHeal = (args) =>
+    require('node:child_process').spawnSync(
+      process.execPath,
+      [HEAL, ...args],
+      {
+        env: { ...process.env, DSHBG_COST_METER: fake, DSHBG_LOG_FILE: path.join(scratch, 'heal.log') },
+        encoding: 'utf8',
+      },
+    );
+  fs.writeFileSync(fake, ORIGINAL, 'utf8');
+  const hookRun = runHeal(['--quiet']);
+  check(
+    'the login hook repairs a wiped file and exits 0',
+    hookRun.status === 0 && fs.readFileSync(fake, 'utf8').includes(heal.SIGNATURE),
+  );
+  check(
+    'and stays silent when there is nothing to do',
+    hookRun.stdout.trim() === '' && hookRun.stderr.trim() === '',
+  );
+  fs.writeFileSync(fake, ORIGINAL, 'utf8');
+  check(
+    'while saying so on stdout when run by hand',
+    runHeal([]).stdout.includes('re-applied'),
+  );
+  const logLines = fs.readFileSync(path.join(scratch, 'heal.log'), 'utf8');
+  check('the quiet run still leaves a trail of what it changed', logLines.includes('login hook re-applied'));
   fs.rmSync(scratch, { recursive: true, force: true });
 
   // 插件市场的全屏页：它自己用 layer-1 画底，而 layer-1 的语义是「比 pane 高一层」，
