@@ -1232,9 +1232,22 @@ window.__ModuleLoader__.load({
      * the same arithmetic - `image * (1 - alpha)` either way - but a sheet would have to sit
      * above every box on the stack, and there is no element to put it on.
      */
+    /**
+     * How far the wallpaper box overhangs the viewport on every side.
+     *
+     * One function instead of two copies on purpose: the plugin bar's copy of the wallpaper
+     * (`configHeadCss`) has to land on **exactly** the same box, because `cover` scales
+     * against the box it is painted into. A pixel of drift there is a pixel of drift in the
+     * crop, and the bar would stop being the same picture as the strip below it.
+     */
+    function bleedOf(layer) {
+      if (layer === null || layer.walls.length === 0) return 0;
+      return Math.round(Math.max(...layer.walls.map((wall) => wall.blur)) * 2 + 12);
+    }
+
     function wallpaperCss(layer) {
       if (layer.walls.length === 0) return '';
-      const bleed = Math.round(Math.max(...layer.walls.map((wall) => wall.blur)) * 2 + 12);
+      const bleed = bleedOf(layer);
       return `
 html[data-dshbg-on] { background: transparent !important; }
 html[data-dshbg-on] body,
@@ -2805,66 +2818,146 @@ ${restores}
      * `saturate`：1.3.25 实测过，薄面之上再提饱和会让它比旁边任何表面都蓝 —— 而叠色一去掉，
      * 彩度本来就回来了（-23% → -4%），不需要补。
      *
-     * ⚠️ **1.3.30：上面 1.3.29 那一整段作废 —— 它一直在回答一个错的问题。**
+     * ⚠️ **1.3.30：四次数都错了 —— 因为一直在假设这块表面该自己长一个样。**
      *
-     * 这一格先后钉过四个数：`sidebarFill` 40 / `surface` 50 / `PANE_FILL` 22 / 一个都没有
-     * 只留 `brightness(.94)`。四次的错法不同，错因是同一个：**它一直假设这块表面该自己长一个
-     * 样**。而这个应用里玻璃面早就有统一配方，1.3.30 之前是「三条带子三套数」：
+     * 这一格先后钉过 `sidebarFill` 40 / `surface` 50 / `PANE_FILL` 22 / 干脆一个都没有只留
+     * `brightness(.94)`。四次的错法不同、错因是同一个。
+     *
+     * ⚠️ **1.3.31：连 `blur()` 也去掉 —— 模糊本身就是那块「雾」。**
+     *
+     * 「还是有模糊」指的是：壁纸已经被 `paintWall()` 用滑杆糊过一遍，表头再叠 `blur(32px)`，
+     * 肩并肩的地方就是两种糊度（细节保留 0.86~0.91）。边界不在明暗上，在**细节量**上，
+     * 所以填充调成 0 还是 22 都还在。1.3.26~1.3.30 六轮全在跟明暗较劲。
+     *
+     * ⚠️ **1.3.32：1.3.31 的「什么都不穿」漏了半句 —— 它没有东西挡着。**
+     *
+     * 用户下一张截图里，`上下文（dsh-context）`、`网页搜索` 这些行**压在「插件」两个字上**。
+     * 这不是糊、不是板，是**没有遮挡**。而六轮反复撞的那堵墙到这里必须说清楚：表头是视口
+     * 顶部一块矩形，内容会从它下面经过；要让「经过的内容」看不见，只有三条路 ——
+     * ① 盖一块不透明的（板）；② 把它糊掉或压暗（雾）；③ 裁掉它。③ 用 CSS 做不到
+     * （`mask` 挂在滚动容器上会连表头一起遮），①② 用户都否过。
+     *
+     * 用户的解法是第四条，而且是对的：**「让他模糊，但是和周围的模糊的所有效果一致，让他
+     * 看不出来这个地方是一个独立的需要处理的地方」**。
+     *
+     * 这句话的数学含义很硬。表头如果自己上 `backdrop-filter: blur(N)`，糊的是「壁纸 + 滚上来
+     * 的内容」，而壁纸已经被糊过 F 一遍，高斯核叠加：
      *
      * ```text
-     * 标签栏 [data-dockkit-strip]                 → frostedBandCss(stickyHeadRecipe)  8% + blur + saturate
-     * 文档路径条 :has(> [data-textpreview-path])  → 同一个函数                          8% + blur + saturate
-     * 插件页表头 [data-dshbg-head]                → 自己拼字符串                        22% + menuBlur，后来又变成 brightness(.94)
+     *   σ(表头) = √(F² + N²)   >   F = σ(周围)      ← N 只能取 0 才相等
      * ```
      *
-     * 用户两句话把这件事说完了：先「调成一样的数值磨砂很难吗」，再「**在这里不要使用磨砂，
-     * 这里就是模糊**」。第二句才是真正的答案 —— 前两条带子**浮在内容上**，需要一层膜把它们
-     * 和底下的字隔开；而这条是**页面自己的表头**，它底下滑过的就是同一张壁纸，它需要的只是
-     * 把滚上来的字糊掉，不需要变成另一种材质。
+     * 「一致」在 `backdrop-filter` 上无解：N 小了还是比旁边糊，N 大了是雾，N=0 就不挡。
+     * **唯一的解是把周围那批像素本身搬到表头上** —— 表头显示「壁纸本体的同一块」，它的模糊
+     * 就是壁纸的模糊，不是「二次模糊」，于是 σ、亮度、色相、连云的形状都逐像素相等。
      *
-     * 磨砂 = 底色 + 模糊 + 提饱和。这三样里，只有**模糊**是这条带子真正要的：
+     * 做法：壁纸早就是独立元素（`[data-dshbg-stack]`：`fixed`、`-bleed` 溢出、`cover`、
+     * 自带 `filter`）。表头的 `::before` 上放一个**同 inset、同背景参数、同 filter** 的副本，
+     * 两者几何完全重合，再用 `clip-path` 裁出表头那一条 —— 它是一层不透明的面（所以挡住了
+     * 滚上来的行），但显示的是**壁纸本体的像素**（所以看不出这里被单独处理过）。
+     *
+     * 量测（`lab/repro-head-finish.html`，`v=mirror`，`?wall=0&tall=1&scroll=160`，内容真的
+     * 滚动过表头；拿「内容隐藏 + 表头全透明」那张当纯壁纸基准，逐像素比，DSF=1）：
+     *
+     * | 版本 | 表头内与纯壁纸的差（均值/最大） | 内容穿帮 |
+     * |---|---|---|
+     * | 1.3.31（全透明） | **0.00 / 0**（无内容处） | 穿帮（有内容处 40+） |
+     * | 1.3.30（`blur(32)`） | 3.5 / 80（细节保留 0.86） | 不穿帮，但那块是雾 |
+     * | **1.3.32（同源副本）** | **0.00 / 0** | **不穿帮** |
+     *
+     * 侧栏展开（把整页右移 260px 再量）同样是 `0.00 / 0`，偏移补偿是对的。
+     *
+     * ⚠️ 第一次量出来是 1.5%（均值 3.2、最大 80），全部来自夹具自己参数不齐：`?wall=0` 把
+     * 壁纸的 `blur` 拆了，副本却还写着 `blur(10px)`。把副本的 filter 跟壁纸对齐之后归零。
+     * **「参数必须逐字相同」不是讲究，是这方案唯一的成立条件** —— 所以 bleed 从 `bleedOf()`
+     * 取（和 `wallpaperCss` 同一个函数），图/位置/滤镜从 `headWallVars()` 出，而那个函数
+     * 照抄的是 `paintWall()` 的表达式。
+     *
+     * 三个必须写进代码的约束：
      *
      * ```text
-     *   color-mix 填充   → 往中性色插值，壁纸彩度被稀释 = 一层灰膜（1.3.26/27/28 的错）
-     *   saturate         → 磨砂的提饱和工序，纯模糊不需要
-     *   brightness       → 1.3.29 的错，同样是往壁纸上贴一层膜
+     *   1. 副本盒必须等于壁纸盒（vw/vh + 2×bleed）。`cover` 是按「画进去的盒子」缩放的，
+     *      盒子小一点，同一张图就被裁得不一样 —— 那就是「错位双影」。
+     *   2. 宿主给 bar 设了 container-type: inline-size，它已经是最近的包含块，
+     *      所以副本的绝对定位原点是 bar 而不是视口；横向要按 bar 的视口 left 补偏移
+     *      （侧栏一展开，内容区就右移了）。由 `measure()` 写进 `--dshbg-head-x/y/w`。
+     *   3. 宿主用 --plugin-header-paint-height 控制这条带子可见多高（滚动时收缩），
+     *      副本跟着它裁，不跟着它画 —— 裁切不移动像素，所以收缩时不会跟着糊。
      * ```
      *
-     * 所以它现在是 1.3.30 的写法：一条**只有 `blur()` 的带子**。
+     * 已知代价：
      *
-     * ⚠️ **1.3.31：`blur()` 也去掉了 —— 模糊本身就是那块「雾」。**
-     *
-     * 「还是有模糊」这句话把 1.3.30 的错指出来了：**壁纸已经被 `paintWall()` 用滑杆的值糊过
-     * 一遍**，表头再叠 `blur(32px)`，它肩并肩的地方就是两种糊度。屏幕上读到的不是「一层玻璃」，
-     * 是**一块明显比周围更糊的区域** —— 边界不在明暗上，在**细节量**上，所以不管填充调成 0
-     * 还是 22 都还在。1.3.26 到 1.3.30 六轮全在跟「明暗」较劲，一次都没量过细节量。
-     *
-     * 量法（`lab/repro-head-finish.html`，带内 B 通道标准差 σ）：壁纸原图 σ=…，表头 blur(32)
-     * 把它压到一片均匀，而**同一条线往下 8px 的壁纸**还保留着云的轮廓。「一样」在这里不是
-     * 「同一个 alpha」，是**同一个 σ**。要让表头的 σ 等于旁边壁纸的 σ，唯一的做法是**不在
-     * 表头上再模糊一次**：滑杆已经糊过了，这里再加任何 px 都是「比旁边更糊」。
-     *
-     * 所以这条带子最终什么都没穿：没有填充、没有饱和、没有压暗、没有模糊。它只剩一件事 ——
-     * **把宿主自己铺在 `::before` 上的那块底色板清掉**（`--dsw-alias-bg-base` 50%，那是给没有
-     * 壁纸的实心主题设计的，压在壁纸上就是一块灰板）。清完表头透出来的就是壁纸本体，和它
-     * 下面 1px 处、和左边侧栏、和右边内容区**是同一张图、同一个模糊度**。
-     *
-     * 代价写在明处：没有任何遮挡，滚上来的行会从标题文字底下穿过去。这条取舍是用户选的
-     * （「不要磨砂」「不要模糊」两句话之后），不是漏掉的 —— 如果哪天要重新遮，唯一被验证
-     * 不会变成「雾」的办法是**滚起来才加**（把遮挡挂在 scrollTop > 0 上），而不是常驻一层。
+     * ```text
+     *   视频壁纸   → 只能显示静帧（`wall.value`），周围在动、表头不动，肉眼能看出来。
+     *                动态图（GIF/APNG）没这个问题：同一个 URL 共用一份解码器，帧是同步的。
+     *   切换壁纸   → 淡入的几百毫秒里，副本已经换成新图、周围还在混 —— 表头会「先到」。
+     * ```
      */
+
+    /**
+     * The five numbers the bar's copy of the wallpaper is made of.
+     *
+     * ⚠️ **These are written onto the element, not into the stylesheet.** The picture is a
+     * `data:` URL - hundreds of kilobytes of base64 - and `paint()` runs on every store commit
+     * (dragging a slider commits per frame). Rebuilding a sheet that carries that string, and
+     * comparing it against the previous one to decide whether to write it at all, would cost
+     * more than everything else this plugin does. The element is written to only when the
+     * artwork actually changes.
+     *
+     * Every value is copied from what `paintWall()` put on the wallpaper box, **verbatim and
+     * from the same expression** - that is the whole contract. A px of drift in the blur, the
+     * dim, the focus or the overhang and the bar stops being the same picture.
+     */
+    function headWallVars(layer) {
+      const walls = layer === null ? [] : layer.walls;
+      const wall = walls.length === 0 ? null : walls[walls.length - 1];
+      if (wall === null) return null;
+      return {
+        '--dshbg-head-img': wall.kind === 'animated' && !reducedMotion() ? `url("${wall.src}")` : wall.value,
+        '--dshbg-head-pos': `${wall.focusX}% ${wall.focusY}%`,
+        // 与 `paintWall()` 里 `box.style.filter` 的那个字符串逐字相同（含 dim 的折叠方式）。
+        '--dshbg-head-filter': wall.dim === 0
+          ? `blur(${wall.blur}px)`
+          : `blur(${wall.blur}px) brightness(${(1 - wall.dim / 100).toFixed(3)})`,
+        '--dshbg-head-bleed': `${bleedOf(layer)}px`,
+      };
+    }
+
     function configHeadCss() {
-      // 两条规则，一件事：清掉宿主铺的两层底（bar 本体 + 它的 `::before` 色板），并且显式把
-      // `backdrop-filter` 按回 `none` —— 宿主以后若给自己的表头加上滤镜，这两行能兜住。
-      // 分两条写而不是合并选择器，是因为测试按 `[data-dshbg-head] {` 这个形状找 bar 本体。
+      // 一条规则做四件事：清掉宿主的底色板、把玻璃挂到 `::before`、让副本落在壁纸那个盒上、
+      // 再裁到宿主自己算出来的可见高度。所有**数值**都从变量来（`headWallVars()` 写图与滤镜，
+      // `measure()` 写盒子的位置），这里一个数都不许有 —— 有就是「另长一个样」的开头。
       return `
 html[data-dshbg-on] [data-dshbg-head] {
   background: transparent !important;
+  isolation: isolate !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
 html[data-dshbg-on] [data-dshbg-head]::before {
-  background: transparent !important;
+  content: "" !important;
+  position: absolute !important;
+  top: calc(-1 * (var(--dshbg-head-y, 0px) + var(--dshbg-head-bleed, 0px))) !important;
+  left: calc(-1 * (var(--dshbg-head-x, 0px) + var(--dshbg-head-bleed, 0px))) !important;
+  width: calc(100vw + 2 * var(--dshbg-head-bleed, 0px)) !important;
+  height: calc(100vh + 2 * var(--dshbg-head-bleed, 0px)) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  z-index: -1 !important;
+  pointer-events: none !important;
+  background-color: transparent !important;
+  background-image: var(--dshbg-head-img, none) !important;
+  background-position: var(--dshbg-head-pos, center) !important;
+  background-size: cover !important;
+  background-repeat: no-repeat !important;
+  filter: var(--dshbg-head-filter, none) !important;
+  clip-path: inset(
+    calc(var(--dshbg-head-y, 0px) + var(--dshbg-head-bleed, 0px))
+    calc(100vw + var(--dshbg-head-bleed, 0px) - var(--dshbg-head-x, 0px) - var(--dshbg-head-w, 0px))
+    calc(100vh + var(--dshbg-head-bleed, 0px) - var(--dshbg-head-y, 0px) - var(--plugin-header-paint-height, var(--plugin-header-rest-height, 56px)))
+    calc(var(--dshbg-head-x, 0px) + var(--dshbg-head-bleed, 0px))
+  ) !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
@@ -3270,7 +3363,7 @@ html[data-dshbg-on] select option:checked {
         captionCss(settings, tone),
         bottomRowCss(settings),
         configPageCss(settings),
-        configHeadCss(settings),
+        configHeadCss(),
         fontCss(settings, tone),
         costMeterCss(settings),
         marketPageCss(settings),
@@ -3698,6 +3791,37 @@ html[data-dshbg-on] select option:checked {
       let disposed = false;
       /** `window.__dshbgHeadGlass(false)` - park the treatment without restarting the app. */
       let suspended = false;
+      /**
+       * 表头把**自己的盒**交给 CSS 的那三个变量（见 `measure()`）。名字带 `dshbg-head-` 前缀，
+       * 和宿主的 `--plugin-header-*` 分开：那些是宿主的，这三个是我们的。
+       */
+      const HEAD_BOX_VARS = ['--dshbg-head-x', '--dshbg-head-y', '--dshbg-head-w'];
+      /**
+       * 表头那份**壁纸副本**的五个数：图、取景、滤镜、溢出量。和上面那三个不同 —— 这三个
+       * 是「表头在哪」，这四个是「壁纸长什么样」，来源完全不同（`headWallVars(layer)`）。
+       */
+      const HEAD_WALL_VARS = ['--dshbg-head-img', '--dshbg-head-pos', '--dshbg-head-filter', '--dshbg-head-bleed'];
+      const appliedWall = [null, null, null, null];
+      let wallVars = null;
+      let headBox = '';
+
+      /**
+       * Write the artwork's four numbers onto the bar.
+       *
+       * 图是一段几百 KB 的 `data:` URL，`paint()` 每帧都会调到这里。写同一个字符串不是免费的
+       * （浏览器要重新解析属性、重新匹配依赖这个变量的规则），所以先用 `appliedWall` 挡一道 ——
+       * 拖滑杆时只有 `--dshbg-head-filter` 会变，图那一条一次都不写。
+       */
+      const applyWall = () => {
+        if (marked === null) return;
+        for (let i = 0; i < HEAD_WALL_VARS.length; i += 1) {
+          const value = wallVars === null ? undefined : wallVars[HEAD_WALL_VARS[i]];
+          if (value === appliedWall[i]) continue;
+          appliedWall[i] = value;
+          if (value === undefined) marked.style.removeProperty(HEAD_WALL_VARS[i]);
+          else marked.style.setProperty(HEAD_WALL_VARS[i], value);
+        }
+      };
 
       const unmark = () => {
         if (marked === null) return;
@@ -3705,9 +3829,58 @@ html[data-dshbg-on] select option:checked {
           marked.style.zIndex = '';
           lifted = false;
         }
+        for (let i = 0; i < HEAD_BOX_VARS.length; i += 1) marked.style.removeProperty(HEAD_BOX_VARS[i]);
+        for (let i = 0; i < HEAD_WALL_VARS.length; i += 1) {
+          marked.style.removeProperty(HEAD_WALL_VARS[i]);
+          appliedWall[i] = null;
+        }
         marked.removeAttribute('data-dshbg-head');
         marked = null;
+        headBox = '';
       };
+
+      /**
+       * The bar's own box, written onto the bar as custom properties.
+       *
+       * `configHeadCss` 里那份壁纸副本要和壁纸层**落在同一个盒子上**，但宿主给 bar 设了
+       * `container-type: inline-size` —— bar 因此就是最近的包含块，副本的 `position: absolute`
+       * 原点是 **bar**，不是视口。横向差多少就必须补多少：侧栏一展开，整个内容区右移一个
+       * 侧栏宽，不补的话副本会跟着往右挪，表头那块就不是壁纸的同一些像素了。
+       *
+       * 只在数值真的变了才写：滚动时 `paint()` 被频繁调用，而写同一个值也会让浏览器重算
+       * 依赖这些变量的 `calc()`（`clip-path` 里有两个）。
+       */
+      const measure = () => {
+        if (marked === null) {
+          headBox = '';
+          return;
+        }
+        const box = marked.getBoundingClientRect();
+        const next = [
+          Math.round(box.left * 10) / 10,
+          Math.round(box.top * 10) / 10,
+          Math.round(box.width * 10) / 10,
+        ].join('|');
+        if (next === headBox) return;
+        headBox = next;
+        const [x, y, w] = next.split('|');
+        marked.style.setProperty(HEAD_BOX_VARS[0], `${x}px`);
+        marked.style.setProperty(HEAD_BOX_VARS[1], `${y}px`);
+        marked.style.setProperty(HEAD_BOX_VARS[2], `${w}px`);
+      };
+
+      // 一帧一次就够。滚动是 capture 的：真正滚动的是页面里的 `pageBody`，它不冒泡到
+      // window 的 bubble 阶段。
+      let frame = 0;
+      const requestMeasure = () => {
+        if (frame !== 0 || disposed) return;
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          measure();
+        });
+      };
+      window.addEventListener('resize', requestMeasure);
+      window.addEventListener('scroll', requestMeasure, { passive: true, capture: true });
 
       /** A box the user can actually scroll, big enough to be a page body. */
       const scrollable = (node, box) => {
@@ -3922,6 +4095,11 @@ html[data-dshbg-on] select option:checked {
         head.setAttribute('data-dshbg-head', '');
         marked = head;
         lift(head, area);
+        // 先画什么、再画在哪。`applyWall()` 是幂等的（值没变就一个字节都不写）。
+        applyWall();
+        // 副本的偏移是**这个盒**的函数，所以标记一落地就得量一次 —— 等下一次 resize/scroll
+        // 才量的话，第一帧的副本会按 `--dshbg-head-x: 0` 画在错误的位置上。
+        measure();
       };
 
       /**
@@ -3951,6 +4129,11 @@ html[data-dshbg-on] select option:checked {
           marked: label(marked),
           markedRect: rect(marked),
           lifted,
+          // 表头那份副本此刻的四个数。`__dshbgHead()` 原本只回答「找到哪条 bar」，
+          // 而 1.3.32 之后「画得对不对」是另一半答案 —— 图是不是壁纸那张、滤镜是不是逐字相同，
+          // 在控制台里一眼就能看出来，比截图猜快得多。
+          wall: wallVars,
+          headBox,
         };
       };
       window.__dshbgHead = report;
@@ -4021,10 +4204,25 @@ html[data-dshbg-on] select option:checked {
         // which forces layout. The debounced entry point is the one `paint()` should use.
         sync: schedule,
         settle,
+        /**
+         * 把**当前这一层壁画**交给表头（图、取景、滤镜、溢出）。
+         *
+         * `paint()` 每次提交都会调它 —— 拖滑杆时就是每帧 —— 所以真正写 DOM 的是
+         * `applyWall()` 里那道「值没变就不碰」的检查：拖滑杆只有 `--dshbg-head-filter`
+         * 在变，几百 KB 的 `--dshbg-head-img` 一个字都不重写。
+         */
+        setWall(next) {
+          wallVars = next;
+          applyWall();
+        },
         dispose() {
           disposed = true;
           if (timer !== 0) clearTimeout(timer);
+          if (frame !== 0) cancelAnimationFrame(frame);
+          frame = 0;
           observer.disconnect();
+          window.removeEventListener('resize', requestMeasure);
+          window.removeEventListener('scroll', requestMeasure, { capture: true });
           unmark();
           if (window.__dshbgHead === report) delete window.__dshbgHead;
           if (typeof window.__dshbgHeadGlass === 'function') delete window.__dshbgHeadGlass;
@@ -4095,6 +4293,9 @@ html[data-dshbg-on] select option:checked {
         hostPanel.sync();
         // The settings page's title bar is marked from the DOM, not from the sheet, so a
         // repaint is also the moment to re-measure it.
+        // ⚠️ 顺序：先把壁画那五个数交给它（画的什么），再让它量盒子（画在哪）。反过来会让
+        // 第一帧按上一张画的图去裁新盒子。
+        configHead.setWall(on ? headWallVars(layer) : null);
         configHead.sync();
       };
 

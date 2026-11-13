@@ -1526,7 +1526,7 @@ async function main() {
   check(
     "the host's own backdrop on the bar is taken over, not left above the glass",
     !/\[data-dshbg-head\]::before \{[^}]*background: var\(--dsw-alias-bg-base\)/.test(base.css) &&
-      /background: transparent !important/.test(headFull),
+      /background-color: transparent !important/.test(headFull),
   );
   // 只取 `::before` 里那三行玻璃声明，几何行不算 —— 表头多一行 `height: 100%`（宿主的
   // `paint-height` 只有半个头高，折叠动画要用），那是它自己的活，不是材质。
@@ -1542,29 +1542,72 @@ async function main() {
   const headFrost = declsOf(
     (/\[data-dshbg-head\]::before \{([^}]*)\}/.exec(base.css) || ['', ''])[1],
   );
-  // ⚠️ 本轮的主线断言：**只要模糊，别的都没有**。三条是分开钉的，因为它们是三件不同的事，
-  // 混成一条的话任何一条漏掉都可能被另一条掩盖：
-  //   1. 没有填充（`color-mix` 一律不许出现，哪怕 1%）;
-  //   2. 没有 `saturate`（磨砂的提饱和工序）;
-  //   3. 没有 `brightness` / 任何第二道滤镜。
+  // ⚠️ 1.3.32：这一格的锚点变了。1.3.30/1.3.31 问的是「这条带子上还有什么」，现在问的是
+  // 「它和壁纸那一套对不对得上」—— 因为表头挂的是**壁纸的同源副本**，不是另一种材质。
+  //
+  // 为什么不能是 `backdrop-filter`：壁纸已经被 `paintWall()` 用滑杆糊过 F，表头再叠 N 就是
+  // √(F²+N²)，永远大于周围；N=0 又等于不挡。用户那句「和周围的模糊的所有效果一致」在
+  // `backdrop-filter` 上无解，唯一的解是把那批像素搬过来。
+  const headBefore = frostOf(base.css);
   check(
-    'the bar carries no fill: blur, not a tinted film',
-    headFrost.length > 0 && !/color-mix/.test(headFrost) && /background: transparent !important/.test(headFrost),
+    'the bar paints the wallpaper itself instead of a material',
+    /background-image: var\(--dshbg-head-img, none\) !important/.test(headBefore) &&
+      /background-size: cover !important/.test(headBefore) &&
+      /filter: var\(--dshbg-head-filter, none\) !important/.test(headBefore),
+  );
+  // 副本是一个**整屏大小**的盒子（`cover` 必须按壁纸那个盒来缩放），所以它一定得裁，
+  // 不裁就盖住整个页面。裁到宿主自己算出来的 `paint-height`，折叠动画才跟得上。
+  check(
+    'the copy is cut down to the bar',
+    /clip-path: inset\(/.test(headBefore) &&
+      /var\(--plugin-header-paint-height, var\(--plugin-header-rest-height/.test(headBefore),
+  );
+  // 三套数逐字对上：溢出量、滤镜串、定位来源。任何一项漂了，表头那块就不是壁纸的同一些像素。
+  //
+  // 这些数**不在样式表里**（图是几百 KB 的 data URL，进 `<style>` 会让 `paint()` 每帧重建、
+  // 比较它），所以只能从 `setWall()` 那个出口读回来 —— 这也正是线上真正生效的那一份。
+  const wallVarsFor = async (override) => {
+    const run = await emit(override);
+    const probe = run.window.__dshbgHead;
+    return typeof probe === 'function' ? probe().wall : null;
+  };
+  const vars20 = await wallVarsFor({ blur: 20, dim: 0 });
+  const css20 = (await emit({ blur: 20, dim: 0 })).css;
+  const stack20 = (/\[data-dshbg-stack\] \{([^}]*)\}/.exec(css20) || ['', ''])[1];
+  check(
+    "the copy lands on the wallpaper's own box",
+    vars20 !== null &&
+      vars20['--dshbg-head-bleed'] === '52px' &&
+      stack20.includes('top: -52px') &&
+      stack20.includes('width: calc(100vw + 104px)'),
+    JSON.stringify(vars20),
+  );
+  const varsDim = await wallVarsFor({ blur: 20, dim: 10 });
+  check(
+    'the copy takes the exact filter string the wallpaper was painted with',
+    vars20 !== null &&
+      vars20['--dshbg-head-filter'] === 'blur(20px)' &&
+      varsDim !== null &&
+      varsDim['--dshbg-head-filter'] === 'blur(20px) brightness(0.900)',
+    vars20 === null ? 'no wall vars' : vars20['--dshbg-head-filter'],
   );
   check(
-    'the bar carries no saturate: this is blur, not frost',
+    "the copy is placed by the bar's own box, not by the viewport",
+    /var\(--dshbg-head-x/.test(headBefore) && /var\(--dshbg-head-w/.test(headBefore),
+  );
+  check(
+    'the bar carries no saturate: this is the wallpaper, not frost',
     !/saturate/.test(headFrost) && !/saturate/.test(barBody),
   );
   check(
-    'the only filter left on the bar is none',
+    'no backdrop-filter is left on the bar',
     headFrost.split('\n').filter((line) => /backdrop-filter/.test(line)).every((line) => /: none !important;$/.test(line)),
   );
-  // 模糊的**来源**是 `paintWall()`，不是这条带子。所以这里要的不是「和标签栏同一个数」，
-  // 而是**一个数都没有**：`[data-dshbg-head]` 的两条规则里不许出现 `blur(`。加任何 px 都
-  // 意味着「这块比旁边更糊」，而旁边才是用户拿来比的基准。
+  // 表头**不许自己上第二道模糊**。这条防的是退回到 1.3.30：给副本再叠 `blur()`，糊就被
+  // 施加了两遍，`cover` 再怎么对齐也救不回来。
   check(
     'the bar does not re-blur what the wallpaper already blurred',
-    !/blur\(/.test(headFull),
+    !/backdrop-filter: (?!none)/.test(headFull) && !/blur\(\d/.test(headBefore),
   );  // 玻璃挂在伪元素上，**不挂在 bar 上**：`backdrop-filter` 会建包含块，bar 里那些不带
   // `portal` 的 fixed tooltip 会整体挪位（`frostedBandCss` 那边实测过 100px 的偏移）。
   // ⚠️ 1.3.31：这一条从「模糊只能在伪元素上」升级成「两处都不许有真滤镜」—— 没有滤镜就
@@ -1594,15 +1637,23 @@ async function main() {
     'the bar is blurred the same way whether or not the wallpaper fills the window',
     bandOf((await emit({ fullWindow: false })).css) === headBar,
   );
-  // ⚠️ 1.3.31：这条原来是「the bar shares the sticky-head recipe with the other bars」——
-  // 1.3.30 的答案。现在反过来：**它不该有配方可共享**。表头不是什么材质，它就是壁纸，所以
-  // `configHeadCss` 里不许出现 `stickyHeadRecipe`、`blur(`、`color-mix`、`brightness`、
-  // `saturate` 任何一项。这条同时挡住「以后再手贱给它加一层」。
+  // ⚠️ 1.3.32：这条原来是「它不该有配方可共享」（1.3.31 的答案）。现在反过来，而且更严 ——
+  // 它共享的不是某条带子的磨砂配方，而是**壁纸本身的参数**：溢出量、图、位置、滤镜。
+  // `bleedOf(layer)` 和 `reducedMotion()` 必须来自壁纸那一侧，不许在这里另算一个数；
+  // 任何写死的像素值（`blur(32px)` 这种）都会让「和周围一致」当场失效。
+  const wallVarsSource = (/function headWallVars[\s\S]*?\n    \}\n/.exec(CODE) || [''])[0];
   const configHeadSource = (/function configHeadCss[\s\S]*?\n    \}\n/.exec(CODE) || [''])[0];
   check(
-    'the bar has no recipe left to share: it is the wallpaper, not a material',
-    configHeadSource.length > 0 &&
-      !/stickyHeadRecipe|blur\(|color-mix|brightness|saturate/.test(configHeadSource),
+    "the bar shares the wallpaper's parameters instead of inventing its own",
+    wallVarsSource.length > 0 &&
+      /bleedOf\(layer\)/.test(wallVarsSource) &&
+      /reducedMotion\(\)/.test(wallVarsSource) &&
+      /wall\.dim === 0/.test(wallVarsSource) &&
+      !/blur\(\d/.test(wallVarsSource) &&
+      // 样式表那一侧一个数都不许有 —— 有就是「另长一个样」的开头，而且那个数会和壁纸漂开。
+      configHeadSource.length > 0 &&
+      !/color-mix|saturate/.test(configHeadSource) &&
+      !/blur\(\d/.test(configHeadSource),
   );
   // 市场页那条吸顶栏是另一回事：它的底色就在自己身上，所以继续用那条共享薄填充。
   check(

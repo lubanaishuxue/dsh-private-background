@@ -1525,6 +1525,149 @@ html[data-dshbg-on] [data-dshbg-head]::before {  /* 宿主铺的第二层（--ds
 一个指标如果和用户的说法对不上，那不是用户说不清，是指标选错了 —— 换一个（这里是细节量
 而非亮度），答案一眼就出来了。
 
+## 1.3.32 · 「和周围的模糊的所有效果一致」
+
+1.3.31 交出去之后，用户发来的截图里 **`上下文（dsh-context）`、`网页搜索` 这些行压在「插件」
+两个字上**。紧接着是这一句：
+
+> 我有一个思路，就是让他模糊，但是和周围的模糊的所有效果一致，让他看不出来这个地方是
+> 一个独立的需要处理的地方。
+
+### 先把墙说清楚
+
+表头是视口顶部一块矩形，内容会从它下面经过。要让「经过的内容」看不见，只有三条路：
+
+```text
+① 盖一块不透明的        → 就是「板」，用户 1.3.26~1.3.29 否了四次
+② 把它糊掉 / 压暗        → 就是「雾」，用户 1.3.30/1.3.31 否了两次
+③ 裁掉它                → CSS 做不到：mask 挂在滚动容器上会连表头一起遮
+```
+
+所以用户这句话不是第三种做法，是**给 ② 加了一个以前没人提过的约束**：糊可以，但必须和
+周围**一模一样**。
+
+### 这个约束在 `backdrop-filter` 上无解（这是关键，也是前六轮真正的死点）
+
+壁纸**已经被 `paintWall()` 用滑杆糊过 F 一遍**。表头再上 `backdrop-filter: blur(N)`，糊的是
+「壁纸 + 滚上来的内容」，两个高斯核叠加：
+
+```text
+σ(表头) = √(F² + N²)    >    F = σ(周围)        对所有 N > 0 成立
+```
+
+- N 小一点 → 还是比旁边糊（1.3.30 的 N=32，细节保留 0.86，肉眼一眼）
+- N 大一点 → 是雾
+- N = 0 → 等式成立，但那就没有遮挡，退回 1.3.31
+
+**「一致」在 `backdrop-filter` 上只有 N=0 这一个解，而 N=0 不挡。** 这不是调参能解决的，
+是公式本身。
+
+### 唯一能让等式成立的做法：把那批像素搬过来
+
+壁纸在这个插件里早就是**独立元素**（`[data-dshbg-stack]`：`fixed`、`-bleed` 溢出、`cover`、
+自带 `filter`）。那就让表头的 `::before` 放一份**参数完全相同**的副本：
+
+```text
+同 inset（vw/vh + 2×bleed）、同 background-size: cover、同 background-position、同 filter
+```
+
+两者几何完全重合 → 副本显示的就是**壁纸本体那批像素**，它的模糊就是壁纸的模糊，不是二次
+模糊。于是 σ、亮度、色相、连云的形状都**逐像素相等**；同时它是一层不透明的面，滚上来的行
+被它盖住。
+
+这跟用户 1.3.25 骂的「让你透背景，没让你画啊」不冲突：那次画的是**一块板**（和壁纸无关的
+另一种材质），这次画的是**壁纸自己**。
+
+### 量测
+
+`lab/repro-head-finish.html`，`?wall=0&tall=1&scroll=160`（内容真的滚过表头），
+拿「内容隐藏 + 表头全透明」那张当纯壁纸基准，逐像素比（`--force-device-scale-factor=1`）：
+
+| 版本 | 表头内与纯壁纸的差（均值 / 最大） | 内容穿帮 |
+|---|---|---|
+| 宿主原样（50% 底盘） | 67.1 / — | 不穿帮，一块灰板 |
+| 1.3.30（`blur(32)`） | 3.5 / 80（细节保留 0.86） | 不穿帮，但那块是雾 |
+| 1.3.31（全透明） | **0.00 / 0** | 穿帮（有内容处 40+） |
+| **1.3.32（同源副本）** | **0.00 / 0** | **不穿帮** |
+
+侧栏展开（整页右移 260px 再量）同样是 `0.00 / 0`。
+
+⚠️ **第一次量出来是 1.5%（均值 3.2、最大 80），不是 0。** 追下去发现全部来自**夹具自己
+参数不齐**：`?wall=0` 把壁纸的 `blur` 拆了，副本却还写着 `blur(10px)`。把副本的 filter 跟
+壁纸对齐之后归零 —— 这条弯路本身就是这个方案的说明书：**参数漂一个像素，等式就不成立**。
+
+### 落地
+
+```css
+html[data-dshbg-on] [data-dshbg-head] {
+  background: transparent !important;   /* 宿主铺的第一层 */
+  isolation: isolate !important;        /* 让 z-index:-1 的副本待在带子里 */
+  backdrop-filter: none !important;
+}
+html[data-dshbg-on] [data-dshbg-head]::before {   /* 接管宿主那块底色板 */
+  position: absolute;
+  top:  calc(-1 * (var(--dshbg-head-y) + var(--dshbg-head-bleed)));
+  left: calc(-1 * (var(--dshbg-head-x) + var(--dshbg-head-bleed)));
+  width:  calc(100vw + 2 * var(--dshbg-head-bleed));   /* = 壁纸那个盒 */
+  height: calc(100vh + 2 * var(--dshbg-head-bleed));
+  background-image: var(--dshbg-head-img);
+  background-position: var(--dshbg-head-pos);
+  background-size: cover;
+  filter: var(--dshbg-head-filter);
+  clip-path: inset(…);                                 /* 裁到 paint-height */
+}
+```
+
+三个约束（都写进了源码注释和断言）：
+
+```text
+1. 副本盒必须等于壁纸盒。`cover` 是按「画进去的盒子」缩放的 —— 盒子小一点，
+   同一张图就被裁得不一样，那就是「错位双影」。
+2. 宿主给 bar 设了 container-type: inline-size，bar 因此是最近的包含块：副本的
+   absolute 原点是 bar 不是视口，横向要按 bar 的视口 left 补偏移（侧栏一展开，
+   内容区右移）。由 measure() 写进 --dshbg-head-x/y/w，resize + scroll(capture) 触发。
+3. 宿主用 --plugin-header-paint-height 控制这条带子可见多高（滚动时收缩）。副本
+   跟着它**裁**、不跟着它**画** —— 裁切不移动像素，所以收缩时不会跟着糊。
+```
+
+**数值不走样式表。** 图是几百 KB 的 `data:` URL，而 `paint()` 每次 store 提交都会重建
+`<style>` 并与上一份比较（拖滑杆时就是每帧）。所以四个数由 `headWallVars(layer)` 算出来、
+经 `configHead.setWall()` 写到元素上，且值没变就一个字节都不写。这一条是被上一个版本的
+实现逼出来的：第一版把 `--dshbg-head-img` 写进 CSS 文本，等于每帧比较一份几 MB 的字符串。
+
+### 代价，写在明处
+
+- **视频壁纸**：只能显示静帧（`wall.value`），周围在动、表头不动，肉眼能看出来。
+  动态图（GIF/APNG）没这个问题 —— 同一个 URL 共用一份解码器，帧是同步的。
+- **切换壁纸**：淡入的几百毫秒里副本已经换成新图、周围还在混，表头会「先到」。
+- **滚动开销**：`paint-height` 每帧变，`clip-path` 跟着重算。第一阶段实测没有掉帧，
+  但这是这个方案唯一新增的每帧工作，如果哪天滚动发涩，先怀疑这里。
+
+### 断言：387 → 391
+
+1.3.31 那批「什么都不许有」的反向断言全部换成正面的**同参数**断言：
+
+- `the copy lands on the wallpaper's own box`（`--dshbg-head-bleed` = 52px，与
+  `[data-dshbg-stack]` 的 `top: -52px` / `width: calc(100vw + 104px)` 逐字对齐）
+- `the copy takes the exact filter string the wallpaper was painted with`
+  （`blur(20px)`；dim=10 时 `blur(20px) brightness(0.900)`，与 `paintWall()` 同一表达式）
+- `the copy is cut down to the bar`（有 `clip-path`，且跟着 `paint-height`）
+- `the bar shares the wallpaper's parameters instead of inventing its own`
+  （`headWallVars` 里必须出现 `bleedOf(layer)` / `reducedMotion()` / `wall.dim === 0`，
+  且两个函数体里都不许有写死的 `blur(数字)`）
+- 保留：`no backdrop-filter is left on the bar`、`the bar paints the wallpaper itself
+  instead of a material`、三条滑杆推不动
+
+### 学到的
+
+**用户说「和周围一致」的时候，要去找那批像素，而不是去找那个参数。** 前六轮都在「用参数
+逼近一致」，而一致是像素级的性质：只要还是「另一层 + 另一道滤镜」，就永远差一点。真正
+一致的唯一做法是**不制造第二份渲染**，而是复用第一份 —— 哪怕它在物理上是复制了一个盒子。
+
+**「不可行」的结论要连前提一起记。** 1.3.31 里写过「表头再 cover 有 1.5% 缩放差 →
+错位双影」，那个排除在当时是对的（盒子不是同一个盒），但它被记成了「这条路不行」。
+实际是「盒子不一致时不行」—— 前提一改，这条路就是唯一的路。
+
 ## 待办 · 圆角：面板是「上圆下方」（几何已量死，元素仍未知）
 
 用户报「圆角渲染未处理干净」，截图是一块**上两角圆、下两角直**的面板，那颗「回到最下面」的圆钮正好贴在右下那个角里。
