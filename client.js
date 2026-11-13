@@ -2830,37 +2830,43 @@ ${restores}
      *   brightness       → 1.3.29 的错，同样是往壁纸上贴一层膜
      * ```
      *
-     * 所以它现在是一条**只有 `blur()` 的带子**，模糊的量取 `stickyHeadRecipe` 的
-     * `blur`（与标签栏、文档路径条同一个 `menuBlur×2`、同一个 32 下限），别的什么都不加。
+     * 所以它现在是 1.3.30 的写法：一条**只有 `blur()` 的带子**。
+     *
+     * ⚠️ **1.3.31：`blur()` 也去掉了 —— 模糊本身就是那块「雾」。**
+     *
+     * 「还是有模糊」这句话把 1.3.30 的错指出来了：**壁纸已经被 `paintWall()` 用滑杆的值糊过
+     * 一遍**，表头再叠 `blur(32px)`，它肩并肩的地方就是两种糊度。屏幕上读到的不是「一层玻璃」，
+     * 是**一块明显比周围更糊的区域** —— 边界不在明暗上，在**细节量**上，所以不管填充调成 0
+     * 还是 22 都还在。1.3.26 到 1.3.30 六轮全在跟「明暗」较劲，一次都没量过细节量。
+     *
+     * 量法（`lab/repro-head-finish.html`，带内 B 通道标准差 σ）：壁纸原图 σ=…，表头 blur(32)
+     * 把它压到一片均匀，而**同一条线往下 8px 的壁纸**还保留着云的轮廓。「一样」在这里不是
+     * 「同一个 alpha」，是**同一个 σ**。要让表头的 σ 等于旁边壁纸的 σ，唯一的做法是**不在
+     * 表头上再模糊一次**：滑杆已经糊过了，这里再加任何 px 都是「比旁边更糊」。
+     *
+     * 所以这条带子最终什么都没穿：没有填充、没有饱和、没有压暗、没有模糊。它只剩一件事 ——
+     * **把宿主自己铺在 `::before` 上的那块底色板清掉**（`--dsw-alias-bg-base` 50%，那是给没有
+     * 壁纸的实心主题设计的，压在壁纸上就是一块灰板）。清完表头透出来的就是壁纸本体，和它
+     * 下面 1px 处、和左边侧栏、和右边内容区**是同一张图、同一个模糊度**。
+     *
+     * 代价写在明处：没有任何遮挡，滚上来的行会从标题文字底下穿过去。这条取舍是用户选的
+     * （「不要磨砂」「不要模糊」两句话之后），不是漏掉的 —— 如果哪天要重新遮，唯一被验证
+     * 不会变成「雾」的办法是**滚起来才加**（把遮挡挂在 scrollTop > 0 上），而不是常驻一层。
      */
-    function configHeadCss(settings) {
-      // 只要模糊。光秃秃的一条，没有任何填充/压暗/提饱和 —— 理由见上面那段。
-      const { blur } = stickyHeadRecipe(settings);
-      // ⚠️ 1.3.27：玻璃挂在 `::before` 上，不挂在 bar 上 —— 这是 `frostedBandCss` 的结构
-      // （见它那段注释：`backdrop-filter` 会建包含块，把 bar 里那些不带 `portal` 的 fixed
-      // tooltip 挪位）。宿主已经把这个伪元素占成底色板（`inset: 0 0 auto` + 高度变量），
-      // 正好是「一条贴在顶上、垫在内容下面的面」，接管它比自己插一层 DOM 更省：不用动
-      // React 的子树，也不会被重渲染删掉。
-      //
-      // ⚠️ 与 `frostedBandCss` 的三处**故意不同**，前两处因为这条带子是 `position: sticky`：
-      //  - 不写 `position: relative`（宿主要它吸附，改定位就丢吸附）;
-      //  - 不写 `z-index: 1`（宿主已经给了 `z-index: 2`，我们写 1 是把它**降**下去）;
-      //  - 不穿磨砂（`frostedSkin` 那三行）：这里只要模糊，理由见上面。
+    function configHeadCss() {
+      // 两条规则，一件事：清掉宿主铺的两层底（bar 本体 + 它的 `::before` 色板），并且显式把
+      // `backdrop-filter` 按回 `none` —— 宿主以后若给自己的表头加上滤镜，这两行能兜住。
+      // 分两条写而不是合并选择器，是因为测试按 `[data-dshbg-head] {` 这个形状找 bar 本体。
       return `
 html[data-dshbg-on] [data-dshbg-head] {
   background: transparent !important;
-  isolation: isolate !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 html[data-dshbg-on] [data-dshbg-head]::before {
-  content: "" !important;
-  position: absolute !important;
-  inset: 0 !important;
-  height: 100% !important;
-  z-index: -1 !important;
-  pointer-events: none !important;
   background: transparent !important;
-  -webkit-backdrop-filter: blur(${blur}px) !important;
-  backdrop-filter: blur(${blur}px) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 `;
     }

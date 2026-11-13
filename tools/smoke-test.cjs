@@ -1490,9 +1490,13 @@ async function main() {
     /window\.__dshbgHeadGlass = \(on\) => \{[\s\S]{0,320}?suspended = on === false;/.test(CODE) &&
       /const sync = \(\) => \{\s*if \(disposed\) return;[\s\S]{0,700}?if \(suspended\) \{\s*unmark\(\);\s*return;/.test(CODE),
   );
+  // ⚠️ 1.3.31：这条原来是反的（「the title bar frosts the rows that scroll under it」）。
+  // 它守的是 1.3.30 的 `blur(32px)`，而那一版在屏幕上正是用户说的「还是有模糊」—— 壁纸已经
+  // 被 `paintWall()` 糊过一遍，表头再叠一次就比肩上肩的地方更糊。现在要求的是**一次都不糊**，
+  // 而且要把 `none` 显式写出来（宿主若给自己的表头加滤镜，这条能兜住）。
   check(
-    'the title bar frosts the rows that scroll under it',
-    /\[data-dshbg-head\]::before \{[^}]*backdrop-filter: blur\((?!0px)\d+px\)/.test(base.css),
+    'the title bar adds no second blur: the wallpaper is already blurred at the source',
+    /\[data-dshbg-head\]::before \{[^}]*backdrop-filter: none !important/.test(base.css),
   );
   // ⚠️ 这条带子是**有**填充的，而且那个数就是侧栏那条滑杆本身 —— 具体见下面几条。
   // 反面的一半：不许是渐变。渐变把底边归零，滚上来的行在带子下半截就会裸着露出来，
@@ -1552,25 +1556,22 @@ async function main() {
     !/saturate/.test(headFrost) && !/saturate/.test(barBody),
   );
   check(
-    'the blur is the only filter on the bar',
-    headFrost.split('\n').filter((line) => /backdrop-filter/.test(line)).every((line) => /: blur\(\d+px\) !important;$/.test(line)),
+    'the only filter left on the bar is none',
+    headFrost.split('\n').filter((line) => /backdrop-filter/.test(line)).every((line) => /: none !important;$/.test(line)),
   );
-  // 模糊的**量**仍然和另外两条带子同一个数（`stickyHeadRecipe` 的 blur）：不穿那身衣服，
-  // 但糊的程度一样。取两条规则里的 `blur(Npx)` 直接比，比钉死一个数字稳。
+  // 模糊的**来源**是 `paintWall()`，不是这条带子。所以这里要的不是「和标签栏同一个数」，
+  // 而是**一个数都没有**：`[data-dshbg-head]` 的两条规则里不许出现 `blur(`。加任何 px 都
+  // 意味着「这块比旁边更糊」，而旁边才是用户拿来比的基准。
   check(
-    'the blur is the same number the other bars use',
-    (() => {
-      const num = (body) => (/blur\((\d+)px\)/.exec(body) || [0, ''])[1];
-      const strip = (/\[data-dockkit-strip\]::before \{([^}]*)\}/.exec(base.css) || ['', ''])[1];
-      return num(headFrost) !== '' && num(headFrost) === num(strip);
-    })(),
-  );
-  // 玻璃挂在伪元素上，**不挂在 bar 上**：`backdrop-filter` 会建包含块，bar 里那些不带
+    'the bar does not re-blur what the wallpaper already blurred',
+    !/blur\(/.test(headFull),
+  );  // 玻璃挂在伪元素上，**不挂在 bar 上**：`backdrop-filter` 会建包含块，bar 里那些不带
   // `portal` 的 fixed tooltip 会整体挪位（`frostedBandCss` 那边实测过 100px 的偏移）。
-  // 这条同时钉住「别为了省事把 blur 搬回 bar 本体」。
+  // ⚠️ 1.3.31：这一条从「模糊只能在伪元素上」升级成「两处都不许有真滤镜」—— 没有滤镜就
+  // 没有包含块，bar 里那些 fixed tooltip 连偏移的机会都没有。
   check(
-    'the glass rides the pseudo-element so the bar stays out of the containing-block business',
-    !/backdrop-filter/.test(barBody) && /backdrop-filter: blur\(\d+px\)/.test(headFull),
+    'no real filter anywhere on the bar, so nothing becomes a containing block',
+    !/backdrop-filter: (?!none)/.test(headFull),
   );
   // ⚠️ 1.3.30 删掉的两条：「the bar carries no alpha tint at all」和「the dimming is
   // multiplicative」。它们是 1.3.29 为「零填充 + brightness(0.94)」量身做的，而那一版已经
@@ -1593,13 +1594,15 @@ async function main() {
     'the bar is blurred the same way whether or not the wallpaper fills the window',
     bandOf((await emit({ fullWindow: false })).css) === headBar,
   );
-  // ⚠️ 1.3.30：这条原来是反的（「不许接市场页那份配方」）。现在要的就是那份配方 —— 市场页
-  // 吸顶栏、标签栏、文档路径条、插件页表头，四条带子同一件差事，同一个数。
+  // ⚠️ 1.3.31：这条原来是「the bar shares the sticky-head recipe with the other bars」——
+  // 1.3.30 的答案。现在反过来：**它不该有配方可共享**。表头不是什么材质，它就是壁纸，所以
+  // `configHeadCss` 里不许出现 `stickyHeadRecipe`、`blur(`、`color-mix`、`brightness`、
+  // `saturate` 任何一项。这条同时挡住「以后再手贱给它加一层」。
+  const configHeadSource = (/function configHeadCss[\s\S]*?\n    \}\n/.exec(CODE) || [''])[0];
   check(
-    'the bar shares the sticky-head recipe with the other bars',
-    /stickyHeadRecipe\(settings\)/.test(
-      (/function configHeadCss[\s\S]*?\n    \}\n/.exec(CODE) || [''])[0],
-    ),
+    'the bar has no recipe left to share: it is the wallpaper, not a material',
+    configHeadSource.length > 0 &&
+      !/stickyHeadRecipe|blur\(|color-mix|brightness|saturate/.test(configHeadSource),
   );
   // 市场页那条吸顶栏是另一回事：它的底色就在自己身上，所以继续用那条共享薄填充。
   check(
@@ -1613,31 +1616,28 @@ async function main() {
     'a bar that content scrolls under gets blur, not a raised card',
     !/inset 0 0 0 1px/.test(barBody) && !/0 10px 30px/.test(barBody) && !/inset 0 -?1px/.test(barBody),
   );
-  // 侧面确认另外两条带子**仍然**是磨砂（8% + saturate）：这条断言防的是「为了让表头一致，
-  // 把三条带子一起改成纯模糊」—— 那会把标签栏和路径条也一起拆掉。
+  // 侧面确认另外两条带子**仍然**是磨砂（8% + saturate）：这条断言防的是「为了表头好看，
+  // 把三条带子一起拆了」—— 标签栏和路径条浮在内容上，它们那层膜是必需的。
   check(
-    'the other two bars keep their frost while this one is blur only',
+    'the other two bars keep their frost while this one has nothing on it',
     /saturate\(150%\)/.test(stripFrost) &&
       /color-mix\(in srgb, var\(--dshbg-raw-base\) 8%, transparent\)/.test(stripFrost),
   );
-  // 模糊来源：`stickyHeadRecipe` = `min(64, max(menuBlur×2, 32))`。三个点把三条边都钉住
-  // （×2、下限 32、上限 64），改公式任何一处都会红。
-  check(
-    'the bar frosts at twice the menu blur, floored at 32',
-    bandOf((await emit({ blur: 7, menuBlur: 20 })).css).includes('blur(40px)') &&
-      bandOf((await emit({ blur: 7, menuBlur: 4 })).css).includes('blur(32px)'),
-  );
-  const quietMenuBar = bandOf((await emit({ blur: 17, menuBlur: 4 })).css);
-  const loudMenuBar = bandOf((await emit({ blur: 17, menuBlur: 77 })).css);
-  check(
-    'the wallpaper slider cannot move the bar away from that number',
-    quietMenuBar.includes('blur(32px)') &&
-      loudMenuBar.includes('blur(64px)') &&
-      quietMenuBar === bandOf((await emit({ blur: 40, menuBlur: 4 })).css),
+  // ⚠️ 1.3.31：这里原来钉的是 `stickyHeadRecipe` 的三条边（×2 / 32 下限 / 64 上限）。
+  // 现在这条带子上根本没有滤镜，所以那三条边**不该**再对它有任何影响 —— 把 menu 模糊推到
+  // 两端、把壁纸滑杆推到两端，输出必须逐字相同，而且里面不许出现 `blur(`。
+  const barsUnder = await Promise.all(
+    [
+      { blur: 3, menuBlur: 1 },
+      { blur: 40, menuBlur: 4 },
+      { blur: 7, menuBlur: 20 },
+      { blur: 17, menuBlur: 77 },
+      { blur: 0, menuBlur: 500 },
+    ].map(async (s) => bandOf((await emit(s)).css)),
   );
   check(
-    'the bar respects the shared 64px ceiling',
-    bandOf((await emit({ menuBlur: 500 })).css).includes('blur(64px)'),
+    'no menu-blur or wallpaper value can put a filter back on the bar',
+    barsUnder.every((css) => !/blur\(/.test(css)) && barsUnder.every((css) => css === barsUnder[0]),
   );
   // 每多一个 `backdrop-filter` 就多一次每帧取快照（档案第 18 条）。这一处是例外——它
   // 底下滑过的是**没模糊过的文字**，快照在做实事——但例外只能有一个：不能再往条子内部糊
