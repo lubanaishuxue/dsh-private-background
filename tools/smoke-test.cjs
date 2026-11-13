@@ -339,6 +339,14 @@ async function emit(settingsOverride, extra) {
 
 async function main() {
   const base = await emit({});
+  // `DSHBG_DUMP=1 node tools/smoke-test.cjs` 把三条带子的**线上真实规则**打出来。改玻璃配方时
+  // 光看断言不够 —— 断言是「有没有」，这里是「长什么样」，后者是用户唯一能看见的东西。
+  if (process.env.DSHBG_DUMP) {
+    for (const key of ['[data-dshbg-head]', '[data-dockkit-strip]', '[data-textpreview-path]']) {
+      const re = new RegExp('(\\[data-dshbg-on\\][^{]*' + key.replace(/[[\]]/g, '\\$&') + '[^{]*\\{[^}]*\\})', 'g');
+      for (const m of base.css.match(re) || []) console.log('DUMP ' + m.replace(/\s+/g, ' '));
+    }
+  }
   console.log('module contract');
   check('module id matches package', base.definition && base.definition.id === MANIFEST.name, base.definition ? base.definition.id : 'no definition');
   // The bundle patch is a second, independent place where the package names itself — the
@@ -1503,21 +1511,59 @@ async function main() {
   // ⚠️ 必须显式 `fullWindow: true`：默认设置下这块玻璃是关的（退回 `STICKY_FILL`），
   // 拿 `base.css` 里的正文去断言只会读到那条退路。
   const headFull = bandOf((await emit({ fullWindow: true })).css);
-  // ⚠️ 1.3.29：这一格钉过三个数（`sidebarFill` 40 / `surface` 50 / `PANE_FILL` 22），三次
-  // 都是同一个错误 —— 钉的是**别的表面的数值**。而真正错的是目标本身：「和某个表面同密度」
-  // 在这个位置上不成立，因为**密度这个维度就不对**。
+  // ⚠️ 1.3.30：这一格先后钉过四个数 —— `sidebarFill` 40 / `surface` 50 / `PANE_FILL` 22 /
+  // 干脆一个都没有、只留 `brightness(.94)`。四次的错法不同、错因是同一个：**它一直假设这块
+  // 表面该自己长一个样**。
   //
-  // alpha 混合是 `bg*(1-a) + base*a`，也就是**向一个中性色插值**：每加一点 a，壁纸的彩度
-  // 就被稀释一点、色相被拽向那个中性色一点。量出来宿主原样（a=50%）吃掉 43% 的彩度、
-  // 22% 吃掉 23%，而亮度只掉 12 点 —— 屏幕上读作「一块灰板」，不管它多亮。前七轮一直在
-  // 调那个百分数，可**那个百分数乘的是「变灰的量」，不是「变暗的量」**。
-  //
-  // `backdrop-filter` 的 `brightness()` 是乘性的（`bg*k`），只缩放通道，色相与彩度关系原样
-  // 保留。所以这条带子现在**一点 alpha 都不叠**，压暗交给滤镜。
+  // 用户两句话把结论说完了：先「调成一样的数值磨砂很难吗」，再「**在这里不要使用磨砂，这里
+  // 就是模糊**」。所以这条带子的目标不是「另一种磨砂」，而是**只要模糊**：
+  // 另外两条带子（标签栏、文档路径条）浮在内容上，需要一层膜把它们和底下的字隔开；这条是
+  // 页面自己的表头，底下滑过的就是同一张壁纸，只需要把字糊掉。填充、饱和、压暗三个都不该有。
   check(
     "the host's own backdrop on the bar is taken over, not left above the glass",
     !/\[data-dshbg-head\]::before \{[^}]*background: var\(--dsw-alias-bg-base\)/.test(base.css) &&
       /background: transparent !important/.test(headFull),
+  );
+  // 只取 `::before` 里那三行玻璃声明，几何行不算 —— 表头多一行 `height: 100%`（宿主的
+  // `paint-height` 只有半个头高，折叠动画要用），那是它自己的活，不是材质。
+  const declsOf = (body) =>
+    body
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /^(background|-webkit-backdrop-filter|backdrop-filter)/.test(line))
+      .join('\n');
+  const stripFrost = declsOf(
+    (/\[data-dockkit-strip\]::before \{([^}]*)\}/.exec(base.css) || ['', ''])[1],
+  );
+  const headFrost = declsOf(
+    (/\[data-dshbg-head\]::before \{([^}]*)\}/.exec(base.css) || ['', ''])[1],
+  );
+  // ⚠️ 本轮的主线断言：**只要模糊，别的都没有**。三条是分开钉的，因为它们是三件不同的事，
+  // 混成一条的话任何一条漏掉都可能被另一条掩盖：
+  //   1. 没有填充（`color-mix` 一律不许出现，哪怕 1%）;
+  //   2. 没有 `saturate`（磨砂的提饱和工序）;
+  //   3. 没有 `brightness` / 任何第二道滤镜。
+  check(
+    'the bar carries no fill: blur, not a tinted film',
+    headFrost.length > 0 && !/color-mix/.test(headFrost) && /background: transparent !important/.test(headFrost),
+  );
+  check(
+    'the bar carries no saturate: this is blur, not frost',
+    !/saturate/.test(headFrost) && !/saturate/.test(barBody),
+  );
+  check(
+    'the blur is the only filter on the bar',
+    headFrost.split('\n').filter((line) => /backdrop-filter/.test(line)).every((line) => /: blur\(\d+px\) !important;$/.test(line)),
+  );
+  // 模糊的**量**仍然和另外两条带子同一个数（`stickyHeadRecipe` 的 blur）：不穿那身衣服，
+  // 但糊的程度一样。取两条规则里的 `blur(Npx)` 直接比，比钉死一个数字稳。
+  check(
+    'the blur is the same number the other bars use',
+    (() => {
+      const num = (body) => (/blur\((\d+)px\)/.exec(body) || [0, ''])[1];
+      const strip = (/\[data-dockkit-strip\]::before \{([^}]*)\}/.exec(base.css) || ['', ''])[1];
+      return num(headFrost) !== '' && num(headFrost) === num(strip);
+    })(),
   );
   // 玻璃挂在伪元素上，**不挂在 bar 上**：`backdrop-filter` 会建包含块，bar 里那些不带
   // `portal` 的 fixed tooltip 会整体挪位（`frostedBandCss` 那边实测过 100px 的偏移）。
@@ -1526,24 +1572,11 @@ async function main() {
     'the glass rides the pseudo-element so the bar stays out of the containing-block business',
     !/backdrop-filter/.test(barBody) && /backdrop-filter: blur\(\d+px\)/.test(headFull),
   );
-  // 「一点 alpha 都不叠」：宿主那条 50% 和我们曾经写过的 22% 都是 `color-mix(... N%)`，
-  // 这里连 1% 都不许出现 —— 推导见上面 `bg*(1-a)+base*a`。
-  check(
-    'the bar carries no alpha tint at all',
-    !/background:\s*(?!transparent)color-mix\(in srgb,\s*var\(--dshbg-raw-base\)/.test(headFull) &&
-      /background: transparent !important/.test(headFull),
-  );
-  // 反面：压暗必须是**乘性**的。写成 `color-mix(... 6%)` 就又是叠色 —— 哪怕只有 6%，
-  // 它乘的仍然是「变灰的量」。
-  check(
-    'the dimming is multiplicative, so the wallpaper keeps its chroma',
-    /backdrop-filter: blur\(\d+px\) brightness\(0\.\d+\) !important/.test(headFull),
-  );
-  // 0.9 是下限、1 是上限：再低就成了「压暗」（台阶又会看得见），等于 1 就是纯模糊
-  // （浅色壁纸上的浅色字会读不出来）。0.94 的出处见 `HEAD_DIM` 的注释 —— 它让未滚动时
-  // 表头与旁边壁纸的 L* 台阶落到 -0.6，在肉眼阈值以内。
-  const headDim = Number((/const HEAD_DIM = ([0-9.]+);/.exec(CODE) || [0, 0])[1]);
-  check('the dim is a light touch, not a mask', headDim > 0.9 && headDim < 1);
+  // ⚠️ 1.3.30 删掉的两条：「the bar carries no alpha tint at all」和「the dimming is
+  // multiplicative」。它们是 1.3.29 为「零填充 + brightness(0.94)」量身做的，而那一版已经
+  // 作废 —— 它把这条带子做成了全应用唯一一块**没有填充、只压暗**的玻璃，于是它和身边每一条
+  // 带子都不一样。留着这两条只会保证「继续不一样」。取代它们的是上面那条逐字相同。
+  //
   // 反面：三条滑杆都不许把它推回「一块板」。`surface` 那条是 1.3.26 的错，`sidebarFill` 是
   // 1.3.25 的；两边各取相差 70 点的两端，输出必须逐字相同。
   const headBar = headFull;
@@ -1554,18 +1587,17 @@ async function main() {
       bandOf((await emit({ fullWindow: true, surface: 10 })).css) === headBar &&
       bandOf((await emit({ fullWindow: true, surface: 90 })).css) === headBar,
   );
-  // 没有壁纸铺满窗口时，侧栏是宿主的实心列，没有东西可对齐 —— 退回那条共享薄填充。
+  // 没有壁纸铺满窗口时也是同样的处理：纯模糊在没有壁纸时本来就是空转（底下是实心），
+  // 所以**不需要**一条退路 —— 有退路反而意味着「开不开壁纸是两种材质」。
   check(
-    'without the wallpaper in the window the bar falls back to the shared thin fill',
-    bandOf((await emit({ fullWindow: false })).css).includes('var(--dshbg-raw-base) 8%, transparent'),
+    'the bar is blurred the same way whether or not the wallpaper fills the window',
+    bandOf((await emit({ fullWindow: false })).css) === headBar,
   );
-  // 反面：不许接市场页那份配方（`stickyHeadRecipe` 的模糊是 `menuBlur×2`、下限 32）。这条
-  // 带子要的是 `menuBlur` 本身 —— 和代码框表头同一个数，不是它的两倍。
-  // ⚠️ 这里只钉"没接错函数"，**不**去匹配具体写法 —— 否则每条变异都会先踩到文本检查，
-  // 真正的行为断言永远轮不到执行，看起来全抓，其实那些格子是空的。
+  // ⚠️ 1.3.30：这条原来是反的（「不许接市场页那份配方」）。现在要的就是那份配方 —— 市场页
+  // 吸顶栏、标签栏、文档路径条、插件页表头，四条带子同一件差事，同一个数。
   check(
-    'the bar does not borrow the market header recipe',
-    !/stickyHeadRecipe\(settings\)/.test(
+    'the bar shares the sticky-head recipe with the other bars',
+    /stickyHeadRecipe\(settings\)/.test(
       (/function configHeadCss[\s\S]*?\n    \}\n/.exec(CODE) || [''])[0],
     ),
   );
@@ -1581,32 +1613,31 @@ async function main() {
     'a bar that content scrolls under gets blur, not a raised card',
     !/inset 0 0 0 1px/.test(barBody) && !/0 10px 30px/.test(barBody) && !/inset 0 -?1px/.test(barBody),
   );
-  // 饱和是第五轮才发现的第三个差异：侧栏从不加饱和，而薄填充之上再提饱和，会让带子比
-  // 它旁边的玻璃更蓝 —— 截图里那一带的蓝通道比屏幕上任何别的表面高 20 点。这条仍然成立：
-  // 借数不是加料，表头不参与「玻璃更蓝」这件事。
+  // 侧面确认另外两条带子**仍然**是磨砂（8% + saturate）：这条断言防的是「为了让表头一致，
+  // 把三条带子一起改成纯模糊」—— 那会把标签栏和路径条也一起拆掉。
   check(
-    'the bar does not push saturation the way no column does',
-    !/saturate\(/.test(barBody) && /saturate\(/.test(marketBody),
+    'the other two bars keep their frost while this one is blur only',
+    /saturate\(150%\)/.test(stripFrost) &&
+      /color-mix\(in srgb, var\(--dshbg-raw-base\) 8%, transparent\)/.test(stripFrost),
   );
-  // ⚠️ 1.3.26：这两条原来是**反面**的（「模糊必须跟壁纸那条滑杆」「菜单滑杆不许动它」）。
-  // 反过来的理由：壁纸那条滑杆是给整幅糊过的大色块调的，20px 糊不掉从底下滚过去的 12~14px
-  // 文字 —— 这根带子是全应用唯一一处「带子里的字还留着形状」的地方。代码框表头干的是同一件
-  // 差事，用的是 `menuBlur`。所以现在：跟菜单滑杆，且**不**跟壁纸滑杆。
+  // 模糊来源：`stickyHeadRecipe` = `min(64, max(menuBlur×2, 32))`。三个点把三条边都钉住
+  // （×2、下限 32、上限 64），改公式任何一处都会红。
   check(
-    'the bar frosts with the same number the code-block header uses',
-    bandOf((await emit({ blur: 7, menuBlur: 20 })).css).includes('blur(20px) !important'),
+    'the bar frosts at twice the menu blur, floored at 32',
+    bandOf((await emit({ blur: 7, menuBlur: 20 })).css).includes('blur(40px)') &&
+      bandOf((await emit({ blur: 7, menuBlur: 4 })).css).includes('blur(32px)'),
   );
   const quietMenuBar = bandOf((await emit({ blur: 17, menuBlur: 4 })).css);
   const loudMenuBar = bandOf((await emit({ blur: 17, menuBlur: 77 })).css);
   check(
     'the wallpaper slider cannot move the bar away from that number',
-    quietMenuBar.includes('blur(4px)') &&
-      loudMenuBar.includes('blur(77px)') &&
+    quietMenuBar.includes('blur(32px)') &&
+      loudMenuBar.includes('blur(64px)') &&
       quietMenuBar === bandOf((await emit({ blur: 40, menuBlur: 4 })).css),
   );
   check(
-    'the bar respects the menu blur ceiling, not the wallpaper one',
-    bandOf((await emit({ menuBlur: 500 })).css).includes('blur(320px)'),
+    'the bar respects the shared 64px ceiling',
+    bandOf((await emit({ menuBlur: 500 })).css).includes('blur(64px)'),
   );
   // 每多一个 `backdrop-filter` 就多一次每帧取快照（档案第 18 条）。这一处是例外——它
   // 底下滑过的是**没模糊过的文字**，快照在做实事——但例外只能有一个：不能再往条子内部糊

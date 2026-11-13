@@ -1367,6 +1367,86 @@ brightness(k)：result = bg * k      ← 色相、彩度的**关系**原样保�
 
 **调参调不动的时候，换一个维度量，比换一个数值快。** 亮度量了八次都是「可以接受」，
 换成 Lab 的 C* 一次就看见了 43%。
+## 1.3.30 · 「这里不要磨砂，这里就是模糊」
+
+用户两句，第二句才是答案：
+
+1. 「压根就没改好的问题。调成一样的数值磨砂很难吗」
+2. 「**在这里不要使用磨砂，这里就是模糊**」
+
+第一句我照着做了 —— 让表头读标签栏那条带子的同一份配方（`stickyHeadRecipe` + `frostedSkin`，
+8% + blur + saturate），还把断言改成「与标签栏逐字相同」。那是对「保持一致」最直的读法，
+**但读错了差事**。第二句纠正的是目标的形状：这块表面要的不是另一种磨砂，而是**没有膜**。
+
+### 磨砂是三样东西，这条带子只该拿一样
+
+| 工序 | 干什么 | 这条带子需要吗 |
+|---|---|---|
+| `color-mix(… N%)` 填充 | 把底下的东西压掉一层，同时**向中性色插值**（彩度被稀释） | ❌ 它就是「画上去的那层板」 |
+| `saturate(150%)` | 磨砂的提饱和工序，让玻璃看起来「有料」 | ❌ 提饱和 = 又回到一种材质 |
+| `backdrop-filter: blur(Npx)` | 把滚上来的字糊掉 | ✅ **只有这个** |
+| `brightness(0.94)`（1.3.29 加的） | 压暗 | ❌ 同样是一层膜 |
+
+为什么标签栏要磨砂而表头不用：**标签栏浮在内容之上**，底下是别人的字，需要一层膜把它隔开；
+**插件页表头是页面自己的头**，底下的壁纸和它要透的是同一张，只需要把滚上来的字糊掉。
+
+### 落地的三处
+
+```css
+html[data-dshbg-on] [data-dshbg-head] {          /* 不改定位：宿主靠 sticky 吸附 */
+  background: transparent !important;
+  isolation: isolate !important;                 /* 让 ::before 的 z-index:-1 留在带子里 */
+}
+html[data-dshbg-on] [data-dshbg-head]::before {  /* 接管宿主那层底色板 */
+  position: absolute; inset: 0; height: 100%; z-index: -1;
+  background: transparent !important;            /* 不填充 */
+  backdrop-filter: blur(32px) !important;        /* 不 saturate、不 brightness */
+}
+```
+
+模糊的**量**仍然取 `stickyHeadRecipe` 的 `blur`（`min(64, max(menuBlur×2, 32))`）—— 和标签栏、
+文档路径条同一个数。不穿那身衣服，但糊的程度一样，这条是用户两句话之间没有矛盾的部分。
+
+### 量测
+
+`lab/repro-head-finish.html`，未滚动时表头与它正下方同一张壁纸的台阶（Lab）：
+
+| 状态 | ΔL* | 彩度 | 读作 |
+|---|---|---|---|
+| 宿主原样（自带 50% 底盘） | −20.84 | −23% | 一条压暗的板 |
+| 1.3.27 ~ 1.3.28（22% + blur） | −7.5 | −23% | 仍是一条能看见的带子 |
+| **1.3.30（只有 blur(32)）** | **+2.57** | +5.1 | 带子没了 |
+| 什么都不加（对照组） | +2.6 | +5.3 | —— |
+
+`+2.57` 与对照组的 `+2.6` 是同一个数：**它现在等于「什么都没加」，只多了一层模糊**。
+`+5.1` 的彩度偏移也是模糊把周边更饱和的区域平均进来造成的，对照组一样有。
+
+滚动 46px 时底下内容在带子里留下的残影：`leak max 13.0`（宿主原样 20.7，1.3.29 是 9.0）。
+比 1.3.29 略高是因为模糊从 50 降到 32（和标签栏一致），换来的是「没有膜」。
+
+### 断言：388 → 389
+
+删掉 1.3.29 那三条（`no alpha tint` / `dimming is multiplicative` / `HEAD_DIM ∈ (0.9,1)`）——
+它们是为「零填充 + brightness」量身做的，留着只会保证这条带子继续是孤儿。新增：
+
+- `the bar carries no fill: blur, not a tinted film`
+- `the bar carries no saturate: this is blur, not frost`
+- `the blur is the only filter on the bar`（逐行匹配，`brightness()` 之类全都会红）
+- `the blur is the same number the other bars use`（与标签栏的 `blur(Npx)` 直接比）
+- `the other two bars keep their frost while this one is blur only`（防止「三家一起改成纯模糊」）
+
+### 顺带修的一件事
+
+这一轮我用 Python 改文件时，`open(...,'w')` 把 `client.js` 和 `smoke-test.cjs` 的换行符
+从 LF 变成了 CRLF（5151 + 2374 行），症状是测试里那条 `/function configHeadCss[\s\S]*?\n    \}\n/`
+突然匹配不上 —— 因为 `CODE` 是原样读的，`\n` 对不上 `\r\n`。改文件要带 `newline='\n'`。
+
+### 学到的
+
+**「保持一致」要先确认保的是哪一层的一致。** 磨砂是一套工序，不是一种颜色；把表头对齐到
+「和标签栏一样」只是对齐了工序，而用户要的是**这块表面根本不需要那几道工序**。
+两句反馈之间不是改需求，是第一句描述症状、第二句给出正确答案。
+
 ## 待办 · 圆角：面板是「上圆下方」（几何已量死，元素仍未知）
 
 用户报「圆角渲染未处理干净」，截图是一块**上两角圆、下两角直**的面板，那颗「回到最下面」的圆钮正好贴在右下那个角里。

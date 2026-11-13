@@ -2243,6 +2243,21 @@ ${prefixed('html[data-dshbg-on]', [`${CRUMB}[data-dshbg-mq]`])} {
      * `backdrop-filter` 祖先里，也就不会触发 `rightPanelGlassCss` 里记的那次
      * 「带 mask 的子树被重复合成」（1.3.18 的现场）。
      */
+    /**
+     * The three declarations that *are* the frost, and nothing else.
+     *
+     * Split out in 1.3.30 so that every bar in the app reads them from one place: the dock's
+     * tab strip, the document preview's path row and the plugin page's header had drifted
+     * into three different frosts (8/50/saturate, 8/50/saturate, and — worst — no fill at all
+     * with a `brightness()` bolted on). "和别处一致" has to be enforced by construction, not
+     * by three functions happening to agree; `frostedSkin()` is what makes that possible.
+     */
+    function frostedSkin(recipe) {
+      return `  background: color-mix(in srgb, var(--dshbg-raw-base) ${recipe.fill}%, transparent) !important;
+  -webkit-backdrop-filter: blur(${recipe.blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${recipe.blur}px) saturate(150%) !important;`;
+    }
+
     function frostedBandCss(selectors, recipe) {
       const bar = prefixed('html[data-dshbg-on]', selectors);
       const skin = prefixed(
@@ -2261,9 +2276,7 @@ ${skin} {
   inset: 0 !important;
   z-index: -1 !important;
   pointer-events: none !important;
-  background: color-mix(in srgb, var(--dshbg-raw-base) ${recipe.fill}%, transparent) !important;
-  -webkit-backdrop-filter: blur(${recipe.blur}px) saturate(150%) !important;
-  backdrop-filter: blur(${recipe.blur}px) saturate(150%) !important;
+${frostedSkin(recipe)}
 }
 `;
     }
@@ -2791,30 +2804,48 @@ ${restores}
      * 会读不出来。6% 的乘性压暗在暗壁纸上量不出差、在亮壁纸上刚好救命。为什么不加
      * `saturate`：1.3.25 实测过，薄面之上再提饱和会让它比旁边任何表面都蓝 —— 而叠色一去掉，
      * 彩度本来就回来了（-23% → -4%），不需要补。
+     *
+     * ⚠️ **1.3.30：上面 1.3.29 那一整段作废 —— 它一直在回答一个错的问题。**
+     *
+     * 这一格先后钉过四个数：`sidebarFill` 40 / `surface` 50 / `PANE_FILL` 22 / 一个都没有
+     * 只留 `brightness(.94)`。四次的错法不同，错因是同一个：**它一直假设这块表面该自己长一个
+     * 样**。而这个应用里玻璃面早就有统一配方，1.3.30 之前是「三条带子三套数」：
+     *
+     * ```text
+     * 标签栏 [data-dockkit-strip]                 → frostedBandCss(stickyHeadRecipe)  8% + blur + saturate
+     * 文档路径条 :has(> [data-textpreview-path])  → 同一个函数                          8% + blur + saturate
+     * 插件页表头 [data-dshbg-head]                → 自己拼字符串                        22% + menuBlur，后来又变成 brightness(.94)
+     * ```
+     *
+     * 用户两句话把这件事说完了：先「调成一样的数值磨砂很难吗」，再「**在这里不要使用磨砂，
+     * 这里就是模糊**」。第二句才是真正的答案 —— 前两条带子**浮在内容上**，需要一层膜把它们
+     * 和底下的字隔开；而这条是**页面自己的表头**，它底下滑过的就是同一张壁纸，它需要的只是
+     * 把滚上来的字糊掉，不需要变成另一种材质。
+     *
+     * 磨砂 = 底色 + 模糊 + 提饱和。这三样里，只有**模糊**是这条带子真正要的：
+     *
+     * ```text
+     *   color-mix 填充   → 往中性色插值，壁纸彩度被稀释 = 一层灰膜（1.3.26/27/28 的错）
+     *   saturate         → 磨砂的提饱和工序，纯模糊不需要
+     *   brightness       → 1.3.29 的错，同样是往壁纸上贴一层膜
+     * ```
+     *
+     * 所以它现在是一条**只有 `blur()` 的带子**，模糊的量取 `stickyHeadRecipe` 的
+     * `blur`（与标签栏、文档路径条同一个 `menuBlur×2`、同一个 32 下限），别的什么都不加。
      */
-    const HEAD_DIM = 0.94;
-
     function configHeadCss(settings) {
-      // 代码框表头那一个（见上面第二条）。`menuBlurOf` 自带 0~320 的钳位。
-      const blur = menuBlurOf(settings);
-      // ⚠️ 1.3.29：不再用它自己的**填充**，改用一条**乘性压暗**。理由见上面最后一段，
-      // 以及 `HEAD_DIM` 的注释：alpha 混合是「向一个中性色插值」，它把壁纸的彩度一起
-      // 稀释掉 —— 那才是「一块板」的手感来源，不是亮度。
-      //
-      // 没有壁纸铺满窗口时没有东西可透：这一页本来就是实心的，透也透不出壁纸来，
-      // 退回所有吸顶栏共用的那条薄填充（保持 1.3.25 之前的行为）。
-      const glass = settings.fullWindow
-        ? `background: transparent !important;
-  -webkit-backdrop-filter: blur(${blur}px) brightness(${HEAD_DIM}) !important;
-  backdrop-filter: blur(${blur}px) brightness(${HEAD_DIM}) !important;`
-        : `background: color-mix(in srgb, var(--dshbg-raw-base) ${STICKY_FILL}%, transparent) !important;
-  -webkit-backdrop-filter: blur(${blur}px) !important;
-  backdrop-filter: blur(${blur}px) !important;`;
+      // 只要模糊。光秃秃的一条，没有任何填充/压暗/提饱和 —— 理由见上面那段。
+      const { blur } = stickyHeadRecipe(settings);
       // ⚠️ 1.3.27：玻璃挂在 `::before` 上，不挂在 bar 上 —— 这是 `frostedBandCss` 的结构
       // （见它那段注释：`backdrop-filter` 会建包含块，把 bar 里那些不带 `portal` 的 fixed
       // tooltip 挪位）。宿主已经把这个伪元素占成底色板（`inset: 0 0 auto` + 高度变量），
       // 正好是「一条贴在顶上、垫在内容下面的面」，接管它比自己插一层 DOM 更省：不用动
       // React 的子树，也不会被重渲染删掉。
+      //
+      // ⚠️ 与 `frostedBandCss` 的三处**故意不同**，前两处因为这条带子是 `position: sticky`：
+      //  - 不写 `position: relative`（宿主要它吸附，改定位就丢吸附）;
+      //  - 不写 `z-index: 1`（宿主已经给了 `z-index: 2`，我们写 1 是把它**降**下去）;
+      //  - 不穿磨砂（`frostedSkin` 那三行）：这里只要模糊，理由见上面。
       return `
 html[data-dshbg-on] [data-dshbg-head] {
   background: transparent !important;
@@ -2827,7 +2858,9 @@ html[data-dshbg-on] [data-dshbg-head]::before {
   height: 100% !important;
   z-index: -1 !important;
   pointer-events: none !important;
-  ${glass}
+  background: transparent !important;
+  -webkit-backdrop-filter: blur(${blur}px) !important;
+  backdrop-filter: blur(${blur}px) !important;
 }
 `;
     }
