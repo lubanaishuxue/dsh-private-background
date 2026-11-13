@@ -2960,3 +2960,96 @@ v1.0.1 精简代码时，从 `client.js` 里搬出来的长注释。代码里只
  * at the `html::before` layer. A paragraph with a dozen chips used to take a dozen
  * backdrop snapshots per frame while a reply streamed in.
  */
+
+## 1.3.33 · 「怎么还会变的」—— 视频壁纸没有「一张图」可抄
+
+1.3.32 交出去之后用户发来一段 4.2 秒的录屏（2160×218，就是那条带子）。
+
+### 先量，再判断
+
+录屏拆成 127 帧，逐帧算**时间标准差**（避开鼠标出现的后 20 帧）：
+
+```text
+y   0..56    顶部（标签栏带子）      σ ≈ 5.2 .. 7.9      在变
+y  60..176   表头                     σ ≈ 0.05 .. 0.35    不动（最静处 0.04）
+y 180..218   表头下方                 σ ≈ 8.0 .. 8.8      在变
+```
+
+表头内部逐帧最大差 7/255（就是录屏编码噪声），周围却是 8 个亮度单位的**结构性**运动。
+所以：**表头是静止的，它上下都在动。** 这不是「又糊了」，是这张副本**不会动**。
+
+### 根因：`wall.value` 对视频只是一张封面
+
+`paintWall()` 早就分了三类：
+
+```text
+still     → background-image = wall.value
+animated  → background-image = url(wall.src)     同一 URL，共用解码器，帧是同步的
+video     → 盒子里放一颗 <video>，box 上写 filter   封面 wall.value 只是首帧/兜底
+```
+
+`headWallVars()` 抄的是 `background-image` 那条路，于是视频壁纸拿到的**只有封面**。
+1.3.32 的文档里把这条写成「已知代价：视频壁纸只能显示静帧」—— 那不是代价，那是没做完。
+
+> 反证：如果用户的是动图，`url(wall.src)` 会让副本跟着动（同 URL 同解码器，帧同步），
+> 录屏里就不会是「表头不动」。**副本静止 ⟹ 一定是 video 这一类。**
+
+### 做法：一颗同源 `<video>`，逐帧钉在本体上
+
+`::before` 只能画一张图，装不下元素，所以多了一个真元素：
+
+```html
+<div data-dshbg-head>                       <!-- 宿主的 bar -->
+  <div data-dshbg-headwall>                 <!-- 与 ::before **共用同一条规则** -->
+    <video src="同一份文件" muted loop playsinline></video>
+  </div>
+</div>
+```
+
+- **盒子参数共用一条 CSS**（`[data-dshbg-head]::before, [data-dshbg-head] > [data-dshbg-headwall]`），
+  所以视频那条路和图片那条路的几何**不可能各长一个样** —— 这是刻意的写法，不是偷懒。
+- 里面那颗 `<video>` 只有 `object-fit: cover` + `object-position: var(--dshbg-head-pos)`，
+  与壁纸本体那颗逐字相同。像素映射是同一个式子，不需要任何换算。
+- **同步**：`requestVideoFrameCallback`（它只在真解出一帧时回调，暂停时自动停摆）比较两颗
+  video 的 `currentTime`，**偏差 > 60ms 才 seek**。逐帧 seek 会丢关键帧、每帧卡一下；
+  60ms≈2 帧@30fps，慢速壁纸上看不出来，而对「慢速平移」这类最容易露馅的片子，2 帧以内
+  就是「同一个影子」。
+- **封面不退场就得付两次全屏模糊**：视频壁纸的 `--dshbg-head-img` 仍然是封面（视频解出第一帧
+  之前的地板、解码失败时的兜底），`loadeddata` 一到就把这条置 `none`，把全屏 `blur()` 面
+  从两块降回一块；`emptied` / `error` 时恢复。
+- 元素**追加**在 bar 末尾而不是开头：宿主可能用 `:first-child` 给自己标题排版。位置由
+  `z-index: -1` 决定，与 DOM 次序无关。`unmark()` 会把它带走（`__dshbgHeadGlass(false)`
+  之后屏幕上不能留一块贴上去的壁纸）。
+- `sync()` 里「已经是对的 bar」这条早退路径改成**仍然跑一遍 `applyWall()`**：React 重排标题
+  行时会把这个不认识的节点摘掉，而「bar 没变」是那条路径唯一看得见的状态 —— 少了这一句，
+  副本丢了要等下次切页面才回来。
+
+### 量测
+
+```text
+直接量「表头 vs 周围」在无头里做不到：`--virtual-time-budget` 下媒体时钟不前进（t 恒为 0），
+而**暂停后又 seek 过**的 `<video>` 无头 Chromium 不合成画面（`_vp.html` 单独验证：1.7KB 全黑）。
+所以视频这条路的像素校验只能留在真机，实验室能做的是两件：
+
+1. 几何：同一份 CSS 的 still 路径 1.3.32 已量到 0.00/0（表头内 vs 纯壁纸，DSF=1）；
+2. 同步：`lab/repro-head-video.html` 两颗 video seek 到同一时刻后
+   `copy=4.000 drift=0.000s`（`?mode=live` 与 `?mode=poster` 的对照图
+   `lab/hv-poster.png` / `lab/hv-nofilter.png`）。
+```
+
+真机上 `__dshbgHead()` 现在会多回一段 `video: { live, drift }`：`live` 是「副本真的在放」，
+`drift` 是两颗 video 此刻的时间差（秒）。这就是「周围在动、这里不动」那次的体温计。
+
+### 代价
+
+- **多一个解码器**：同一份片子解两遍。1080p 无感；4K/60 的壁纸要留意温度与掉帧。
+- 换片、淡入的那几百毫秒里表头仍然会「先到」（与 1.3.32 同一个取舍）。
+
+### 断言：391 → 397
+
+- `a clip wallpaper keeps its poster as the floor of the copy`（`img` 仍是 `url("data:clip-poster")`）
+- `and gets a live copy on top`（`video !== null`，且 CSS 里有 `[data-dshbg-headwall] > video`）
+- `the live copy is frame-locked to the master clip, with a seek threshold`
+  （`requestVideoFrameCallback` + `drift > 0.06 || drift < -0.06` 两条都在源码里）
+- `the copy sits on the same box as the still path`（两个选择器共用同一条规则）
+- `reduced motion builds no live copy at all` / `a still wallpaper builds no live copy either`

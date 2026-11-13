@@ -2912,14 +2912,24 @@ ${restores}
       const walls = layer === null ? [] : layer.walls;
       const wall = walls.length === 0 ? null : walls[walls.length - 1];
       if (wall === null) return null;
+      const still = reducedMotion();
+      // ⚠️ **视频壁纸没有「一张图」可以抄。** `wall.value` 对它是封面（首帧），只把封面贴到表头
+      // 就是「周围在放、这里定住」—— 1.3.32 交出去的就是这个，用户的反馈是「怎么还会变的」。
+      // 所以封面照旧留着当**地板**（视频还没解出第一帧时有个交代，解码失败时也不至于露出下面的
+      // 行），上面再叠一份**会动的副本**：`[data-dshbg-headwall]` 里一颗同 `src` 的 `<video>`，
+      // 由安装器逐帧跟着壁纸本体的 `currentTime`。`media` 不是 CSS 变量，只交给安装器。
+      const moving = wall.kind === 'video' && !still;
       return {
-        '--dshbg-head-img': wall.kind === 'animated' && !reducedMotion() ? `url("${wall.src}")` : wall.value,
+        '--dshbg-head-img': wall.kind === 'animated' && !still ? `url("${wall.src}")` : wall.value,
         '--dshbg-head-pos': `${wall.focusX}% ${wall.focusY}%`,
         // 与 `paintWall()` 里 `box.style.filter` 的那个字符串逐字相同（含 dim 的折叠方式）。
         '--dshbg-head-filter': wall.dim === 0
           ? `blur(${wall.blur}px)`
           : `blur(${wall.blur}px) brightness(${(1 - wall.dim / 100).toFixed(3)})`,
         '--dshbg-head-bleed': `${bleedOf(layer)}px`,
+        // 不是 CSS 变量：安装器用它去找壁纸本体那个 `<video>`。`id` 用来定位 box，`src` 用来
+        // 判断「换片子了没有」（同一个字符串按引用比，不按字节比 —— 这是几 MB 的 `data:` URL）。
+        media: moving ? { id: String(wall.id), src: wall.src, pos: `${wall.focusX}% ${wall.focusY}%` } : null,
       };
     }
 
@@ -2934,7 +2944,8 @@ html[data-dshbg-on] [data-dshbg-head] {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
-html[data-dshbg-on] [data-dshbg-head]::before {
+html[data-dshbg-on] [data-dshbg-head]::before,
+html[data-dshbg-on] [data-dshbg-head] > [data-dshbg-headwall] {
   content: "" !important;
   position: absolute !important;
   top: calc(-1 * (var(--dshbg-head-y, 0px) + var(--dshbg-head-bleed, 0px))) !important;
@@ -2960,6 +2971,18 @@ html[data-dshbg-on] [data-dshbg-head]::before {
   ) !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
+}
+html[data-dshbg-on] [data-dshbg-head] > [data-dshbg-headwall] > video {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  object-fit: cover !important;
+  object-position: var(--dshbg-head-pos, center) !important;
 }
 `;
     }
@@ -3806,6 +3829,23 @@ html[data-dshbg-on] select option:checked {
       let headBox = '';
 
       /**
+       * 会动的壁纸（视频）在表头里的那份副本。
+       *
+       * `::before` 只能画**一张图**，而视频壁纸根本没有「一张图」：`wall.value` 是封面。所以这一类
+       * 换成一个真元素 `[data-dshbg-headwall]`（盒子参数与 `::before` 共用同一条 CSS），里面放一颗
+       * 同 `src` 的 `<video>`，再用 `requestVideoFrameCallback` 把它的 `currentTime` **逐帧**钉在
+       * 壁纸本体那颗上。两颗 video 解同一份文件，偏差超过 60ms 才 seek（逐帧 seek 会卡）。
+       */
+      let mediaBox = null;
+      let mediaVideo = null;
+      let mediaId = '';
+      let mediaSrc = null;
+      let followMain = null;
+      let followToken = 0;
+      /** 封面已退场：视频画上来了，那块全屏的 `blur()` 面就不必再留着。 */
+      let posterHidden = false;
+
+      /**
        * Write the artwork's four numbers onto the bar.
        *
        * 图是一段几百 KB 的 `data:` URL，`paint()` 每帧都会调到这里。写同一个字符串不是免费的
@@ -3813,9 +3853,17 @@ html[data-dshbg-on] select option:checked {
        * 拖滑杆时只有 `--dshbg-head-filter` 会变，图那一条一次都不写。
        */
       const applyWall = () => {
-        if (marked === null) return;
+        if (marked === null) {
+          dropMedia();
+          return;
+        }
+        // 先决定「副本在不在」：封面退不退场是它的结论，所以它得跑在写变量之前。
+        applyMedia();
         for (let i = 0; i < HEAD_WALL_VARS.length; i += 1) {
-          const value = wallVars === null ? undefined : wallVars[HEAD_WALL_VARS[i]];
+          // 封面是**地板**：视频还没解出第一帧时它顶着，解出来之后就该退场 —— 一颗全屏的
+          // `blur()` 面不是免费的，两块同时糊着等于给每一帧多买一次全屏模糊。
+          let value = wallVars === null ? undefined : wallVars[HEAD_WALL_VARS[i]];
+          if (i === 0 && posterHidden) value = 'none';
           if (value === appliedWall[i]) continue;
           appliedWall[i] = value;
           if (value === undefined) marked.style.removeProperty(HEAD_WALL_VARS[i]);
@@ -3823,8 +3871,162 @@ html[data-dshbg-on] select option:checked {
         }
       };
 
+      /** 封面退场 / 回场。翻这个开关的那一下要逼 `applyWall()` 重写第一条。 */
+      const setPosterHidden = (hide) => {
+        if (posterHidden === hide) return;
+        posterHidden = hide;
+        appliedWall[0] = null;
+        if (marked !== null) applyWall();
+      };
+
+      /** 把副本交还给 React / 关闭开关时用：元素是我们插进来的，走的时候带走。 */
+      const dropMedia = () => {
+        stopFollow();
+        if (mediaBox !== null) mediaBox.remove();
+        mediaBox = null;
+        mediaVideo = null;
+        mediaId = '';
+        mediaSrc = null;
+        if (posterHidden) {
+          posterHidden = false;
+          appliedWall[0] = null;
+        }
+      };
+
+      /**
+       * 壁纸本体那颗 `<video>`。
+       *
+       * 按 `id` 找而不是「找栈里第一个 video」：栈里可以有好几面墙同时在（淡入淡出），最上面那面
+       * 才是看得见的那面，而 `headWallVars` 抄的也正是 `walls[walls.length - 1]`。这里用同一个 id。
+       */
+      const masterVideo = () => {
+        const media = wallVars === null ? null : wallVars.media;
+        if (media === null || media === undefined) return null;
+        const host = document.querySelector(`body > ${STACK_SELECTOR}`);
+        if (host === null || typeof host.querySelector !== 'function') return null;
+        const box = host.querySelector(`[data-dshbg-wall="${media.id}"]`);
+        return box === null || typeof box.querySelector !== 'function' ? null : box.querySelector('video');
+      };
+
+      /** 起播：某些环境（测试用的桩 DOM）没有 `play`，没有就跳过 —— 位置照旧，别抛。 */
+      const startVideo = (video) => {
+        if (typeof video.play !== 'function') return;
+        const started = video.play();
+        if (started !== undefined && typeof started.catch === 'function') started.catch(() => {});
+      };
+
+      /**
+       * 把副本对上本体：播放状态、时间。
+       *
+       * 阈值 60ms 不是随手定的：`currentTime` 的写会触发一次 seek，seek 会丢一个关键帧，
+       * 每帧都写等于每帧卡一下。反过来，60ms（≈2 帧@30fps）以内的偏差在慢速壁纸上根本看不出来，
+       * 而墙纸一旦开始以慢速平移，超过 2 帧的错位就是「两个影子」。
+       */
+      const alignMedia = () => {
+        const main = followMain;
+        if (main === null || mediaVideo === null) return;
+        const masterPaused = main.paused || main.ended;
+        if (masterPaused !== mediaVideo.paused) {
+          if (masterPaused) {
+            if (typeof mediaVideo.pause === 'function') mediaVideo.pause();
+          } else startVideo(mediaVideo);
+        }
+        const drift = mediaVideo.currentTime - main.currentTime;
+        if (drift > 0.06 || drift < -0.06) mediaVideo.currentTime = main.currentTime;
+      };
+
+      const stopFollow = () => {
+        followToken += 1;
+        if (followMain !== null) {
+          followMain.removeEventListener('play', alignMedia);
+          followMain.removeEventListener('pause', alignMedia);
+          followMain.removeEventListener('seeked', alignMedia);
+        }
+        followMain = null;
+      };
+
+      /**
+       * 跟着本体走。
+       *
+       * 用 `requestVideoFrameCallback` 而不是 `requestAnimationFrame`：它只在**真的解出一帧**
+       * 的时候回调，所以暂停时自动停摆，不花一帧的时间去读两个没变的数。老引擎没有这个 API 时
+       * 退回 rAF —— 那时至少还是对的，只是多一点开销。
+       */
+      const follow = () => {
+        stopFollow();
+        const main = masterVideo();
+        if (main === null || mediaVideo === null) return;
+        followMain = main;
+        alignMedia();
+        const token = ++followToken;
+        const again = () => {
+          if (typeof followMain.requestVideoFrameCallback === 'function') {
+            followMain.requestVideoFrameCallback(tick);
+          } else if (typeof requestAnimationFrame === 'function') {
+            requestAnimationFrame(tick);
+          }
+        };
+        const tick = () => {
+          if (token !== followToken || mediaVideo === null) return;
+          alignMedia();
+          again();
+        };
+        main.addEventListener('play', alignMedia);
+        main.addEventListener('pause', alignMedia);
+        main.addEventListener('seeked', alignMedia);
+        again();
+      };
+
+      /** 该有副本就建、该换片就换、该没有就拆。值没变时一次 DOM 都不碰。 */
+      const applyMedia = () => {
+        const media = wallVars === null ? null : wallVars.media;
+        if (marked === null || media === null || media === undefined) {
+          dropMedia();
+          return;
+        }
+        if (mediaBox === null || !mediaBox.isConnected) {
+          const box = document.createElement('div');
+          box.setAttribute('data-dshbg-headwall', '');
+          const video = document.createElement('video');
+          video.muted = true;
+          video.loop = true;
+          video.autoplay = true;
+          video.setAttribute('muted', '');
+          video.setAttribute('playsinline', '');
+          video.setAttribute('aria-hidden', 'true');
+          box.appendChild(video);
+          // 放在末尾而不是开头：宿主可能用 `:first-child` 给自己的标题排版，我们不该挤进去。
+          // 位置由 `z-index: -1` 决定，和 DOM 次序无关。
+          marked.appendChild(box);
+          mediaBox = box;
+          mediaVideo = video;
+          mediaId = '';
+          mediaSrc = null;
+          // 画上第一帧就撤掉地板；`.load()` 之后（换片）它会空一阵，地板要回来。
+          video.addEventListener('loadeddata', () => setPosterHidden(true));
+          video.addEventListener('emptied', () => setPosterHidden(false));
+          video.addEventListener('error', () => setPosterHidden(false));
+        }
+        if (mediaVideo.style !== undefined && mediaVideo.style.objectPosition !== media.pos) {
+          mediaVideo.style.objectPosition = media.pos;
+        }
+        // 换片才重新赋值：`.src` 的写会从头播放，拖滑杆时每帧都写等于让墙纸一直停在第 0 帧。
+        if (mediaId !== media.id || mediaSrc !== media.src) {
+          mediaId = media.id;
+          mediaSrc = media.src;
+          mediaVideo.src = media.src;
+          startVideo(mediaVideo);
+          follow();
+        } else if (followMain === null) {
+          follow();
+        }
+      };
+
       const unmark = () => {
         if (marked === null) return;
+        // 副本元素是我们插进 bar 的，bar 交还宿主时必须一起带走 —— 否则 `__dshbgHeadGlass(false)`
+        // 之后屏幕上还留着一块「贴上去的壁纸」，那就不再是「宿主原样」了。
+        dropMedia();
         if (lifted) {
           marked.style.zIndex = '';
           lifted = false;
@@ -4089,7 +4291,14 @@ html[data-dshbg-on] select option:checked {
         const area = body.getBoundingClientRect();
         const candidate = fromPoint(body, area) || fromNeighbours(body, area);
         const head = candidate === null ? null : barOf(candidate);
-        if (head === marked) return;
+        // 已经是这条 bar 了：仍然走一遍 `applyWall()`。React 重排标题行时会把我们插进去的
+        // 副本元素一起摘掉（它不认识这个节点），而「bar 没变」是这条路径唯一能看见的状态 ——
+        // 少了这一句，副本丢了就得等下一次页面切换才回来。`applyWall()` 是幂等的：值没变、
+        // 元素还在，它一个字节都不写。
+        if (head === marked) {
+          applyWall();
+          return;
+        }
         unmark();
         if (head === null) return;
         head.setAttribute('data-dshbg-head', '');
@@ -4132,7 +4341,24 @@ html[data-dshbg-on] select option:checked {
           // 表头那份副本此刻的四个数。`__dshbgHead()` 原本只回答「找到哪条 bar」，
           // 而 1.3.32 之后「画得对不对」是另一半答案 —— 图是不是壁纸那张、滤镜是不是逐字相同，
           // 在控制台里一眼就能看出来，比截图猜快得多。
-          wall: wallVars,
+          wall: wallVars === null
+            ? null
+            : {
+              img: wallVars['--dshbg-head-img'],
+              pos: wallVars['--dshbg-head-pos'],
+              filter: wallVars['--dshbg-head-filter'],
+              bleed: wallVars['--dshbg-head-bleed'],
+            },
+          // 会动的壁纸：`live` 是「副本真的在放」而不是「贴了一张封面」，`drift` 是两颗 video
+          // 此刻的时间差（秒）。这两个数就是「周围在动、这里不动」那次事故的体温计。
+          video: wallVars !== null && wallVars.media !== null && wallVars.media !== undefined
+            ? {
+              live: mediaVideo !== null && !mediaVideo.paused,
+              drift: mediaVideo === null || followMain === null
+                ? null
+                : Math.round((mediaVideo.currentTime - followMain.currentTime) * 1000) / 1000,
+            }
+            : null,
           headBox,
         };
       };

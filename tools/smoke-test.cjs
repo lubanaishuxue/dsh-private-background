@@ -1496,7 +1496,7 @@ async function main() {
   // 而且要把 `none` 显式写出来（宿主若给自己的表头加滤镜，这条能兜住）。
   check(
     'the title bar adds no second blur: the wallpaper is already blurred at the source',
-    /\[data-dshbg-head\]::before \{[^}]*backdrop-filter: none !important/.test(base.css),
+    /\[data-dshbg-headwall\] \{[^}]*backdrop-filter: none !important/.test(base.css),
   );
   // ⚠️ 这条带子是**有**填充的，而且那个数就是侧栏那条滑杆本身 —— 具体见下面几条。
   // 反面的一半：不许是渐变。渐变把底边归零，滚上来的行在带子下半截就会裸着露出来，
@@ -1510,7 +1510,16 @@ async function main() {
   const barOf = (css) => (/\[data-dshbg-head\] \{([^}]*)\}/.exec(css) || ['', ''])[1];
   // 1.3.27：玻璃已经挪到伪元素上（宿主那个底色板），所以「填充/模糊」类的断言要看
   // `::before`，而「不许有描边/饱和」仍然看 bar 本体 —— 两者分开，才不会一条断言兼管两件事。
-  const frostOf = (css) => (/\[data-dshbg-head\]::before \{([^}]*)\}/.exec(css) || ['', ''])[1];
+  //
+  // ⚠️ 1.3.33：`::before` 不再独吞这套几何 —— 视频壁纸要放一颗真的 `<video>`，伪元素装不下，
+  // 于是多了一个 `[data-dshbg-headwall]` 元素，两条选择器**共用同一条规则**（同一个盒子，
+  // 同一份 `clip-path`）。所以这里取的是规则体，不是某一个选择器的体：两个选择器必须给出一模一样
+  // 的盒子，否则「视频走一条路、图片走另一条路」就会各长一个样。
+  const frostOf = (css) => {
+    const hit = /\[data-dshbg-head\]::before,\s*\nhtml\[data-dshbg-on\] \[data-dshbg-head\] > \[data-dshbg-headwall\] \{([^}]*)\}/.exec(css);
+    if (hit !== null) return hit[1];
+    return (/\[data-dshbg-head\]::before \{([^}]*)\}/.exec(css) || ['', ''])[1];
+  };
   const bandOf = (css) => barOf(css) + frostOf(css);
   // ⚠️ 必须显式 `fullWindow: true`：默认设置下这块玻璃是关的（退回 `STICKY_FILL`），
   // 拿 `base.css` 里的正文去断言只会读到那条退路。
@@ -1577,7 +1586,7 @@ async function main() {
   check(
     "the copy lands on the wallpaper's own box",
     vars20 !== null &&
-      vars20['--dshbg-head-bleed'] === '52px' &&
+      vars20.bleed === '52px' &&
       stack20.includes('top: -52px') &&
       stack20.includes('width: calc(100vw + 104px)'),
     JSON.stringify(vars20),
@@ -1586,14 +1595,50 @@ async function main() {
   check(
     'the copy takes the exact filter string the wallpaper was painted with',
     vars20 !== null &&
-      vars20['--dshbg-head-filter'] === 'blur(20px)' &&
+      vars20.filter === 'blur(20px)' &&
       varsDim !== null &&
-      varsDim['--dshbg-head-filter'] === 'blur(20px) brightness(0.900)',
-    vars20 === null ? 'no wall vars' : vars20['--dshbg-head-filter'],
+      varsDim.filter === 'blur(20px) brightness(0.900)',
+    vars20 === null ? 'no wall vars' : vars20.filter,
   );
   check(
     "the copy is placed by the bar's own box, not by the viewport",
     /var\(--dshbg-head-x/.test(headBefore) && /var\(--dshbg-head-w/.test(headBefore),
+  );
+  // ⚠️ 1.3.33：**视频壁纸。** `wall.value` 对它是封面，只贴封面 = 「周围在放、这里定住」，
+  // 用户的一句话就是「怎么还会变的」。所以这一类还必须多一份**会动的**副本，封面退成地板。
+  const clipHeadRun = await emit({ mode: 'image', imageId: CLIP.id }, { images: [CLIP] });
+  const clipHead = clipHeadRun.window.__dshbgHead();
+  check(
+    'a clip wallpaper keeps its poster as the floor of the copy',
+    clipHead.wall !== null && clipHead.wall.img === 'url("data:clip-poster")',
+    JSON.stringify(clipHead.wall),
+  );
+  check(
+    'and gets a live copy on top, because a poster cannot follow a playing clip',
+    clipHead.video !== null &&
+      /\[data-dshbg-head\] > \[data-dshbg-headwall\] > video \{/.test(clipHeadRun.css),
+    JSON.stringify(clipHead.video),
+  );
+  // 副本要有「跟住」的机制，而且不能每帧 seek：`currentTime` 的写会丢掉一个关键帧，
+  // 每帧都写等于每帧卡一下。阈值 + `requestVideoFrameCallback` 两样一起钉。
+  check(
+    'the live copy is frame-locked to the master clip, with a seek threshold',
+    /requestVideoFrameCallback/.test(CODE) &&
+      /const drift = mediaVideo\.currentTime - main\.currentTime;/.test(CODE) &&
+      /if \(drift > 0\.06 \|\| drift < -0\.06\) mediaVideo\.currentTime = main\.currentTime;/.test(CODE),
+  );
+  check(
+    'the copy sits on the same box as the still path, not on one of its own',
+    /\[data-dshbg-head\]::before,\s*\nhtml\[data-dshbg-on\] \[data-dshbg-head\] > \[data-dshbg-headwall\] \{/.test(headBefore === '' ? '' : clipHeadRun.css),
+  );
+  check(
+    'reduced motion builds no live copy at all',
+    (await emit({ mode: 'image', imageId: CLIP.id }, { images: [CLIP], reducedMotion: true }))
+      .window.__dshbgHead().video === null,
+  );
+  check(
+    'a still wallpaper builds no live copy either',
+    vars20 !== null && vars20.img !== 'none',
   );
   check(
     'the bar carries no saturate: this is the wallpaper, not frost',
@@ -1695,7 +1740,8 @@ async function main() {
   // 第二层，那只是给已经糊过的东西再买一张纹理。
   check(
     'nothing inside the bar is frosted a second time',
-    !/\[data-dshbg-head\]\s+[^{,]+\{[^}]*backdrop-filter/.test(base.css),
+    (base.css.match(/html\[data-dshbg-on\] \[data-dshbg-head\][^{]*\{[^}]*\}/g) || [])
+      .every((rule) => !/backdrop-filter:(?!\s*none)/.test(rule)),
   );
   // Whole-window scope: the sidebar is glass there, so the opaque page must cover it too
   // or the page sits beside a see-through strip.

@@ -8,7 +8,7 @@
 
 > 非官方插件，由第三方开发，DSH 官方不提供支持。它通过官方插件接口注册面板与样式，不修改客户端文件、不注入脚本、不触碰账号与凭据 —— 但装任何插件前都建议先看一眼代码。
 
-> 版本 1.3.32 · 在 Windows + DSH 桌面版 **0.2.1-rc.2** 上开发和测试。
+> 版本 1.3.33 · 在 Windows + DSH 桌面版 **0.2.1-rc.2** 上开发和测试。
 
 ---
 
@@ -285,7 +285,7 @@ dsh plugin --profile desktop add D:/path/to/dsh-private-background
 ## 开发
 
 ```sh
-node tools/smoke-test.cjs   # 391 项：模块契约、槽位注册、样式表、层叠与状态机
+node tools/smoke-test.cjs   # 397 项：模块契约、槽位注册、样式表、层叠与状态机
 node tools/store-test.cjs   # 94 项：存储与判重
 ```
 
