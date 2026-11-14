@@ -3388,3 +3388,108 @@ html[data-dshbg-on]
 - `only the expanded row is treated …`
 - `tail-anchored selectors only, never a substring match`（`[class*=` 会把 row/body/title 一起选中）
 - `the lid follows the shared recipe when the blur slider moves`（`menuBlur: 20` 时跟着变，且仍等于标签栏）
+
+---
+
+## 1.3.38 · 同一道题的第二个考场：展开的思考块
+
+### 怎么找到的（不是猜的）
+
+1.3.37 修完「compact」那条之后，有一个问题没答：**这是孤例，还是一类？** 答案只能从宿主里翻。
+`bg-base` 被本插件改成半透明，所以判据很明确 —— **谁的底色是 `bg-base`、同时还 `position: sticky`**。
+
+在 `app.asar`（209 MB）里按字节偏移扫，取每个 `sticky` 前后各 500 字节的窗口，看里面有没有 `bg-base`：
+命中 8 处，合并成 7 簇。
+
+| # | 位置 | 是什么 | 处理 |
+|---|---|---|---|
+| 1 | `MessageList.module.css` | 「已压缩」那条 | 1.3.37 已修 |
+| 2 | `ReasoningRow.module.css` | **展开的思考块 / 工具调用组的头** | **本版修** |
+| 3-4 | 同上，源码形态（带注释的 CSS 模板） | 镜像，不是第二份规则 | 忽略 |
+| 5 | `composerSeat` | 输入框座，用的是 `linear-gradient(0% → bg-base 36px)` | 本来就是渐隐，没有硬边可漏 |
+| 6 | `_heading_121p8_19` | 菜单分组标题，`stuck` 时才上 `menu-group-header-fill` | 不是 `bg-base` |
+| 7 | `_bannerWrap_kjs70_24` | 代码块表头 | 早就处理了（`marketPageCss` 那一套） |
+
+第 2 簇就是漏掉的那个。宿主写法（`ReasoningRow.module.css`）：
+
+```css
+.root[data-expanded] [data-open] [data-disclosure-header] {
+  position: sticky; top: 0; z-index: 1; background: var(--dsw-alias-bg-base);
+}
+```
+
+和「已压缩」那条**一个模子**，所以修法也只有一个：同一份 `stickyHeadRecipe()`。
+
+### 为什么这一条不写类名
+
+「已压缩」那条用的是尾缀锚定（`[class$="_compactionButton"]`），因为那三个类名是宿主
+`className={css.xxx}` 整串赋上去的，尾缀相等即精确。**但这条不能照抄**：Disclosure 是宿主
+内部的通用组件（`const css$9`，哈希前缀当前是 `VJlF5q_`），每次构建都会换；而
+`data-expanded` / `data-open` / `data-disclosure-header` 是它自己写上去的语义属性，不随构建变。
+
+所以这一条的选择器里**一个 class 都没有**。这不是风格问题，是寿命问题 —— 断言里也钉住了
+`!disclosureSel.includes('[class')`，防止以后有人为了「统一风格」把它改回类名。
+
+`>` 比宿主那条后代选择器紧一档。看着像收窄了，其实是把宿主自己的结构写清楚：
+header 就是 `[data-open]` 的直接子节点（组件 JSX 里 `data-open` 的 div 的第一层孩子）。
+后代写法在「嵌套了一个 disclosure」时会把里层的头也选中，`>` 不会。
+
+### 第一次量出来是假的：「模糊把 sticky 拆了」
+
+第一版夹具搭成这样：
+
+```html
+<div class="VJlF5q_root" data-expanded data-open>   <!-- ← 两个属性放在同一个元素上 -->
+```
+
+量出来 `stuck=false backdrop=none detail=0`，看着像「加了模糊之后盖子不吸顶了」——
+那正是这一版最需要排除的风险，差点当成真结论写进文档。
+
+实际原因是**夹具搭错了**：宿主是 `root[data-expanded]` **里面**再套一层 `[data-open]`，
+后代选择器 `[data-expanded] [data-open]` 才成立。两个属性放同一个元素时这条规则一次都没匹配上，
+`position: sticky` 根本没生效 —— 量的是一个「已经不吸顶的普通行」，当然 `stuck=false`。
+
+判据是 `backdrop=none`：如果规则真的生效了，`?bf=1` 下这里应该是 `blur(32px)`。
+**以后量任何东西，先看一眼"我以为生效了"的那条属性到底有没有生效。**
+
+### 量出来（`?off=300`，推理正文真的滚到盖子底下）
+
+| 配置 | detail | peak | colors | stuck |
+|---|---|---|---|---|
+| 宿主原样（`bg-base` 50%） | **8.92** | 80.1 | 511 | true |
+| **+ `blur(32) saturate(150%)`** | **0.07** | 0.9 | 112 | true |
+| 摘掉底色（对照） | 17.89 | 160.5 | 805 | true |
+| 摘掉底色 + 模糊 | 0.14 | 1.5 | 194 | true |
+
+吃掉 **99.2%** 的笔画能量；`stuck` 四行全 true。摘掉底色后基线从 8.92 涨到 17.89（约两倍），
+和 1.3.37 在「已压缩」那条上量到的 8.73 → 17.49 是同一个比例 —— 那层 50% 的板本来就挡住了一半。
+
+回归：`compact` 那条用改动后的探针再量一次，仍是 **8.73 → 0.09（99.0%）**，和 1.3.37 文档里一字不差。
+
+对比图 `lab/rlid-compare.png`；夹具 `lab/repro-disclosure-lid.html`；
+探针新增 `--page=disclosure`（`node lab/lid-probe.cjs --page=disclosure`）。
+
+### 量哪儿由页面自己说
+
+1.3.37 那个「量右侧 62% 之后」是写死在探针里的，因为两个盖子左边都压着标题，
+量整条会把标题自己的笔画算进基线（那次假结论 52% 就是这么来的）。这次两个夹具形状不同，
+改成**页面自己给出 `probe` 矩形**（`__lid().probe`），探针只在没给时退回旧算法。
+少一处「探针猜 DOM」，就少一处探针和夹具不同步的可能。
+
+### 新增断言（5 项，418 → 423）
+
+- `the expanded reasoning header is frosted too`
+- `and it shares the compaction lid's frost rather than a number of its own`
+- `it is anchored on the component's data attributes, not a hashed class`
+  （选择器里不许出现 `[class`）
+- `and it too changes nothing but the blur`（不许 `background` / `position` / `z-index`）
+- `the reasoning lid follows the slider in step with the compaction lid`
+
+### 已知边界
+
+- 夹具里那个头的 `padding` / `min-height` 是近似的：宿主的 `.header` / `.row` 内边距来自
+  primitives 模块，没被编译进 `ReasoningRow.module.css`。这**不影响结论** —— 量的是
+  「盖子里还有没有笔画」，和盖子具体高几像素无关。
+- 同样只为「展开态」付费：收起的思考块不吸顶、不盖任何东西，规则里 `[data-expanded]` 把它排除了。
+- 这一版只处理「会漏内容」的两处。第 5 簇（输入框座）是渐隐，本来就没有硬边；
+  第 6 簇不是 `bg-base`。它们**不需要**改，不是漏了。

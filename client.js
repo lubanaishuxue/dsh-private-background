@@ -2380,7 +2380,9 @@ ${frostedBandCss(['[data-dockkit-strip]'], stickyHeadRecipe(settings))}`;
     }
 
     /**
-     * 「compact · 已压缩 280 条历史记录」那一条 —— 它会**压到下面的字**。
+     * 吸顶盖 —— 展开之后变成 `sticky` 的窄头，会**压到下面的字**。目前两处，同一份配方。
+     *
+     * 第一处（1.3.37，用户截图报的）：「compact · 已压缩 280 条历史记录」那一条。
      *
      * 宿主的规则是（`MessageList.module.css`）：
      *
@@ -2409,15 +2411,42 @@ ${frostedBandCss(['[data-dockkit-strip]'], stickyHeadRecipe(settings))}`;
      * 用在这里等于把盖子拆了。所以这里只写模糊，其余一个字节都不动。
      * ⚠️ 只在**展开态**（有 `_compactionBody`）生效 —— 收起时它不吸顶、也不盖任何东西，
      * 给它加模糊只是白花一次合成。
+     *
+     * ---
+     *
+     * **第二处（1.3.38）：宿主通用的 Disclosure。** 思考块、工具调用组展开之后长的是同一个头：
+     *
+     * ```css
+     * .root[data-expanded] [data-open] [data-disclosure-header] {
+     *   position: sticky; top: 0; z-index: 1; background: var(--dsw-alias-bg-base);
+     * }
+     * ```
+     *
+     * 配方和上面那条一字不差，所以**共用同一份 `stickyHeadRecipe()`**：改模糊值时两条一起走。
+     * 区别只在选择器：这一条**故意不写类名**。Disclosure 是宿主内部组件，哈希前缀（当前
+     * `VJlF5q_`）每次构建都会变；而 `data-expanded` / `data-open` / `data-disclosure-header`
+     * 是它自己的语义属性，比类名稳。`>` 比宿主那条后代选择器更紧一档 —— header 本来就是
+     * `[data-open]` 的直接子节点（见组件 JSX），收窄不会漏。
+     *
+     * 这两处是 1.3.38 用「同一份配方 + 同一类宿主写法」扫 `app.asar` 找出来的：全部 8 个
+     * `sticky` 与 `bg-base` 的共现里，去掉源码镜像和已处理的（代码块表头、输入框座、菜单
+     * 分组标题），剩下需要处理的就是这两条。
      */
-    function compactionLidCss(settings) {
+    function stickyLidCss(settings) {
       const { blur } = stickyHeadRecipe(settings);
-      const lid =
-        '[class$="_compactionRow"]:has([class$="_compactionBody"]) [class$="_compactionButton"]';
-      return `
-${prefixed('html[data-dshbg-on]', [lid])} {
+      // 两条盖子的声明完全相同，差别只在选择器 —— 抽出来是为了让「同一份配方」变成
+      // 结构上的事实，而不是两段碰巧写一样的字符串。
+      const frost = `
   -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
-  backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;`;
+      // 尾缀锚定：哈希前缀每次构建都会变，`[class$=…]` 才是精确匹配。
+      const compaction =
+        '[class$="_compactionRow"]:has([class$="_compactionBody"]) [class$="_compactionButton"]';
+      const disclosure = '[data-expanded] [data-open] > [data-disclosure-header]';
+      return `
+${prefixed('html[data-dshbg-on]', [compaction])} {${frost}
+}
+${prefixed('html[data-dshbg-on]', [disclosure])} {${frost}
 }
 `;
     }
@@ -3439,9 +3468,9 @@ html[data-dshbg-on] select option:checked {
         // 侧栏文件预览的第二行（路径 + 工具按钮）。紧挨着 `dockStripCss`，两条带子
         // 用同一份配方，中间隔着别的规则容易被人改歪。
         filePreviewBarsCss(settings),
-        // 「已压缩」那条吸顶盖。同一份配方（`stickyHeadRecipe`），所以紧跟着上面两条带子，
-        // 改模糊值时不会漏掉它。
-        compactionLidCss(settings),
+        // 两条吸顶盖（「已压缩」那条 + 展开态的折叠头）。同一份配方（`stickyHeadRecipe`），
+        // 所以紧跟着上面两条带子，改模糊值时不会漏掉它们。
+        stickyLidCss(settings),
         // Last, so the frosted panes are not re-painted by anything above.
         transcriptGlassCss(settings),
         previewCardCss(settings),

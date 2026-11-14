@@ -358,6 +358,7 @@ async function main() {
       '[data-dockkit-strip]',
       '[data-textpreview-path]',
       '_compactionButton',
+      'data-disclosure-header',
     ]) {
       const re = new RegExp('(\\[data-dshbg-on\\][^{]*' + key.replace(/[[\]]/g, '\\$&') + '[^{]*\\{[^}]*\\})', 'g');
       for (const m of base.css.match(re) || []) console.log('DUMP ' + m.replace(/\s+/g, ' '));
@@ -1760,7 +1761,7 @@ async function main() {
       .every((rule) => !/backdrop-filter:(?!\s*none)/.test(rule)),
   );
 
-  console.log('\ncompaction lid');
+  console.log('\nsticky lids (compaction + reasoning)');
   // 「compact · 已压缩 280 条历史记录」那条：展开之后宿主把它变成 `position: sticky; top: 0`
   // 的 24px 吸顶盖，底色只借 `bg-base` —— 而本插件把 `bg-base` 改成了半透明，于是正文从盖子
   // 里透出来，屏幕上就是标题和下面的字压在一起（1.3.37 用户报的那张图）。
@@ -1803,6 +1804,45 @@ async function main() {
       blurOf(lidOf(loud)) === blurOf(declsOf((/\[data-dockkit-strip\]::before \{([^}]*)\}/.exec(loud) || ['', ''])[1])) &&
       blurOf(lidOf(loud)) !== blurOf(lid),
     `default ${blurOf(lid)} -> menuBlur 20 gives ${blurOf(lidOf(loud))}`,
+  );
+  // --- 第二处：宿主通用的 Disclosure（思考块 / 工具调用组都用它）---
+  // 展开之后同样是 `sticky top 0` + `bg-base`，同一个毛病、同一份配方（1.3.38 扫 `app.asar`
+  // 找出来的第二条；8 个 `sticky` 与 `bg-base` 的共现里，去掉源码镜像和已处理的代码块表头 /
+  // 输入框座 / 菜单分组标题，剩下的就是这两条）。
+  const disclosureOf = (css) =>
+    (/\[data-disclosure-header\] \{([^}]*)\}/.exec(css) || ['', ''])[1];
+  const disclosure = disclosureOf(base.css);
+  check('the expanded reasoning header is frosted too', disclosure !== '');
+  check(
+    'and it shares the compaction lid’s frost rather than a number of its own',
+    blurOf(disclosure) !== '' && blurOf(disclosure) === blurOf(lid),
+    `disclosure ${JSON.stringify(blurOf(disclosure))} vs lid ${JSON.stringify(blurOf(lid))}`,
+  );
+  // ⚠️ 这一条**故意不写类名**：Disclosure 是宿主内部组件，哈希前缀（当前 `VJlF5q_`）每次
+  // 构建都会变；`data-expanded` / `data-open` / `data-disclosure-header` 是它自己的语义属性。
+  // 断言钉住「选择器里没有 class」，就是防止后来有人为了「统一风格」把它改成 `[class$=…]`。
+  const disclosureSel = (
+    /html\[data-dshbg-on\][^{]*\[data-disclosure-header\][^{]*\{/.exec(base.css) || ['']
+  )[0]
+    .replace(/\s+/g, ' ')
+    .trim();
+  check(
+    'it is anchored on the component’s data attributes, not a hashed class',
+    disclosureSel.includes('[data-expanded] [data-open] > [data-disclosure-header]') &&
+      !disclosureSel.includes('[class'),
+    disclosureSel,
+  );
+  // 和上面那条一样「只许改模糊」：`position` 一改就不吸顶了，`z-index` 宿主写死 1。
+  check(
+    'and it too changes nothing but the blur',
+    !/background/.test(disclosure) && !/position:/.test(disclosure) && !/z-index/.test(disclosure),
+    disclosure.replace(/\s+/g, ' ').slice(0, 120),
+  );
+  check(
+    'the reasoning lid follows the slider in step with the compaction lid',
+    blurOf(disclosureOf(loud)) === blurOf(lidOf(loud)) &&
+      blurOf(disclosureOf(loud)) !== blurOf(disclosure),
+    `default ${blurOf(disclosure)} -> menuBlur 20 gives ${blurOf(disclosureOf(loud))}`,
   );
   // Whole-window scope: the sidebar is glass there, so the opaque page must cover it too
   // or the page sits beside a see-through strip.
