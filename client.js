@@ -2380,41 +2380,18 @@ ${frostedBandCss(['[data-dockkit-strip]'], stickyHeadRecipe(settings))}`;
     }
 
     /**
-     * 吸顶盖 —— 展开之后变成 `sticky` 的窄头，会**压到下面的字**。目前两处，同一份配方。
+     * 吸顶盖 —— 展开之后变成 `sticky` 的窄头，会**压到下面的字**。目前两处，同一套做法。
      *
-     * 第一处（1.3.37，用户截图报的）：「compact · 已压缩 280 条历史记录」那一条。
-     *
-     * 宿主的规则是（`MessageList.module.css`）：
+     * 第一处（1.3.37）：「compact · 已压缩 280 条历史记录」那一条。宿主的规则是
+     * （`MessageList.module.css`）：
      *
      * ```css
      * .compactionRow:has(.compactionBody) .compactionButton {
-     *   position: sticky; top: 0; z-index: 7;
-     *   background: var(--dsw-alias-bg-base);
+     *   position: sticky; top: 0; z-index: 7; background: var(--dsw-alias-bg-base);
      * }
      * ```
      *
-     * 也就是说：展开之后，那条 24px 的标题变成**吸顶盖**，底色只借用 `bg-base`。
-     * 本插件把 `bg-base` 按「对话底色」滑杆改成了半透明（默认 50%），于是正文往上滚时
-     * **从这条盖子里透出来**，屏幕上就是「compact · 已压缩…」和下一行字压在一起。
-     *
-     * 修法和市场页吸顶栏、代码块表头是同一道题，也是同一份配方：**底下的东西是内容，
-     * 就加模糊**。这里**不碰底色** —— 那层 `bg-base` 正好让盖子和上下左右的对话底色
-     * 完全同色，真正的分界线只有「糊了 / 没糊」；换个不透明度反而会在 24px 上下各留一道
-     * 硬边（那是「新长出来的一道缝」，比原问题显眼）。
-     *
-     * ⚠️ 选择器只认 `_compactionRow` / `_compactionBody` / `_compactionButton` 这三个
-     * **尾缀**（哈希前缀每次构建都会变，`[class$=…]` 和 `[class*=…]` 不同，后者会把
-     * 限宽壳之类的兄弟节点一起选中 —— 1.3.24 在 `_bubble` 上踩过）。三个都是宿主
-     * `className={css.xxx}` 整串赋上去的，所以「尾缀相等」是精确匹配。
-     * ⚠️ **不能给这一条加 `position` / `z-index`**：宿主靠 `sticky` 让它吸顶，
-     * `frostedBandCss()` 那套会写 `position: relative`（它服务的带子本来就不吸顶），
-     * 用在这里等于把盖子拆了。所以这里只写模糊，其余一个字节都不动。
-     * ⚠️ 只在**展开态**（有 `_compactionBody`）生效 —— 收起时它不吸顶、也不盖任何东西，
-     * 给它加模糊只是白花一次合成。
-     *
-     * ---
-     *
-     * **第二处（1.3.38）：宿主通用的 Disclosure。** 思考块、工具调用组展开之后长的是同一个头：
+     * 第二处（1.3.38）：宿主通用的 Disclosure —— 思考块、工具调用组展开之后长的是同一个头：
      *
      * ```css
      * .root[data-expanded] [data-open] [data-disclosure-header] {
@@ -2422,31 +2399,62 @@ ${frostedBandCss(['[data-dockkit-strip]'], stickyHeadRecipe(settings))}`;
      * }
      * ```
      *
-     * 配方和上面那条一字不差，所以**共用同一份 `stickyHeadRecipe()`**：改模糊值时两条一起走。
-     * 区别只在选择器：这一条**故意不写类名**。Disclosure 是宿主内部组件，哈希前缀（当前
-     * `VJlF5q_`）每次构建都会变；而 `data-expanded` / `data-open` / `data-disclosure-header`
-     * 是它自己的语义属性，比类名稳。`>` 比宿主那条后代选择器更紧一档 —— header 本来就是
-     * `[data-open]` 的直接子节点（见组件 JSX），收窄不会漏。
+     * 两处是同一个毛病：24px 的标题变成吸顶盖，底色只借 `bg-base`，而本插件把 `bg-base`
+     * 按「对话底色」滑杆改成了半透明（默认 50%），于是正文往上滚时**从盖子里透出来**。
      *
-     * 这两处是 1.3.38 用「同一份配方 + 同一类宿主写法」扫 `app.asar` 找出来的：全部 8 个
-     * `sticky` 与 `bg-base` 的共现里，去掉源码镜像和已处理的（代码块表头、输入框座、菜单
-     * 分组标题），剩下需要处理的就是这两条。
+     * ---
+     *
+     * **1.3.39 换了做法，这是第三版。**
+     *
+     * 前两版用 `backdrop-filter`：它糊的是盖子**底下**的东西，而底下是正文 —— 字是亮的，
+     * 糊出来就发白。屏幕上因此是一块**比周围亮一截的板**，上下还有硬边，用户的原话是
+     * **「这个太突兀了」**。要的是「和周围一模一样」，而 `backdrop-filter` 在数学上做不到
+     * （σ = √(F²+N²) > F，见 `wallCopyDecls` 的注释）。
+     *
+     * 所以改成插件页表头 1.3.33 那套：**把壁纸那批像素搬到盖子上**。搬对了，它就不再是一个
+     * 「元素」，只是壁纸的一部分 —— 挡得住字，但看不出来有东西挡。
+     *
+     * 选择器不在 CSS 里：宿主那条 `.compactionRow` 用尾缀锚定、Disclosure 用 `data-*`，
+     * 两者形状不同，都由 JS 找到元素后打上 `[data-dshbg-lid]`，CSS 只认这个标记。
+     * 顺带解决另一件事 —— **只有真的 `position: sticky` 的元素才值得标记**（量不到原点就
+     * 对不齐像素），这个判断 CSS 写不出来，JS 一句 `getComputedStyle` 就够。
+     *
+     * ⚠️ 不给这一条加 `position` / `z-index`：宿主靠 `sticky` 让它吸顶、靠 7 / 1 压过正文。
+     * 我们只清底色、挂副本，其余一个字节都不动。
      */
-    function stickyLidCss(settings) {
-      const { blur } = stickyHeadRecipe(settings);
-      // 两条盖子的声明完全相同，差别只在选择器 —— 抽出来是为了让「同一份配方」变成
-      // 结构上的事实，而不是两段碰巧写一样的字符串。
-      const frost = `
-  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
-  backdrop-filter: blur(${blur}px) saturate(150%) !important;`;
-      // 尾缀锚定：哈希前缀每次构建都会变，`[class$=…]` 才是精确匹配。
-      const compaction =
-        '[class$="_compactionRow"]:has([class$="_compactionBody"]) [class$="_compactionButton"]';
-      const disclosure = '[data-expanded] [data-open] > [data-disclosure-header]';
+    function lidWallCss() {
+      // 吸顶盖比表头多一层**对话底色**，而且这一层必须叠在**模糊之后**。
+      //
+      // 这一条是量出来的：盖子长在对话面板里面，面板自己压着一层 `--dsw-alias-bg-base`
+      // （半透明），所以「周围」的颜色是「壁纸 × 面板底色」。只搬壁纸的话盖子上会**亮一大截**
+      // —— 实测 Δ 均值 60、平均色 128,151,166 对 77,87,101（1.66 倍，正好少叠一层 50%）。
+      //
+      // 叠法也有讲究：塞进 `::before` 的 `background-image` 里等于把底色**卷进了滤镜**
+      // （`blur(色 over 图)` ≠ `色 over blur(图)`，合成不是线性的），残余 Δ 还有 1.8。
+      // 单独一层 `::after` 就没了这个问题：它不参与滤镜，只负责「模糊之后再压一层板」，
+      // 和面板自己的做法一模一样。
+      //
+      // 表头不需要这一层：插件页的表头底下没有那块面板，搬壁纸就是对的（1.3.33 量到 0.00）。
+      // 两处答案不同，是因为**元素背后的东西不同**，不是因为风格不同。
+      //
+      // ⚠️ 用 `var(--dsw-alias-bg-base)`，不写死 50%：那个 token 就是「对话底色」滑杆
+      // 改出来的颜色，写死的话滑杆一动，盖子立刻和周围对不上。
       return `
-${prefixed('html[data-dshbg-on]', [compaction])} {${frost}
+html[data-dshbg-on] [data-dshbg-lid] {
+  background: transparent !important;
+  isolation: isolate !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
-${prefixed('html[data-dshbg-on]', [disclosure])} {${frost}
+html[data-dshbg-on] [data-dshbg-lid]::before {${wallCopyDecls('--dshbg-lid', 'var(--dshbg-lid-h, 24px)')}
+}
+html[data-dshbg-on] [data-dshbg-lid]::after {
+  content: "" !important;
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: -1 !important;
+  pointer-events: none !important;
+  background: var(--dsw-alias-bg-base, transparent) !important;
 }
 `;
     }
@@ -3005,23 +3013,29 @@ ${restores}
       };
     }
 
-    function configHeadCss() {
-      // 一条规则做四件事：清掉宿主的底色板、把玻璃挂到 `::before`、让副本落在壁纸那个盒上、
-      // 再裁到宿主自己算出来的可见高度。所有**数值**都从变量来（`headWallVars()` 写图与滤镜，
-      // `measure()` 写盒子的位置），这里一个数都不许有 —— 有就是「另长一个样」的开头。
+    /**
+     * 把**壁纸那批像素本身**搬到某个元素上 —— 全套配方只有这一份。
+     *
+     * 为什么不能靠 `backdrop-filter`：壁纸已经被 `paintWall()` 糊过一遍（σ₁ = F），
+     * 再在上面叠一次（σ₂ = N），合成是 `√(F² + N²) > F`。想让「和周围一致」，只有 `N = 0`，
+     * 而 `N = 0` 就是不挡东西。**这是公式上的不可能，不是调参问题**（1.3.30~1.3.31 的教训）。
+     *
+     * 所以唯一的解是把壁纸那个盒**复制一份**过来：同 inset（`vw/vh + 2×bleed`）、同 `cover`、
+     * 同滤镜串，位置按「这个元素在视口里的坐标」反推，再用 `clip-path` 裁到只留元素自己那一块。
+     * 裁切发生在 `filter` **之后**，所以边缘不会被模糊吃掉。
+     *
+     * @param {string} boxVar 这个元素的坐标变量前缀（`--dshbg-head` / `--dshbg-lid`），
+     *   会读成 `${boxVar}-x` 等形式。**和壁纸长相有关的那四个变量不带前缀** ——
+     *   图、取景、滤镜、溢出量对所有消费方都是同一份，写在 `:root` 上让它们继承。
+     * @param {string} paintHeight 这个元素「该露出多高」的 CSS 表达式。表头用宿主算的
+     *   `--plugin-header-paint-height`（折叠动画要跟得上），吸顶盖用自己的高度。
+     */
+    function wallCopyDecls(boxVar, paintHeight) {
       return `
-html[data-dshbg-on] [data-dshbg-head] {
-  background: transparent !important;
-  isolation: isolate !important;
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
-}
-html[data-dshbg-on] [data-dshbg-head]::before,
-html[data-dshbg-on] [data-dshbg-head] > [data-dshbg-headwall] {
   content: "" !important;
   position: absolute !important;
-  top: calc(-1 * (var(--dshbg-head-y, 0px) + var(--dshbg-head-bleed, 0px))) !important;
-  left: calc(-1 * (var(--dshbg-head-x, 0px) + var(--dshbg-head-bleed, 0px))) !important;
+  top: calc(-1 * (var(${boxVar}-y, 0px) + var(--dshbg-head-bleed, 0px))) !important;
+  left: calc(-1 * (var(${boxVar}-x, 0px) + var(--dshbg-head-bleed, 0px))) !important;
   width: calc(100vw + 2 * var(--dshbg-head-bleed, 0px)) !important;
   height: calc(100vh + 2 * var(--dshbg-head-bleed, 0px)) !important;
   margin: 0 !important;
@@ -3036,13 +3050,31 @@ html[data-dshbg-on] [data-dshbg-head] > [data-dshbg-headwall] {
   background-repeat: no-repeat !important;
   filter: var(--dshbg-head-filter, none) !important;
   clip-path: inset(
-    calc(var(--dshbg-head-y, 0px) + var(--dshbg-head-bleed, 0px))
-    calc(100vw + var(--dshbg-head-bleed, 0px) - var(--dshbg-head-x, 0px) - var(--dshbg-head-w, 0px))
-    calc(100vh + var(--dshbg-head-bleed, 0px) - var(--dshbg-head-y, 0px) - var(--plugin-header-paint-height, var(--plugin-header-rest-height, 56px)))
-    calc(var(--dshbg-head-x, 0px) + var(--dshbg-head-bleed, 0px))
+    calc(var(${boxVar}-y, 0px) + var(--dshbg-head-bleed, 0px))
+    calc(100vw + var(--dshbg-head-bleed, 0px) - var(${boxVar}-x, 0px) - var(${boxVar}-w, 0px))
+    calc(100vh + var(--dshbg-head-bleed, 0px) - var(${boxVar}-y, 0px) - ${paintHeight})
+    calc(var(${boxVar}-x, 0px) + var(--dshbg-head-bleed, 0px))
   ) !important;
   -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;`;
+    }
+
+    function configHeadCss() {
+      // 一条规则做四件事：清掉宿主的底色板、把玻璃挂到 `::before`、让副本落在壁纸那个盒上、
+      // 再裁到宿主自己算出来的可见高度。所有**数值**都从变量来（`headWallVars()` 写图与滤镜，
+      // `measure()` 写盒子的位置），这里一个数都不许有 —— 有就是「另长一个样」的开头。
+      return `
+html[data-dshbg-on] [data-dshbg-head] {
+  background: transparent !important;
+  isolation: isolate !important;
+  -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
+}
+html[data-dshbg-on] [data-dshbg-head]::before,
+html[data-dshbg-on] [data-dshbg-head] > [data-dshbg-headwall] {${wallCopyDecls(
+        '--dshbg-head',
+        'var(--plugin-header-paint-height, var(--plugin-header-rest-height, 56px))',
+      )}
 }
 html[data-dshbg-on] [data-dshbg-head] > [data-dshbg-headwall] > video {
   position: absolute !important;
@@ -3468,9 +3500,9 @@ html[data-dshbg-on] select option:checked {
         // 侧栏文件预览的第二行（路径 + 工具按钮）。紧挨着 `dockStripCss`，两条带子
         // 用同一份配方，中间隔着别的规则容易被人改歪。
         filePreviewBarsCss(settings),
-        // 两条吸顶盖（「已压缩」那条 + 展开态的折叠头）。同一份配方（`stickyHeadRecipe`），
-        // 所以紧跟着上面两条带子，改模糊值时不会漏掉它们。
-        stickyLidCss(settings),
+        // 两条吸顶盖（「已压缩」那条 + 展开态的折叠头）。1.3.39 起和表头同一套：搬壁纸，
+        // 不糊 —— 所以它读的是 `--dshbg-head-*` 那一份壁纸变量，和上面 `configHeadCss()` 同源。
+        lidWallCss(),
         // Last, so the frosted panes are not re-painted by anything above.
         transcriptGlassCss(settings),
         previewCardCss(settings),
@@ -3902,6 +3934,11 @@ html[data-dshbg-on] select option:checked {
       const appliedWall = [null, null, null, null];
       let wallVars = null;
       let headBox = '';
+      /**
+       * 被标记的吸顶盖（见 `markLids()`）。`applyWall()` 要读它：视频壁纸的封面退不退场，
+       * 取决于「还有没有别的地方在用那张封面」。声明放在这里是因为 `applyWall()` 会用到它。
+       */
+      let lidNodes = [];
 
       /**
        * 会动的壁纸（视频）在表头里的那份副本。
@@ -3928,21 +3965,22 @@ html[data-dshbg-on] select option:checked {
        * 拖滑杆时只有 `--dshbg-head-filter` 会变，图那一条一次都不写。
        */
       const applyWall = () => {
-        if (marked === null) {
-          dropMedia();
-          return;
-        }
-        // 先决定「副本在不在」：封面退不退场是它的结论，所以它得跑在写变量之前。
-        applyMedia();
+        if (marked === null) dropMedia();
+        else applyMedia();
+        // ⚠️ 这四个数写在**根**上，不写在表头上（1.3.39）。吸顶盖是第二类消费方，它和表头
+        // 不是父子关系；各写一份等于把几百 KB 的 `data:` URL 存两遍，而它们要的本来就是同一张图。
+        // 表头自己的规则照样读得到 —— 自定义属性是继承的。
+        //
+        // 封面退场那条也跟着改了口径：视频副本画上来之后撤掉封面（省一块全屏 `blur()`），
+        // 但**只要还有吸顶盖在，封面就得留着**。盖子上没有视频副本，它靠封面当画面。
+        const mutePoster = posterHidden && lidNodes.length === 0;
         for (let i = 0; i < HEAD_WALL_VARS.length; i += 1) {
-          // 封面是**地板**：视频还没解出第一帧时它顶着，解出来之后就该退场 —— 一颗全屏的
-          // `blur()` 面不是免费的，两块同时糊着等于给每一帧多买一次全屏模糊。
           let value = wallVars === null ? undefined : wallVars[HEAD_WALL_VARS[i]];
-          if (i === 0 && posterHidden) value = 'none';
+          if (i === 0 && mutePoster) value = 'none';
           if (value === appliedWall[i]) continue;
           appliedWall[i] = value;
-          if (value === undefined) marked.style.removeProperty(HEAD_WALL_VARS[i]);
-          else marked.style.setProperty(HEAD_WALL_VARS[i], value);
+          if (value === undefined) root.style.removeProperty(HEAD_WALL_VARS[i]);
+          else root.style.setProperty(HEAD_WALL_VARS[i], value);
         }
       };
 
@@ -4107,10 +4145,7 @@ html[data-dshbg-on] select option:checked {
           lifted = false;
         }
         for (let i = 0; i < HEAD_BOX_VARS.length; i += 1) marked.style.removeProperty(HEAD_BOX_VARS[i]);
-        for (let i = 0; i < HEAD_WALL_VARS.length; i += 1) {
-          marked.style.removeProperty(HEAD_WALL_VARS[i]);
-          appliedWall[i] = null;
-        }
+        // 壁纸那四个数现在写在根上（1.3.39），不随表头一起走 —— 吸顶盖还在用它们。
         marked.removeAttribute('data-dshbg-head');
         marked = null;
         headBox = '';
@@ -4128,6 +4163,8 @@ html[data-dshbg-on] select option:checked {
        * 依赖这些变量的 `calc()`（`clip-path` 里有两个）。
        */
       const measure = () => {
+        // 吸顶盖先量：它和表头互不相干，但同一次 rAF 里干完，少一个监听器。
+        measureLids();
         if (marked === null) {
           headBox = '';
           return;
@@ -4144,6 +4181,115 @@ html[data-dshbg-on] select option:checked {
         marked.style.setProperty(HEAD_BOX_VARS[0], `${x}px`);
         marked.style.setProperty(HEAD_BOX_VARS[1], `${y}px`);
         marked.style.setProperty(HEAD_BOX_VARS[2], `${w}px`);
+      };
+
+      // ------------------------------------------------------------------ 吸顶盖
+
+      /**
+       * 宿主把自己做成吸顶盖的那两个地方。1.3.39 起它们和表头用同一套做法：搬壁纸。
+       *
+       * 两处的选择器形状完全不同 —— `_compactionRow` 那套用尾缀锚定（哈希前缀每次都变），
+       * Disclosure 用 `data-*`（语义属性，不随构建变）。所以「怎么找到」留在 JS 里，
+       * CSS 只认我们打上去的 `[data-dshbg-lid]`：宿主再改选择器，这里改两行就够。
+       */
+      const LID_SELECTORS = [
+        '[class$="_compactionRow"]:has([class$="_compactionBody"]) [class$="_compactionButton"]',
+        '[data-expanded] [data-open] > [data-disclosure-header]',
+      ];
+      const LID_BOX_VARS = ['--dshbg-lid-x', '--dshbg-lid-y', '--dshbg-lid-w', '--dshbg-lid-h'];
+      /** 每个盖子上次写进去的四个数。滚动时每帧都会进来，值没变就别写（写会重算 `clip-path`）。 */
+      let lidBoxes = new WeakMap();
+
+      const stripLid = (node) => {
+        node.removeAttribute('data-dshbg-lid');
+        for (let i = 0; i < LID_BOX_VARS.length; i += 1) node.style.removeProperty(LID_BOX_VARS[i]);
+      };
+
+      const unmarkLids = () => {
+        for (let i = 0; i < lidNodes.length; i += 1) stripLid(lidNodes[i]);
+        if (lidNodes.length === 0) return;
+        lidNodes = [];
+        lidBoxes = new WeakMap();
+        // 盖子走光了，视频壁纸的封面可以重新退场（见 `applyWall()`）。
+        appliedWall[0] = null;
+        applyWall();
+      };
+
+      /**
+       * 找出此刻所有的吸顶盖并打标记。
+       *
+       * ⚠️ 只收 `position: sticky` 的。副本按「元素在视口里的坐标」反推位置，收起态的标题
+       * 既不吸顶也不压着任何东西：继续画一份壁纸等于白花钱，还会在展开/收起动画里跟着抖。
+       * 这个判断 CSS 写不出来，`getComputedStyle` 一句就够。
+       */
+      const markLids = () => {
+        if (wallVars === null || appliedWall[0] === undefined) {
+          unmarkLids();
+          return;
+        }
+        const keep = [];
+        for (let s = 0; s < LID_SELECTORS.length; s += 1) {
+          let list;
+          try {
+            list = root.querySelectorAll(LID_SELECTORS[s]);
+          } catch {
+            // 桩 DOM 里没有 `:has()`。测试要的是「规则长什么样」，不是「选择器能不能跑」。
+            list = [];
+          }
+          for (let i = 0; i < list.length; i += 1) {
+            const node = list[i];
+            if (keep.indexOf(node) !== -1) continue;
+            let position = '';
+            try {
+              position = window.getComputedStyle(node).position;
+            } catch {
+              position = '';
+            }
+            if (position !== 'sticky') continue;
+            if (!node.hasAttribute('data-dshbg-lid')) node.setAttribute('data-dshbg-lid', '');
+            keep.push(node);
+          }
+        }
+        for (let i = 0; i < lidNodes.length; i += 1) {
+          if (keep.indexOf(lidNodes[i]) === -1) stripLid(lidNodes[i]);
+        }
+        // 「有没有盖子」会改变封面退不退场，所以只在空↔非空的那一下重画。
+        const turned = (keep.length === 0) !== (lidNodes.length === 0);
+        lidNodes = keep;
+        if (turned) {
+          appliedWall[0] = null;
+          applyWall();
+        }
+        measureLids();
+      };
+
+      /**
+       * 把每个盖子的盒写进它自己的四个变量。
+       *
+       * 为什么每帧都要：`position: sticky` 在「还没顶到边」的那一段是跟着内容一起滚的，
+       * 副本得跟着一起动，否则屏幕上会出现一块**错位的壁纸** —— 那比原来那块板更显眼。
+       * 顶住之后坐标就不动了，`lidBoxes` 那道「值没变就不写」让它退化成零开销。
+       */
+      const measureLids = () => {
+        if (lidNodes.length === 0) return;
+        const tall = window.innerHeight;
+        for (let i = 0; i < lidNodes.length; i += 1) {
+          const node = lidNodes[i];
+          const box = node.getBoundingClientRect();
+          if (box.bottom < -1 || box.top > tall + 1) continue;
+          const next = [
+            Math.round(box.left * 10) / 10,
+            Math.round(box.top * 10) / 10,
+            Math.round(box.width * 10) / 10,
+            Math.round(box.height * 10) / 10,
+          ].join('|');
+          if (lidBoxes.get(node) === next) continue;
+          lidBoxes.set(node, next);
+          const values = next.split('|');
+          for (let v = 0; v < LID_BOX_VARS.length; v += 1) {
+            node.style.setProperty(LID_BOX_VARS[v], `${values[v]}px`);
+          }
+        }
       };
 
       // 一帧一次就够。滚动是 capture 的：真正滚动的是页面里的 `pageBody`，它不冒泡到
@@ -4352,12 +4498,17 @@ html[data-dshbg-on] select option:checked {
         // 50% backdrop and its `::after` hairline come back exactly as it built them.
         if (suspended) {
           unmark();
+          unmarkLids();
           return;
         }
         if (!root.hasAttribute('data-dshbg-on')) {
           unmark();
+          unmarkLids();
           return;
         }
+        // 盖子和表头是两条独立的线：普通对话页没有表头，但有吸顶盖。所以 `markLids()` 必须
+        // 在「找表头」之前跑，也不能挂在 `marked` 上。
+        markLids();
         const body = scroller();
         if (body === null) {
           unmark();
@@ -4435,6 +4586,9 @@ html[data-dshbg-on] select option:checked {
             }
             : null,
           headBox,
+          // 吸顶盖：现在有几个、各自在哪。1.3.39 起它们和表头共用同一份壁纸变量，所以
+          // 「盖子上到底画没画」在这里看 `lids.length` 与元素上的 `data-dshbg-lid` 就够。
+          lids: lidNodes.map((node) => rect(node)),
         };
       };
       window.__dshbgHead = report;
@@ -4515,6 +4669,9 @@ html[data-dshbg-on] select option:checked {
         setWall(next) {
           wallVars = next;
           applyWall();
+          // 壁纸换了之后，盖子上那份副本也得跟着换 —— `applyWall()` 写的是共享变量，
+          // 但「现在该不该有盖子」取决于有没有图，所以要重新过一遍。
+          markLids();
         },
         dispose() {
           disposed = true;
@@ -4525,6 +4682,13 @@ html[data-dshbg-on] select option:checked {
           window.removeEventListener('resize', requestMeasure);
           window.removeEventListener('scroll', requestMeasure, { capture: true });
           unmark();
+          unmarkLids();
+          // 壁纸那四个数写在根上（表头和盖子共用），走的时候要一起带走 —— 否则关掉插件后
+          // 页面上还剩着一份几百 KB 的自定义属性。
+          for (let i = 0; i < HEAD_WALL_VARS.length; i += 1) {
+            root.style.removeProperty(HEAD_WALL_VARS[i]);
+            appliedWall[i] = null;
+          }
           if (window.__dshbgHead === report) delete window.__dshbgHead;
           if (typeof window.__dshbgHeadGlass === 'function') delete window.__dshbgHeadGlass;
         },

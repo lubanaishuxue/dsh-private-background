@@ -56,7 +56,11 @@ function makeElement(tag) {
     tagName: tag,
     dataset: {},
     attributes: {},
-    style: {},
+    // 真实 DOM 的 `style` 有 `setProperty` / `removeProperty`（真正的方法定义在下面，
+    // 因为它要闭包住 `el._vars`）。本插件用它们写自定义属性 —— `--dshbg-head-img` 那几百 KB
+    // 的 data URL 就是这么进 CSS 的。值另存一份，测试就能断言「变量到底写在了哪个元素上」：
+    // 1.3.39 把它从表头挪到 `<html>`，有没有搬错靠的就是这个。
+    _vars: new Map(),
     _text: '',
     children: [],
     setAttribute(name, value) { el.attributes[name] = String(value); },
@@ -120,6 +124,13 @@ function makeElement(tag) {
     fire(type, props) {
       const handler = el._on === undefined ? undefined : el._on[type];
       if (handler !== undefined) handler({ target: el, ...(props === undefined ? {} : props) });
+    },
+    // 自定义属性的三个方法（见上面 `_vars` 那段）。写在 `style` 上而不是元素上，
+    // 因为 `client.js` 调的是 `el.style.setProperty(...)`。
+    style: {
+      setProperty(name, value) { el._vars.set(name, String(value)); },
+      removeProperty(name) { el._vars.delete(name); },
+      getPropertyValue(name) { return el._vars.has(name) ? el._vars.get(name) : ''; },
     },
   };
   Object.defineProperty(el, 'textContent', {
@@ -1505,7 +1516,7 @@ async function main() {
   check(
     'the treatment can be parked and resumed without a restart',
     /window\.__dshbgHeadGlass = \(on\) => \{[\s\S]{0,320}?suspended = on === false;/.test(CODE) &&
-      /const sync = \(\) => \{\s*if \(disposed\) return;[\s\S]{0,700}?if \(suspended\) \{\s*unmark\(\);\s*return;/.test(CODE),
+      /const sync = \(\) => \{\s*if \(disposed\) return;[\s\S]{0,700}?if \(suspended\) \{\s*unmark\(\);\s*unmarkLids\(\);\s*return;/.test(CODE),
   );
   // ⚠️ 1.3.31：这条原来是反的（「the title bar frosts the rows that scroll under it」）。
   // 它守的是 1.3.30 的 `blur(32px)`，而那一版在屏幕上正是用户说的「还是有模糊」—— 壁纸已经
@@ -1762,87 +1773,78 @@ async function main() {
   );
 
   console.log('\nsticky lids (compaction + reasoning)');
-  // 「compact · 已压缩 280 条历史记录」那条：展开之后宿主把它变成 `position: sticky; top: 0`
-  // 的 24px 吸顶盖，底色只借 `bg-base` —— 而本插件把 `bg-base` 改成了半透明，于是正文从盖子
-  // 里透出来，屏幕上就是标题和下面的字压在一起（1.3.37 用户报的那张图）。
-  const lidOf = (css) =>
-    (/\[class\$="_compactionButton"\] \{([^}]*)\}/.exec(css) || ['', ''])[1];
-  const blurOf = (body) => (/(-webkit-)?backdrop-filter: blur\((\d+)px\)/.exec(body) || [, , ''])[2];
-  const lid = lidOf(base.css);
-  check('the compaction lid is found by its tail-anchored class name', lid !== '');
+  // 吸顶盖：展开之后变 `sticky` 的窄头，正文会从它底下滚过去。1.3.37 / 1.3.38 两版都用
+  // `backdrop-filter`，而那个方案**看起来就是一块比周围亮的板**（糊的是正文，字是亮的）。
+  // 1.3.39 换成和插件页表头同一套：把壁纸那批像素搬到盖子上。
+  const lidReset = (/html\[data-dshbg-on\] \[data-dshbg-lid\] \{([^}]*)\}/.exec(base.css) || ['', ''])[1];
+  const lidCopy = (/html\[data-dshbg-on\] \[data-dshbg-lid\]::before \{([^}]*)\}/.exec(base.css) || ['', ''])[1];
+  const lidPlate = (/html\[data-dshbg-on\] \[data-dshbg-lid\]::after \{([^}]*)\}/.exec(base.css) || ['', ''])[1];
+
+  check('the lid is styled through a mark the plugin owns', lidReset !== '' && lidCopy !== '');
+  // 宿主那两种写法（尾缀类名 / `data-*`）形状完全不同，所以「怎么找到」留在 JS 里；
+  // CSS 只认我们打上去的标记。这条钉住的是：规则里不许再出现任何宿主选择器。
   check(
-    'it takes the same frost as the other bars, not a number of its own',
-    blurOf(lid) !== '' && blurOf(lid) === blurOf(stripFrost),
-    `lid ${JSON.stringify(blurOf(lid))} vs strip ${JSON.stringify(blurOf(stripFrost))}`,
-  );
-  // ⚠️ 三个「不许」都是这条规则的理由本身：
-  //   - 不许改底色：`bg-base` 那层让盖子和上下左右的对话**完全同色**，真正杀字的是模糊；
-  //     换一个不透明度会在 24px 的上下各留一道硬边，那是比原问题更显眼的新缝。
-  //   - 不许碰 `position`：宿主靠 `sticky` 让它吸顶，`frostedBandCss()` 会给带子写
-  //     `position: relative` —— 用在这里等于把盖子拆了（实测会变成跟着滚动的普通行）。
-  //   - 不许碰 `z-index`：宿主写死 7，它要压过正文；我们再写一个数只可能更小。
-  check(
-    'and it changes nothing but the blur',
-    !/background/.test(lid) && !/position:/.test(lid) && !/z-index/.test(lid),
-    lid.replace(/\s+/g, ' ').slice(0, 120),
+    'and the rules carry no host selector - finding the lid is the finder’s job',
+    !/_compaction|data-disclosure-header|data-expanded/.test(
+      base.css.match(/html\[data-dshbg-on\] \[data-dshbg-lid\][^{]*\{[^}]*\}/g) || [''],
+    ),
   );
   check(
-    'only the expanded row is treated - collapsed, it sticks to nothing and covers nothing',
-    /\[class\$="_compactionRow"\]:has\(\[class\$="_compactionBody"\]\)/.test(base.css),
+    'the finder knows both host shapes',
+    /\[class\$="_compactionRow"\]:has\(\[class\$="_compactionBody"\]\) \[class\$="_compactionButton"\]/.test(CODE) &&
+      /\[data-expanded\] \[data-open\] > \[data-disclosure-header\]/.test(CODE),
   );
-  // 尾缀锚定，不是子串：`[class*="_compaction"]` 会把 row / body / title 一起选中
-  // （1.3.24 在 `_bubble` 上踩过同样的坑 —— 限宽壳被当成气泡又画了一遍）。
+  // ⚠️ 只收真的 `sticky` 的：副本按「元素在视口里的坐标」反推位置，收起态的标题既不吸顶
+  // 也不压着任何东西，继续画一份壁纸只是白花钱，还会在展开动画里跟着抖。
+  check('only lids that are actually stuck get a copy', /position !== 'sticky'/.test(CODE));
+  // 这一条是整套方案的**核心**：盖子上画的是壁纸本身（同图、同取景、同滤镜串），
+  // 不是任何一种「材质」。少任何一个，它就会重新变成一块看得出来的板。
   check(
-    'tail-anchored selectors only, never a substring match',
-    !/class\*="_compaction/.test(base.css),
+    'the lid paints the wallpaper itself instead of a material',
+    /background-image: var\(--dshbg-head-img, none\) !important/.test(lidCopy) &&
+      /background-size: cover !important/.test(lidCopy) &&
+      /filter: var\(--dshbg-head-filter, none\) !important/.test(lidCopy) &&
+      /backdrop-filter: none !important/.test(lidCopy),
   );
-  // 换个 blur 值也要跟着走：这条读的是 `stickyHeadRecipe()`，不是写死的 32。
-  const loud = (await emit({ menuBlur: 20 })).css;
+  // 裁到**盖子自己**的高度，不是表头那个 `--plugin-header-paint-height`：两者高度不同，
+  // 用错了会裁出一条比盖子高一截或矮一截的带子。
   check(
-    'the lid follows the shared recipe when the blur slider moves',
-    blurOf(lidOf(loud)) !== '' &&
-      blurOf(lidOf(loud)) === blurOf(declsOf((/\[data-dockkit-strip\]::before \{([^}]*)\}/.exec(loud) || ['', ''])[1])) &&
-      blurOf(lidOf(loud)) !== blurOf(lid),
-    `default ${blurOf(lid)} -> menuBlur 20 gives ${blurOf(lidOf(loud))}`,
+    'the copy is cut down to the lid’s own height',
+    /var\(--dshbg-lid-h, 24px\)/.test(lidCopy) && !/plugin-header-paint-height/.test(lidCopy),
   );
-  // --- 第二处：宿主通用的 Disclosure（思考块 / 工具调用组都用它）---
-  // 展开之后同样是 `sticky top 0` + `bg-base`，同一个毛病、同一份配方（1.3.38 扫 `app.asar`
-  // 找出来的第二条；8 个 `sticky` 与 `bg-base` 的共现里，去掉源码镜像和已处理的代码块表头 /
-  // 输入框座 / 菜单分组标题，剩下的就是这两条）。
-  const disclosureOf = (css) =>
-    (/\[data-disclosure-header\] \{([^}]*)\}/.exec(css) || ['', ''])[1];
-  const disclosure = disclosureOf(base.css);
-  check('the expanded reasoning header is frosted too', disclosure !== '');
+  // 多出来的那一层：对话面板本身压着 `--dsw-alias-bg-base`（半透明），「周围」的颜色是
+  // 「壁纸 × 面板底色」。缺这一层，盖子上会亮 1.66 倍（实测 Δ 均值 60）。
   check(
-    'and it shares the compaction lid’s frost rather than a number of its own',
-    blurOf(disclosure) !== '' && blurOf(disclosure) === blurOf(lid),
-    `disclosure ${JSON.stringify(blurOf(disclosure))} vs lid ${JSON.stringify(blurOf(lid))}`,
+    'the chat’s own plate is reproduced, or the lid would be 1.66x too bright',
+    /background: var\(--dsw-alias-bg-base, transparent\) !important/.test(lidPlate) &&
+      /inset: 0 !important/.test(lidPlate),
   );
-  // ⚠️ 这一条**故意不写类名**：Disclosure 是宿主内部组件，哈希前缀（当前 `VJlF5q_`）每次
-  // 构建都会变；`data-expanded` / `data-open` / `data-disclosure-header` 是它自己的语义属性。
-  // 断言钉住「选择器里没有 class」，就是防止后来有人为了「统一风格」把它改成 `[class$=…]`。
-  const disclosureSel = (
-    /html\[data-dshbg-on\][^{]*\[data-disclosure-header\][^{]*\{/.exec(base.css) || ['']
-  )[0]
-    .replace(/\s+/g, ' ')
-    .trim();
+  // 而且它必须是一层**独立的**东西：塞进 `::before` 的 `background-image` 里等于把底色
+  // 卷进了滤镜（`blur(色 over 图)` ≠ `色 over blur(图)`，合成不是线性的），残余 Δ 还有 1.8。
   check(
-    'it is anchored on the component’s data attributes, not a hashed class',
-    disclosureSel.includes('[data-expanded] [data-open] > [data-disclosure-header]') &&
-      !disclosureSel.includes('[class'),
-    disclosureSel,
+    'and that plate sits outside the blur, not inside its background stack',
+    !/linear-gradient\(var\(--dsw-alias-bg-base/.test(lidCopy),
   );
-  // 和上面那条一样「只许改模糊」：`position` 一改就不吸顶了，`z-index` 宿主写死 1。
+  // 只许改画法：`position` 一改就不吸顶（`frostedBandCss()` 那种 `relative` 就是这么把盖子
+  // 拆掉的），`z-index` 宿主写死 7 / 1，我们要么一样要么更小。
   check(
-    'and it too changes nothing but the blur',
-    !/background/.test(disclosure) && !/position:/.test(disclosure) && !/z-index/.test(disclosure),
-    disclosure.replace(/\s+/g, ' ').slice(0, 120),
+    'and it changes nothing but the paint',
+    !/position:/.test(lidReset) && !/z-index/.test(lidReset),
+    lidReset.replace(/\s+/g, ' ').slice(0, 120),
   );
+  // 盖子收起、或者被 React 换成别的节点时必须把自己擦干净：留着标记就是一个
+  // 「已经不吸顶了还在画壁纸」的元素，屏幕上是一块贴错位置的色块。
   check(
-    'the reasoning lid follows the slider in step with the compaction lid',
-    blurOf(disclosureOf(loud)) === blurOf(lidOf(loud)) &&
-      blurOf(disclosureOf(loud)) !== blurOf(disclosure),
-    `default ${blurOf(disclosure)} -> menuBlur 20 gives ${blurOf(disclosureOf(loud))}`,
+    'a lid that stops being a lid is cleaned up, not left painting a wallpaper',
+    /const stripLid = \(node\) => \{[\s\S]{0,200}?node\.removeAttribute\('data-dshbg-lid'\)/.test(CODE) &&
+      /keep\.indexOf\(lidNodes\[i\]\) === -1\) stripLid/.test(CODE),
+  );
+  // 壁纸那四个数写在 `<html>` 上：表头和盖子不是父子关系，各写一份等于把几百 KB 的
+  // `data:` URL 存两遍，而它们要的本来就是同一张图。
+  check(
+    'both surfaces share one copy of the wallpaper, written on the root',
+    /root\.style\.setProperty\(HEAD_WALL_VARS\[i\]/.test(CODE) &&
+      !/marked\.style\.setProperty\(HEAD_WALL_VARS\[i\]/.test(CODE),
   );
   // Whole-window scope: the sidebar is glass there, so the opaque page must cover it too
   // or the page sits beside a see-through strip.

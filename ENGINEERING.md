@@ -3493,3 +3493,126 @@ header 就是 `[data-open]` 的直接子节点（组件 JSX 里 `data-open` 的 
 - 同样只为「展开态」付费：收起的思考块不吸顶、不盖任何东西，规则里 `[data-expanded]` 把它排除了。
 - 这一版只处理「会漏内容」的两处。第 5 簇（输入框座）是渐隐，本来就没有硬边；
   第 6 簇不是 `bg-base`。它们**不需要**改，不是漏了。
+
+---
+
+## 1.3.39 · 「太突兀了」：吸顶盖不再糊，改成搬壁纸
+
+### 用户说的不是「糊得不够」
+
+1.3.37 / 1.3.38 给它加的是 `backdrop-filter: blur(32px) saturate(150%)`，量测上很漂亮
+（吃掉 99% 的笔画能量、吸顶还在）。但截图一贴出来，用户说的是 **「这个太突兀了，
+和那个插件表头用一样的设计吧」** —— 问题不是字糊没糊，是**那块东西本身看得见**。
+
+原因在 `backdrop-filter` 的定义里：它糊的是盖子**底下**的东西，而底下是正文，字是亮的。
+糊出来就发白，于是盖子上比周围亮一截（截图里那块浅蓝的板，上下还有硬边）。
+它永远不会和周围一致，因为周围看的是**壁纸**，盖子上看的是**壁纸 + 被糊掉的正文**。
+
+> 这和 1.3.30 在插件页表头上踩的是同一个坑，只是那次是「糊得比别人更糊」，
+> 这次是「白得比别人更白」。两次的结论相同：`backdrop-filter` 给不了「和周围一样」。
+
+### 做法：换成表头那一套
+
+插件页表头（1.3.33）的做法是把壁纸那批像素**搬**过来 —— 同 inset（`vw/vh + 2×bleed`）、
+同 `cover`、同滤镜串，位置按元素在视口里的坐标反推，`clip-path` 裁到元素自己那一块。
+1.3.39 把这段声明抽成 `wallCopyDecls(boxVar, paintHeight)`，表头和盖子共用：
+
+| 消费方 | 盒子变量 | 露出多高 | 叠不叠对话底色 |
+|---|---|---|---|
+| `[data-dshbg-head]`（插件页表头） | `--dshbg-head-*` | `--plugin-header-paint-height` | **不叠** |
+| `[data-dshbg-lid]`（吸顶盖） | `--dshbg-lid-*` | `--dshbg-lid-h`（JS 量） | **叠**，见下 |
+
+**壁纸那四个数（图 / 取景 / 滤镜 / 溢出量）写在 `<html>` 上**，不再写在表头上。
+表头和盖子不是父子关系，各写一份等于把几百 KB 的 `data:` URL 存两遍，而它们要的本来就是
+同一张图。自定义属性是继承的，两边的规则照样读得到。
+
+### 为什么盖子上要多一层底色
+
+第一次量出来 Δ 均值 **60.09**，盖子平均色 `128,151,166` 对周围的 `77,87,101` ——
+**1.66 倍，正好是少叠了一层 50%**。因为盖子长在对话面板**里面**，面板自己压着一层
+`--dsw-alias-bg-base`，「周围」的颜色其实是「壁纸 × 面板底色」。
+
+补上这层之后 Δ 掉到 **2.21**，但还剩 1.8 左右的系统性偏差。原因：先叠底色再模糊
+（`blur(色 over 图)`）和先模糊再叠底色（`色 over blur(图)`）**不是一回事**，合成不是线性的。
+所以底色不能塞进 `::before` 的 `background-image`，得单独一层 `::after`：
+
+```css
+[data-dshbg-lid]::after { position: absolute; inset: 0; z-index: -1;
+  background: var(--dsw-alias-bg-base, transparent); }
+```
+
+它不参与 `blur`，只负责「模糊之后再压一层板」—— 和面板自己的做法一模一样。Δ 归零。
+
+用 `var(--dsw-alias-bg-base)` 而不是写死 50%：那个 token 就是「对话底色」滑杆改出来的颜色。
+
+### 量测：这次量的是「和壁纸是不是同一批像素」
+
+夹具 `lab/repro-lid-copy.html`，探针 `lab/copy-probe.cjs`，同一块矩形跑三次：
+
+| 跑法 | 是什么 | Δ 均值 | Δ 峰值 | 平均色 |
+|---|---|---|---|---|
+| `?hide=1` | 正文 `visibility: hidden`、盖子底色清掉 | — | — | 79,89,103 |
+| `?copy=1` | 正文可见 + 壁纸副本 | **0.00** | **0** | 79,89,103 |
+| `?off=300` | 宿主原样（半透明板，字透出来） | **26.21** | 75 | 62,66,79 |
+
+思考块那个头（`--page=disclosure`，28px 高、另一套 DOM）：
+
+| 跑法 | Δ 均值 | Δ 峰值 | 平均色 |
+|---|---|---|---|
+| `?copy=1` | **0.00** | **0** | 79,89,103 |
+| `?off=300` | 28.62 | 81 | 61,64,79 |
+
+**负对照是必须的**：没有它，`Δ=0` 可能只是「量错了地方」。两处都同时给出「宿主原样」
+那一行，Δ 都在 26~29，说明这把尺子能看见东西。
+
+对比图 `lab/lid-copy-compare.png`（差值的 5 倍放大）：上一版是一整条亮的，
+这一版基本是黑的（残余 ≤1/255，逐像素取整）。
+
+### 两次假结论，都出在参照物上
+
+1. **第一次 Δ=60**：只搬了壁纸。方向对了一半，但少叠了面板那层底色 —— 见上。
+2. **第一次的参照物是错的**：`?hide=1` 那时把盖子的**标题**也藏了，于是盖子上标题的
+   笔画（`#8d8d8d` = `141,141,141`）全被算成误差，峰值 47 就出在标题上。
+   参照图只能藏「会从盖子底下滚过去的那批字」，盖子自己的内容必须留着。
+
+### 结构改动
+
+| 位置 | 改动 |
+|---|---|
+| `wallCopyDecls(boxVar, paintHeight)` | 从 `configHeadCss()` 里抽出来的共用声明，表头那份输出逐字不变 |
+| `lidWallCss()` | 两条规则：`[data-dshbg-lid]` 清底色 + `::before` 副本 + `::after` 底色板 |
+| `LID_SELECTORS` / `markLids()` | 宿主那两种写法（尾缀类名 / `data-*`）留在 JS 里；CSS 只认 `[data-dshbg-lid]` |
+| `measureLids()` | 每帧把盖子自己的 `left/top/width/height` 写进 `--dshbg-lid-*`；值没变不写 |
+| `applyWall()` | 四个壁纸变量改写 `<html>`；视频封面退场的条件多了「没有盖子在用封面」 |
+| `stripLid()` | 盖子收起 / 被 React 换掉时擦干净，不留一块「不吸顶还在画壁纸」的元素 |
+
+**为什么「只标记真的 `sticky` 的」**：副本按元素在视口里的坐标反推位置，元素不吸顶时
+这个原点照样对，但它不再压着任何东西，继续画只是白花钱，还会在展开/收起动画里跟着抖。
+这个判断 CSS 写不出来，`getComputedStyle(node).position !== 'sticky'` 一句就够。
+
+### 测试
+
+`ok` 419 + `skip` 4 = **423**（与上一版同数：删掉 11 条模糊断言，补上 10 条 + 1 条清理断言）。
+桩 DOM 的 `style` 原来只有普通对象，这次补上 `setProperty` / `removeProperty` /
+`getPropertyValue` —— 之前写的是表头元素，而桩里根本没有表头，所以从没走到那一步；
+现在四个变量写在 `<html>` 上，必须有。顺带让「变量到底写在哪个元素上」变成可断言的。
+
+新增/替换的关键断言：
+
+- `the lid paints the wallpaper itself instead of a material`（同图 / `cover` / 同滤镜串 / `backdrop-filter: none`）
+- `the copy is cut down to the lid’s own height`（用 `--dshbg-lid-h`，不是表头那个）
+- `the chat’s own plate is reproduced, or the lid would be 1.66x too bright`
+- `and that plate sits outside the blur, not inside its background stack`
+- `and the rules carry no host selector - finding the lid is the finder’s job`
+- `only lids that are actually stuck get a copy`
+- `both surfaces share one copy of the wallpaper, written on the root`
+- `a lid that stops being a lid is cleaned up, not left painting a wallpaper`
+
+### 已知边界
+
+- 视频壁纸：盖子上画的是**封面**（`wall.value`），不是会动的那份副本 —— 会动的副本只做在
+  表头上。24px 高、被 `blur(20px+)` 糊过的一条，两帧之间的差别看不出来；真机上如果看出来
+  了，再把表头那颗 `<video>` 的机制推广到盖子上（`follow()` 那套要改成一对多）。
+- 盖上盖子之后，宿主原来那条 `:hover` 的高亮底色被 `background: transparent !important`
+  压掉了。表头也是这样，两处一致。
+- `.compactionRow` 那 `2px` 的上下 padding 仍然透 —— 太窄，糊与不糊都看不出来。
