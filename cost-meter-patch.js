@@ -191,6 +191,7 @@ export function watchForWipe(options = {}, onChange = () => {}) {
   let timer = null;
   let watcher = null;
   let poller = null;
+  let rehangTimer = null;
   let closed = false;
   let seen = fingerprint();
 
@@ -238,24 +239,71 @@ export function watchForWipe(options = {}, onChange = () => {}) {
     if (result.status !== 'missing') report(result);
   }
 
-  try {
-    if (!fs.existsSync(directory)) return null;
-    watcher = fs.watch(directory, { persistent: false }, (_event, filename) => {
-      if (filename && String(filename) !== base) return;
-      if (timer) clearTimeout(timer);
-      timer = later(400, () => settle(0));
-    });
-    if (typeof watcher.unref === 'function') watcher.unref();
-  } catch {
-    return null;
+  /**
+   * Hang a watcher on the directory. Returns null when it cannot be done right now.
+   *
+   * ⚠️ The `error` listener is not defensive coding, it is the fix for the worst bug in this
+   * file. When pnpm upgrades a package it does not rewrite `client.js` - it renames a whole
+   * new `dsh-cost-meter` directory over the old one. The inode this watcher holds is deleted
+   * with the old directory, and libuv then emits `EPERM` on the FSWatcher. An EventEmitter
+   * with no `error` listener **throws**, and the throw lands in the host's main process: a
+   * cosmetic patch was able to take the whole app down.
+   *
+   * Reproduced 2026-11-14 with `probe-dirswap.mjs`: `Error: EPERM: operation not permitted,
+   * watch` -> `Unhandled 'error' event` -> process exit. It also explains the earlier
+   * `watcher missing` at 23:26: that watcher was not "giving up", it was already dead.
+   *
+   * So: swallow the error, close the corpse, repair once against whatever is on disk now,
+   * and hang a fresh watcher on the new directory a moment later. The poll below re-hangs it
+   * too, in case the retry lands before the new directory exists.
+   */
+  function attach() {
+    try {
+      const handle = fs.watch(directory, { persistent: false }, (_event, filename) => {
+        if (filename && String(filename) !== base) return;
+        if (timer) clearTimeout(timer);
+        timer = later(400, () => settle(0));
+      });
+      handle.on('error', () => {
+        try {
+          handle.close();
+        } catch {
+          // Already gone - which is the whole point.
+        }
+        if (closed) return;
+        if (watcher === handle) watcher = null;
+        settle(0);
+        rehang();
+      });
+      if (typeof handle.unref === 'function') handle.unref();
+      watcher = handle;
+      return handle;
+    } catch {
+      return null;
+    }
   }
+
+  /** One delayed attempt to get a watcher back. The poll is the fallback for the rest. */
+  function rehang(delay = 600) {
+    if (closed || rehangTimer) return;
+    rehangTimer = setTimeout(() => {
+      rehangTimer = null;
+      if (!closed && !watcher) attach();
+    }, delay);
+    if (typeof rehangTimer.unref === 'function') rehangTimer.unref();
+  }
+
+  if (!fs.existsSync(directory)) return null;
+  if (!attach()) return null;
 
   // The watcher fires on the *directory*, and Windows coalesces those events while the
   // antivirus scans a fresh install. A cheap stat on a slow loop costs nothing and covers the
-  // case where no event arrives at all - the one case that used to need a human.
+  // case where no event arrives at all - the one case that used to need a human. It also
+  // re-hangs a watcher that died with the directory it was pointing at.
   if (pollMs > 0) {
     poller = setInterval(() => {
       if (closed) return;
+      if (!watcher) attach();
       if (fingerprint() !== seen && !timer) settle(0);
     }, pollMs);
     if (typeof poller.unref === 'function') poller.unref();
@@ -266,6 +314,7 @@ export function watchForWipe(options = {}, onChange = () => {}) {
       closed = true;
       try {
         if (timer) clearTimeout(timer);
+        if (rehangTimer) clearTimeout(rehangTimer);
         if (poller) clearInterval(poller);
         watcher.close();
       } catch {

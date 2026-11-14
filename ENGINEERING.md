@@ -3223,3 +3223,68 @@ skip the login hook repairs a wiped file and exits 0 -> cannot spawn here (EBUSY
 5. 双击 `修复费用弹窗玻璃.cmd`
 
 前三条都在插件里，后两条不欠 DSH 任何东西。
+
+---
+
+## 1.3.36 · 比 `missing` 更狠的：`fs.watch` 会 emit `EPERM`，而它是 unhandled
+
+### 怎么发现的
+
+用户问「所以说以后会自己更新？」——这个问题不能拿「应该会」回答，所以写了两个探针：
+
+1. `probe-update.mjs`：删掉 `client.js`，800ms 后写回原始内容。结果补丁 1 秒内就回来了，
+   但日志是 `watcher already` —— 说明是**写回动作本身触发的第二次事件**救的，重试根本没被用到。
+   这次“通过”是假的。
+2. `probe-dirswap.mjs`：改成 pnpm 真正的做法 —— **整个 `dsh-cost-meter` 目录 rename 换掉**。
+   进程直接崩：
+
+```
+Error: EPERM: operation not permitted, watch
+  at FSWatcher._handle.onchange (node:internal/fs/watchers:214:21)
+Emitted 'error' event on FSWatcher instance ...
+```
+
+### 为什么这是最严重的一个
+
+`fs.watch` 返回的是 `EventEmitter`。目录被换掉后，它持有的 inode 已被删除，libuv 于是在它上面
+emit `'error'`。**EventEmitter 没有 `error` 监听器时的约定是 throw**，而这个 throw 落在宿主的
+主进程里 —— 也就是说一个聊天窗口的背景插件，有能力把整个 DSH 带崩。
+
+回头看 23:26 那行 `watcher missing` 就说得通了：那不是 watcher「放弃了」，是**它已经死了**。
+`missing` 只是它临死前报出的最后一句话。
+
+### 修法
+
+| 位置 | 改动 |
+|---|---|
+| `attach()` | `handle.on('error')` 接住 EPERM → close 掉尸体 → `settle(0)` 用磁盘上现有的文件补一次 → `rehang()` 挂到新目录 |
+| `rehang()` | 600ms 后重挂一次（新目录可能还没就位）；失败不循环，交给轮询 |
+| 轮询 | 每次 tick 里 `if (!watcher) attach()` —— watcher 死了会被重新挂上 |
+| `close()` | 一并清掉 `rehangTimer` |
+
+`attach()` 从原来内联的 `try { fs.watch } catch {}` 抽成函数，因为现在有三个地方要挂它。
+
+### 实测（`probe-dirswap.mjs`，修好之后）
+
+```
+换入后，补丁在? false
++1500ms 补丁在? true     ← 目录被整个 rename 换掉，1.5 秒内自愈，进程没报错
++3000ms 补丁在? true
+```
+
+### 新增断言（1 项，411 → 412）
+
+`a package replaced wholesale does not crash the host, and the patch comes back`
+—— 在临时目录里真的 `rmSync(包目录)` + `renameSync(新目录)`，等 1800ms 断言补丁版。
+**这条回归时的失败形式是整个测试进程崩掉，不是一行 FAIL** —— 那正是信号，别去给它加
+`uncaughtException` 兜底。
+
+### 现在的兜底顺序
+
+1. 装配（DSH 启动）—— 已确认工作（1.3.34 起）
+2. 目录监视 + `missing` 重试 + `EPERM` 重挂（运行中，~0.4s 起）
+3. 指纹轮询（运行中，≤30s）
+4. 登录自启动（`HKCU\...\Run`）
+5. 双击 `修复费用弹窗玻璃.cmd`
+
+前三条都在插件里，后两条不欠 DSH 任何东西。

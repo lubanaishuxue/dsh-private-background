@@ -8,7 +8,7 @@
 
 > 非官方插件，由第三方开发，DSH 官方不提供支持。它通过官方插件接口注册面板与样式，不修改客户端文件、不注入脚本、不触碰账号与凭据 —— 但装任何插件前都建议先看一眼代码。
 
-> 版本 1.3.35 · 在 Windows + DSH 桌面版 **0.2.1-rc.2** 上开发和测试。
+> 版本 1.3.36 · 在 Windows + DSH 桌面版 **0.2.1-rc.2** 上开发和测试。
 
 ---
 
@@ -276,7 +276,11 @@ dsh plugin --profile desktop add D:/path/to/dsh-private-background
 | **登录自启动** | 每次登录 Windows | 独立脚本，不依赖 DSH 是否装起来 |
 | **双击兜底** | 你想起来的时候 | 桌面上的 `修复费用弹窗玻璃.cmd` |
 
-> **1.3.35 修掉的那个坑**：cost-meter 升级会把整个包目录删掉重建，change 事件经常正好落在“文件还不存在”的那几百毫秒里。以前读到“文件不存在”就永久放手 —— 所以你会觉得**每次更新都必丢**，而且只能靠重启 DSH 救回来。现在这种撞车会自己退避重试（约 7 秒），再不行还有那个 30 秒的轮询。
+> **1.3.35 / 1.3.36 修掉的两个坑**：cost-meter 升级不是“改那个文件”，是**把整个包目录 rename 换掉**。这带来两件事：
+> 1. 目录监视的事件经常正好落在“文件还不存在”的那几百毫秒里，以前读到“文件不存在”就永久放手；
+> 2. 更糟的是，被监视的目录 inode 随旧目录一起被删，`fs.watch` 会抛 `EPERM`——没有监听它就是个未捕获错误，**可能把整个 DSH 带崩**。
+>
+> 现在：撞空窗会退避重试（约 7 秒），`EPERM` 会被接住并重新挂到新目录上，再不行还有那个 30 秒的轮询。实测把包目录整个换掉，1.5 秒内补丁就回来了，进程不再报错。
 
 自启动项是 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\DSHBG-CostMeterHeal`，跑的是 `tools/cost-meter-heal.mjs`（幂等，静默）。
 
@@ -321,7 +325,7 @@ node "D:/dsh-plugins/custom-background/tools/cost-meter-heal.mjs" --revert
 ## 开发
 
 ```sh
-node tools/smoke-test.cjs   # 411 项：模块契约、槽位注册、样式表、层叠与状态机
+node tools/smoke-test.cjs   # 412 项：模块契约、槽位注册、样式表、层叠与状态机
 node tools/store-test.cjs   # 94 项：存储与判重
 ```
 

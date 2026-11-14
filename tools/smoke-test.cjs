@@ -2109,6 +2109,32 @@ async function main() {
   );
   watcher?.close();
 
+  // pnpm 升级不是「改这个文件」，是「把整个包目录 rename 换掉」。被 watch 的 inode 随旧目录
+  // 一起删除，libuv 于是对 FSWatcher emit `EPERM` —— 没有 error 监听就是个 unhandled error，
+  // 直接冒到宿主主进程。2026-11-14 用 probe-dirswap.mjs 复现过：
+  //   Error: EPERM: operation not permitted, watch -> Unhandled 'error' event -> 进程退出
+  // 一个化妆品补丁不该有这个能力。这条断言两件事：不崩，而且能自己回来。
+  // ⚠️ 如果哪天这条回归了，失败形式是整个测试进程崩掉，而不是一行 FAIL —— 那正是信号。
+  const swapRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dshbg-swap-'));
+  const swapPkg = path.join(swapRoot, 'dsh-cost-meter');
+  fs.mkdirSync(path.join(swapPkg, 'lib'), { recursive: true });
+  const swapTarget = path.join(swapPkg, 'lib', 'client.js');
+  fs.writeFileSync(swapTarget, ORIGINAL, 'utf8');
+  const swapWatcher = heal.watchForWipe({ target: swapTarget, pollMs: 200 }, () => {});
+  heal.apply({ target: swapTarget });
+  const staged = path.join(swapRoot, 'staged');
+  fs.mkdirSync(path.join(staged, 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(staged, 'lib', 'client.js'), ORIGINAL, 'utf8');
+  fs.rmSync(swapPkg, { recursive: true, force: true }); // 旧包目录整个消失
+  fs.renameSync(staged, swapPkg); // 原子换入新包
+  await new Promise((r) => setTimeout(r, 1800));
+  check(
+    'a package replaced wholesale does not crash the host, and the patch comes back',
+    fs.readFileSync(swapTarget, 'utf8').includes(heal.SIGNATURE),
+  );
+  swapWatcher?.close();
+  fs.rmSync(swapRoot, { recursive: true, force: true });
+
   const INDEX = fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8');
   check(
     'the host half repairs it while assembling, not when the user opens the dialog',
