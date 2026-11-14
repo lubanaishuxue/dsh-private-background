@@ -3135,3 +3135,91 @@ login hook re-applied ... # 登录自启动补的
 补 `export const name` 之后 host 半边是否真的开始装配，要**重启 DSH** 才知道 ——
 判据是 `~/.dsh/dshbg-cost-meter-heal.log` 里出现 `assembly ...` 那一行。
 在那之前，登录自启动是唯一确定可用的通道。
+
+---
+
+## 1.3.35 · 「每次更新都必丢」的真因：事件撞进替换的空窗
+
+### 日志把答案摆出来了
+
+2026-11-14 23:26 用户又报「每次 cost-meter 更新之后都会失去玻璃」。`~/.dsh/dshbg-cost-meter-heal.log`：
+
+```
+2026-11-14T12:14:01  assembly already   ...   ← 1.3.34 的 export const name 生效了，宿主装配时真的跑了
+2026-11-14T12:26:03  watcher missing    ...   ← 1.9.64 → 1.9.65 更新的那一刻
+2026-11-14T12:30:00  assembly patched   ...   ← 用户重启 DSH 才补回来
+```
+
+也就是说 1.3.34 补的 `export const name` 是对的：**装配层已经活了**（12:14 那行就是证据）。
+真正漏的是第二行 —— `watcher missing`。
+
+### 为什么是 missing
+
+pnpm 升级不是「把一个文件换成另一个」，是**把整个包目录拆掉重建**。`fs.watch` 盯着目录，
+事件在拆的瞬间就到了，而 400ms 后的那次 `apply()` 正好落在「`client.js` 还不存在」的空窗里：
+
+```js
+onChange(apply({ target }));   // ← 旧代码：拿到 missing 就结束了
+```
+
+`missing` 的语义本来是「这个插件没装」，所以没人重试它。于是补丁丢了，而且**再也不会自己回来** ——
+除非下一次有事件、或者重启触发装配。用户看到的就是「每次更新都必丢，必须重启 DSH」。
+
+### 两处改动
+
+| 改动 | 做法 |
+|---|---|
+| `missing` 退避重试 | `[320, 640, 1200, 2000, 3000]` ms，合计约 7 秒 —— 这串数字不是试几次，是**一次安装自己持续多久** |
+| 指纹轮询兜底 | 每 30 秒 `stat` 一次，`mtimeMs:size` 变了就补。Windows 在杀软扫描新装包时会合并目录事件，这条兜的是「事件根本没到」 |
+
+轮询间隔取 30 秒，是**按用户能感知到的**来定的：补丁写晚了刷不动已开的窗口，30 秒能让
+「刷新一下就好」成立。`DEFAULT_POLL_MS` 导出为常量，测试用它断言区间。
+
+`watchForWipe({ pollMs })` 可以关掉轮询（`0`），测试用它做隔离。
+
+### 双击兜底：`修复费用弹窗玻璃.cmd`
+
+用户先要的是「一个 cmd，每次更新后点一下」。做在仓库根目录，桌面放了一份副本。
+
+几个细节都是踩出来的，不是设计出来的：
+
+- **GBK 存盘，不写 `chcp 65001`**：这台机器的控制台默认代码页是 936（`chcp` 实测）。用 UTF-8 存盘
+  再 `chcp 65001` 也能跑，但那是给「默认 65001 的系统」准备的方案；936 上直接 GBK 存盘最稳，
+  而且 `chcp` 之前那个 `rem` 块只能是 ASCII —— cmd 是**逐行按当前代码页解析**的。
+- **`pause` 不能省**：没有它的 cmd 双击后一闪而过，等于什么都没发生。
+- **进程名是 `DeepSeek Harness.exe`**，不是 `deepseek-harness-0.2.2-rc.3-win-x64.exe`（那是我照着
+  可执行文件路径猜的，`tasklist` 里显示的其实是显示名）。第一版就是这么把「DSH 开着」误报成
+  「没在运行」，`findstr /i deepseek-harness` 匹配不上任何一行。
+- `--revert` 之外**所有路径都 `force: true`**：用户点这个按钮的意图就是「现在就补上」，
+  一个 `.dshbg-off` 标记不该把它变成沉默。
+
+### 测试里那个 EBUSY
+
+`spawnSync` 在这个环境里报 `EBUSY`（沙箱不允许再起 node）。四条 CLI 断言因此新增了 `skip()`：
+
+```
+skip the login hook repairs a wiped file and exits 0 -> cannot spawn here (EBUSY)
+```
+
+不写成 PASS，是因为那会假装验证过；不写成 FAIL，是因为代码没问题。它们仍然**计数**，
+否则项数会随机器浮动，读起来像少测了东西。
+
+### 新增断言（6 项，405 → 411）
+
+- `a change that lands while the package is being replaced is still repaired`
+  —— 真的 `rm` 掉文件、等 620ms 跨过第一次尝试、再写回来，断言最终是补丁版
+- `and a slow fingerprint poll backs the watcher up`（`0 < DEFAULT_POLL_MS <= 60s`）
+- `a double-clickable repair script ships with the plugin`
+- `and it calls the same heal entry point, not a second copy of the patch`
+- `and it waits for a keypress instead of closing on the user`
+- `and the bytes are GBK, which is what a Chinese Windows console decodes by default`
+
+### 现在的兜底顺序
+
+1. 装配（DSH 启动）—— **已确认工作**
+2. 目录监视 + `missing` 重试（运行中，~0.4s 起）
+3. 指纹轮询（运行中，≤30s）
+4. 登录自启动（`HKCU\...\Run`）
+5. 双击 `修复费用弹窗玻璃.cmd`
+
+前三条都在插件里，后两条不欠 DSH 任何东西。

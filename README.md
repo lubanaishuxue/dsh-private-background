@@ -8,7 +8,7 @@
 
 > 非官方插件，由第三方开发，DSH 官方不提供支持。它通过官方插件接口注册面板与样式，不修改客户端文件、不注入脚本、不触碰账号与凭据 —— 但装任何插件前都建议先看一眼代码。
 
-> 版本 1.3.34 · 在 Windows + DSH 桌面版 **0.2.1-rc.2** 上开发和测试。
+> 版本 1.3.35 · 在 Windows + DSH 桌面版 **0.2.1-rc.2** 上开发和测试。
 
 ---
 
@@ -266,17 +266,26 @@ dsh plugin --profile desktop add D:/path/to/dsh-private-background
 
 费用弹窗的底色写在 **cost-meter 自己的样式表**里，末尾带一个 `/ 1` 把 alpha 强行压回不透明，所以从本插件的样式表改不到它 —— 只能改它的文件。代价是 **cost-meter 每升级一次，补丁就被冲掉一次**。
 
-为此有三层兜底，任何一层活着就够：
+为此有五个兜底，任何一层活着就够：
 
 | 层 | 时机 | 说明 |
 |---|---|---|
 | 装配 | 每次 DSH 启动 | 宿主半边 `apply()` 里查一次，缺就补 |
 | 监视 | 运行中 | 盯着那个目录，文件被重写后约 0.4 秒补回 |
+| 指纹轮询 | 运行中 | 每 30 秒看一眼文件有没有变过，兜住“事件没送达” |
 | **登录自启动** | 每次登录 Windows | 独立脚本，不依赖 DSH 是否装起来 |
+| **双击兜底** | 你想起来的时候 | 桌面上的 `修复费用弹窗玻璃.cmd` |
+
+> **1.3.35 修掉的那个坑**：cost-meter 升级会把整个包目录删掉重建，change 事件经常正好落在“文件还不存在”的那几百毫秒里。以前读到“文件不存在”就永久放手 —— 所以你会觉得**每次更新都必丢**，而且只能靠重启 DSH 救回来。现在这种撞车会自己退避重试（约 7 秒），再不行还有那个 30 秒的轮询。
 
 自启动项是 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\DSHBG-CostMeterHeal`，跑的是 `tools/cost-meter-heal.mjs`（幂等，静默）。
 
-补丁写进文件后，**已打开的窗口不会自己变** —— 它要在下次加载时才生效，所以最省事的判断是重启 DSH。日志在 `~/.dsh/dshbg-cost-meter-heal.log`，每次装配/修复各留一行：
+补丁写进文件后，**已打开的窗口不会自己变** —— 它要在下次加载时才生效。所以补完之后：
+
+- 先按 **Ctrl + R** 刷新 DSH 窗口，通常就够了；
+- 没反应就完全退出 DSH 再打开。
+
+日志在 `~/.dsh/dshbg-cost-meter-heal.log`，每次装配 / 监视 / 登录各留一行，`already` 不落盘：
 
 ```bash
 # 立刻补一次（不重启）
@@ -285,6 +294,8 @@ node "D:/dsh-plugins/custom-background/tools/cost-meter-heal.mjs"
 # 撤掉补丁并关掉自动修复
 node "D:/dsh-plugins/custom-background/tools/cost-meter-heal.mjs" --revert
 ```
+
+不想开终端就双击 `修复费用弹窗玻璃.cmd`（仓库根目录，桌面也放了一份）：它会自己找 `node`，补完告诉你 DSH 开着还是关着、接下来该按 `Ctrl+R` 还是直接打开。
 
 ---
 
@@ -310,7 +321,7 @@ node "D:/dsh-plugins/custom-background/tools/cost-meter-heal.mjs" --revert
 ## 开发
 
 ```sh
-node tools/smoke-test.cjs   # 405 项：模块契约、槽位注册、样式表、层叠与状态机
+node tools/smoke-test.cjs   # 411 项：模块契约、槽位注册、样式表、层叠与状态机
 node tools/store-test.cjs   # 94 项：存储与判重
 ```
 

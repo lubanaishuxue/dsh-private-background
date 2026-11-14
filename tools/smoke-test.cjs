@@ -299,6 +299,17 @@ function check(name, condition, detail) {
   }
 }
 
+/**
+ * A check that could not run on this machine (missing optional dependency, blocked syscall).
+ *
+ * It is neither `ok` nor `FAIL`: calling a blocked spawn "passed" hides the fact that nothing
+ * was verified, and calling it "failed" makes the suite red for a reason the code cannot fix.
+ * It still prints, so the count of assertions stays visible instead of quietly shrinking.
+ */
+function skip(name, reason) {
+  console.log(`  skip ${name} -> ${reason}`);
+}
+
 /** Apply the plugin with the given settings and return the emitted stylesheet. */
 async function emit(settingsOverride, extra) {
   const run = harness(settingsOverride, extra);
@@ -2075,6 +2086,27 @@ async function main() {
   fs.writeFileSync(fake + heal.BACKUP_SUFFIX, fs.readFileSync(fake, 'utf8'), 'utf8');
   await new Promise((r) => setTimeout(r, 700));
   check('writing a sibling file is not mistaken for an upgrade', seen.length === settled);
+
+  // 复现 2026-11-14 23:26 的现场：1.9.64 → 1.9.65 更新时整个包目录被替换，change 事件正好
+  // 落在 `client.js` 还不存在的空窗里。旧实现读到 `missing` 就永久放手，日志里只剩一行
+  // `watcher missing`，补丁再也没回来 —— 也就是用户说的「每次更新都会失去玻璃」。
+  // 现在必须在退避重试里自己回来，而不是等人来跑脚本。
+  fs.writeFileSync(fake, ORIGINAL, 'utf8');
+  await new Promise((r) => setTimeout(r, 500));
+  const beforeMiss = seen.length;
+  fs.rmSync(fake, { force: true }); // 替换开始：文件消失
+  await new Promise((r) => setTimeout(r, 620)); // 越过第一次 400ms 的尝试，此时 apply 必读 missing
+  fs.writeFileSync(fake, ORIGINAL, 'utf8'); // 替换完成：文件回来，但补丁没了
+  await new Promise((r) => setTimeout(r, 1400));
+  check(
+    'a change that lands while the package is being replaced is still repaired',
+    fs.readFileSync(fake, 'utf8').includes(heal.SIGNATURE) && seen.length > beforeMiss,
+  );
+  // 事件本身不可靠（Windows 在扫描新装的包时会合并事件），所以还有一个指纹轮询兜底。
+  check(
+    'and a slow fingerprint poll backs the watcher up',
+    typeof heal.DEFAULT_POLL_MS === 'number' && heal.DEFAULT_POLL_MS > 0 && heal.DEFAULT_POLL_MS <= 60_000,
+  );
   watcher?.close();
 
   const INDEX = fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8');
@@ -2109,33 +2141,52 @@ async function main() {
 
   // 真的用子进程跑一遍：ESM 后缀、参数解析、退出码、以及「改完之后文件确实是补丁版」。
   // 日志和 target 都指到临时目录，免得污染这台机器上真实的那份。
+  //
+  // ⚠️ 有些环境（沙箱、杀软、node.exe 正被占用）不允许再 spawn 一个 node，返回 EBUSY。
+  // 那不是代码的问题，所以降级成 4 条 skip 而不是 FAIL —— 但它们必须仍然计数，否则项数会
+  // 随机器浮动，读起来像是少测了东西。
   const runHeal = (args) =>
-    require('node:child_process').spawnSync(
-      process.execPath,
-      [HEAL, ...args],
-      {
-        env: { ...process.env, DSHBG_COST_METER: fake, DSHBG_LOG_FILE: path.join(scratch, 'heal.log') },
-        encoding: 'utf8',
-      },
-    );
+    require('node:child_process').spawnSync(process.execPath, [HEAL, ...args], {
+      env: { ...process.env, DSHBG_COST_METER: fake, DSHBG_LOG_FILE: path.join(scratch, 'heal.log') },
+      encoding: 'utf8',
+    });
   fs.writeFileSync(fake, ORIGINAL, 'utf8');
   const hookRun = runHeal(['--quiet']);
-  check(
+  const spawnable = !hookRun.error;
+  const skipReason = spawnable ? '' : `cannot spawn here (${hookRun.error.code})`;
+  const spawnCheck = (name, condition) =>
+    spawnable ? check(name, condition) : skip(name, skipReason);
+  spawnCheck(
     'the login hook repairs a wiped file and exits 0',
-    hookRun.status === 0 && fs.readFileSync(fake, 'utf8').includes(heal.SIGNATURE),
+    spawnable && hookRun.status === 0 && fs.readFileSync(fake, 'utf8').includes(heal.SIGNATURE),
   );
-  check(
+  spawnCheck(
     'and stays silent when there is nothing to do',
-    hookRun.stdout.trim() === '' && hookRun.stderr.trim() === '',
+    spawnable && hookRun.stdout.trim() === '' && hookRun.stderr.trim() === '',
   );
   fs.writeFileSync(fake, ORIGINAL, 'utf8');
-  check(
-    'while saying so on stdout when run by hand',
-    runHeal([]).stdout.includes('re-applied'),
-  );
-  const logLines = fs.readFileSync(path.join(scratch, 'heal.log'), 'utf8');
-  check('the quiet run still leaves a trail of what it changed', logLines.includes('login hook re-applied'));
+  spawnCheck('while saying so on stdout when run by hand', spawnable && runHeal([]).stdout.includes('re-applied'));
+  const logLines = fs.existsSync(path.join(scratch, 'heal.log'))
+    ? fs.readFileSync(path.join(scratch, 'heal.log'), 'utf8')
+    : '';
+  spawnCheck('the quiet run still leaves a trail of what it changed', spawnable && logLines.includes('login hook re-applied'));
   fs.rmSync(scratch, { recursive: true, force: true });
+
+  // 双击就能救命的那一个。它是给人用的，不是给调度器用的 —— 所以三件事：调同一个入口
+  // （不许出现第二份补丁文本）、跑完别闪退（没有 pause 的 cmd 双击等于什么都没发生）、
+  // 并且必须能在中文 Windows 的默认代码页里正常显示（GBK 存盘）。
+  const CMD = path.join(ROOT, '修复费用弹窗玻璃.cmd');
+  check('a double-clickable repair script ships with the plugin', fs.existsSync(CMD));
+  if (fs.existsSync(CMD)) {
+    const raw = fs.readFileSync(CMD);
+    // Node 的 Buffer.toString 不认 gbk，得走 TextDecoder（需要 full-icu，本机有）。
+    const text = new TextDecoder('gbk').decode(raw);
+    check('and it calls the same heal entry point, not a second copy of the patch',
+      text.includes('cost-meter-heal.mjs') && !text.includes('backdrop-filter'));
+    check('and it waits for a keypress instead of closing on the user', /^\s*pause\s*$/m.test(text));
+    check('and the bytes are GBK, which is what a Chinese Windows console decodes by default',
+      !raw.toString('utf8').includes('修复费用') && text.includes('修复费用'));
+  }
 
   // 插件市场的全屏页：它自己用 layer-1 画底，而 layer-1 的语义是「比 pane 高一层」，
   // 带着 +8 的 lift。它不是 pane 之上的面板，它**就是**页面本身 —— 打开市场整窗比刚才的

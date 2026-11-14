@@ -28,6 +28,16 @@ export const BACKUP_SUFFIX = '.dshbg-orig';
 /** Present = auto-repair disabled (`--revert` leaves it behind on purpose). */
 export const OFF_SUFFIX = '.dshbg-off';
 
+/**
+ * How often the repair side re-checks the file's fingerprint without an event.
+ *
+ * 30s is chosen against what the user actually sees: a wiped patch cannot repaint an open
+ * window, so a fix only helps once something reloads the bundle. Half a minute keeps "loaded
+ * again" close enough to "it happened" that a plain refresh of the window is enough, while a
+ * `stat()` every 30 seconds is invisible next to anything else the host does.
+ */
+export const DEFAULT_POLL_MS = 30_000;
+
 /** The tail of the offending declaration. Patch goes immediately after it. */
 export const MARKER = 'bg-base,#fff)) r g b / 1)}';
 
@@ -150,6 +160,15 @@ export function apply(options = {}) {
  * and a handle on the old inode stops reporting. `filename` is filtered so the sibling
  * `.dshbg-orig` / `.dshbg-off` writes this module makes do not look like upgrades.
  *
+ * ⚠️ An install does not swap the file in one step: the directory is torn down and rebuilt, so
+ * a change event routinely lands *inside* the gap where `client.js` does not exist yet. The
+ * handler used to call `apply()` once, get `missing`, and give up forever - which is exactly
+ * how 1.9.64 → 1.9.65 lost the patch at 23:26 on 2026-11-14, leaving `watcher missing` as the
+ * only trace. Two things fix it: `missing` is retried with backoff, and a slow fingerprint
+ * poll backs the watcher up for the case where the event never fires at all.
+ *
+ * @param {object} [options]
+ * @param {number} [options.pollMs] fingerprint interval; `0` disables the poll (tests).
  * @returns {{close: () => void} | null} null when there is nothing to watch (not installed,
  *   or the runtime has no usable watcher). Never throws.
  */
@@ -157,34 +176,97 @@ export function watchForWipe(options = {}, onChange = () => {}) {
   const target = options.target || defaultTarget();
   const directory = path.dirname(target);
   const base = path.basename(target);
+  const pollMs = options.pollMs ?? DEFAULT_POLL_MS;
+
+  /** Identity of the installed file, or `''` while it is absent mid-install. */
+  function fingerprint() {
+    try {
+      const stat = fs.statSync(target);
+      return `${stat.mtimeMs}:${stat.size}`;
+    } catch {
+      return '';
+    }
+  }
+
   let timer = null;
   let watcher = null;
+  let poller = null;
+  let closed = false;
+  let seen = fingerprint();
+
+  function later(delay, fn) {
+    const handle = setTimeout(() => {
+      timer = null;
+      fn();
+    }, delay);
+    if (typeof handle.unref === 'function') handle.unref();
+    return handle;
+  }
+
+  function report(result) {
+    try {
+      onChange(result);
+    } catch {
+      // A timer callback that throws is an unhandled exception in the host's main process.
+      // There is no cosmetic patch worth that.
+    }
+  }
+
+  /**
+   * Apply, and if the package is mid-replacement, come back for it. The delays cover the
+   * whole window a pnpm install can leave the file absent (~7s total); they are not an
+   * arbitrary number of tries, they are the install's own duration.
+   */
+  const RETRY = [320, 640, 1200, 2000, 3000];
+
+  function settle(attempt) {
+    if (closed) return;
+    let result;
+    try {
+      result = apply({ target });
+    } catch (error) {
+      report({ status: 'error', target, error });
+      return;
+    }
+    if (result.status === 'missing' && attempt < RETRY.length) {
+      timer = later(RETRY[attempt], () => settle(attempt + 1));
+      return;
+    }
+    seen = fingerprint();
+    // `missing` after every retry means the plugin is genuinely gone (uninstalled, or the
+    // profile is being rebuilt); there is nothing to report to a user who cannot act on it.
+    if (result.status !== 'missing') report(result);
+  }
 
   try {
     if (!fs.existsSync(directory)) return null;
     watcher = fs.watch(directory, { persistent: false }, (_event, filename) => {
       if (filename && String(filename) !== base) return;
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        timer = null;
-        try {
-          onChange(apply({ target }));
-        } catch {
-          // A timer callback that throws is an unhandled exception in the host's main
-          // process. There is no cosmetic patch worth that.
-        }
-      }, 400);
-      if (typeof timer.unref === 'function') timer.unref();
+      timer = later(400, () => settle(0));
     });
     if (typeof watcher.unref === 'function') watcher.unref();
   } catch {
     return null;
   }
 
+  // The watcher fires on the *directory*, and Windows coalesces those events while the
+  // antivirus scans a fresh install. A cheap stat on a slow loop costs nothing and covers the
+  // case where no event arrives at all - the one case that used to need a human.
+  if (pollMs > 0) {
+    poller = setInterval(() => {
+      if (closed) return;
+      if (fingerprint() !== seen && !timer) settle(0);
+    }, pollMs);
+    if (typeof poller.unref === 'function') poller.unref();
+  }
+
   return {
     close() {
+      closed = true;
       try {
         if (timer) clearTimeout(timer);
+        if (poller) clearInterval(poller);
         watcher.close();
       } catch {
         // Already gone.

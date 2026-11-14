@@ -1,3 +1,10 @@
 # Keep every text file on LF so a Windows editor cannot turn a one-line change
 # into a whole-file diff. The repo had mixed line endings before this file existed.
 * text=auto eol=lf
+
+# ⚠️ Windows batch files are the one exception, and it is not cosmetic: cmd.exe reads a
+# .cmd line by line, and with LF-only endings `goto :label` and the `:label` it jumps to
+# stop resolving - the script silently falls through to the end. CRLF is part of the file
+# format here, so a checkout on another machine must not normalise it away.
+*.cmd text eol=crlf
+*.bat text eol=crlf
