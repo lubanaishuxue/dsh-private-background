@@ -2380,6 +2380,49 @@ ${frostedBandCss(['[data-dockkit-strip]'], stickyHeadRecipe(settings))}`;
     }
 
     /**
+     * 「compact · 已压缩 280 条历史记录」那一条 —— 它会**压到下面的字**。
+     *
+     * 宿主的规则是（`MessageList.module.css`）：
+     *
+     * ```css
+     * .compactionRow:has(.compactionBody) .compactionButton {
+     *   position: sticky; top: 0; z-index: 7;
+     *   background: var(--dsw-alias-bg-base);
+     * }
+     * ```
+     *
+     * 也就是说：展开之后，那条 24px 的标题变成**吸顶盖**，底色只借用 `bg-base`。
+     * 本插件把 `bg-base` 按「对话底色」滑杆改成了半透明（默认 50%），于是正文往上滚时
+     * **从这条盖子里透出来**，屏幕上就是「compact · 已压缩…」和下一行字压在一起。
+     *
+     * 修法和市场页吸顶栏、代码块表头是同一道题，也是同一份配方：**底下的东西是内容，
+     * 就加模糊**。这里**不碰底色** —— 那层 `bg-base` 正好让盖子和上下左右的对话底色
+     * 完全同色，真正的分界线只有「糊了 / 没糊」；换个不透明度反而会在 24px 上下各留一道
+     * 硬边（那是「新长出来的一道缝」，比原问题显眼）。
+     *
+     * ⚠️ 选择器只认 `_compactionRow` / `_compactionBody` / `_compactionButton` 这三个
+     * **尾缀**（哈希前缀每次构建都会变，`[class$=…]` 和 `[class*=…]` 不同，后者会把
+     * 限宽壳之类的兄弟节点一起选中 —— 1.3.24 在 `_bubble` 上踩过）。三个都是宿主
+     * `className={css.xxx}` 整串赋上去的，所以「尾缀相等」是精确匹配。
+     * ⚠️ **不能给这一条加 `position` / `z-index`**：宿主靠 `sticky` 让它吸顶，
+     * `frostedBandCss()` 那套会写 `position: relative`（它服务的带子本来就不吸顶），
+     * 用在这里等于把盖子拆了。所以这里只写模糊，其余一个字节都不动。
+     * ⚠️ 只在**展开态**（有 `_compactionBody`）生效 —— 收起时它不吸顶、也不盖任何东西，
+     * 给它加模糊只是白花一次合成。
+     */
+    function compactionLidCss(settings) {
+      const { blur } = stickyHeadRecipe(settings);
+      const lid =
+        '[class$="_compactionRow"]:has([class$="_compactionBody"]) [class$="_compactionButton"]';
+      return `
+${prefixed('html[data-dshbg-on]', [lid])} {
+  -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
+  backdrop-filter: blur(${blur}px) saturate(150%) !important;
+}
+`;
+    }
+
+    /**
      * 提问卡片 —— 「向用户提出了几个问题」那张卡（提问中、还没答的那一张）。
      *
      * ⚠️ **它和「已答回执」是两张卡，别弄混。**（1.3.24 的教训）
@@ -3396,6 +3439,9 @@ html[data-dshbg-on] select option:checked {
         // 侧栏文件预览的第二行（路径 + 工具按钮）。紧挨着 `dockStripCss`，两条带子
         // 用同一份配方，中间隔着别的规则容易被人改歪。
         filePreviewBarsCss(settings),
+        // 「已压缩」那条吸顶盖。同一份配方（`stickyHeadRecipe`），所以紧跟着上面两条带子，
+        // 改模糊值时不会漏掉它。
+        compactionLidCss(settings),
         // Last, so the frosted panes are not re-painted by anything above.
         transcriptGlassCss(settings),
         previewCardCss(settings),

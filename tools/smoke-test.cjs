@@ -350,10 +350,15 @@ async function emit(settingsOverride, extra) {
 
 async function main() {
   const base = await emit({});
-  // `DSHBG_DUMP=1 node tools/smoke-test.cjs` 把三条带子的**线上真实规则**打出来。改玻璃配方时
+  // `DSHBG_DUMP=1 node tools/smoke-test.cjs` 把几条带子的**线上真实规则**打出来。改玻璃配方时
   // 光看断言不够 —— 断言是「有没有」，这里是「长什么样」，后者是用户唯一能看见的东西。
   if (process.env.DSHBG_DUMP) {
-    for (const key of ['[data-dshbg-head]', '[data-dockkit-strip]', '[data-textpreview-path]']) {
+    for (const key of [
+      '[data-dshbg-head]',
+      '[data-dockkit-strip]',
+      '[data-textpreview-path]',
+      '_compactionButton',
+    ]) {
       const re = new RegExp('(\\[data-dshbg-on\\][^{]*' + key.replace(/[[\]]/g, '\\$&') + '[^{]*\\{[^}]*\\})', 'g');
       for (const m of base.css.match(re) || []) console.log('DUMP ' + m.replace(/\s+/g, ' '));
     }
@@ -1753,6 +1758,51 @@ async function main() {
     'nothing inside the bar is frosted a second time',
     (base.css.match(/html\[data-dshbg-on\] \[data-dshbg-head\][^{]*\{[^}]*\}/g) || [])
       .every((rule) => !/backdrop-filter:(?!\s*none)/.test(rule)),
+  );
+
+  console.log('\ncompaction lid');
+  // 「compact · 已压缩 280 条历史记录」那条：展开之后宿主把它变成 `position: sticky; top: 0`
+  // 的 24px 吸顶盖，底色只借 `bg-base` —— 而本插件把 `bg-base` 改成了半透明，于是正文从盖子
+  // 里透出来，屏幕上就是标题和下面的字压在一起（1.3.37 用户报的那张图）。
+  const lidOf = (css) =>
+    (/\[class\$="_compactionButton"\] \{([^}]*)\}/.exec(css) || ['', ''])[1];
+  const blurOf = (body) => (/(-webkit-)?backdrop-filter: blur\((\d+)px\)/.exec(body) || [, , ''])[2];
+  const lid = lidOf(base.css);
+  check('the compaction lid is found by its tail-anchored class name', lid !== '');
+  check(
+    'it takes the same frost as the other bars, not a number of its own',
+    blurOf(lid) !== '' && blurOf(lid) === blurOf(stripFrost),
+    `lid ${JSON.stringify(blurOf(lid))} vs strip ${JSON.stringify(blurOf(stripFrost))}`,
+  );
+  // ⚠️ 三个「不许」都是这条规则的理由本身：
+  //   - 不许改底色：`bg-base` 那层让盖子和上下左右的对话**完全同色**，真正杀字的是模糊；
+  //     换一个不透明度会在 24px 的上下各留一道硬边，那是比原问题更显眼的新缝。
+  //   - 不许碰 `position`：宿主靠 `sticky` 让它吸顶，`frostedBandCss()` 会给带子写
+  //     `position: relative` —— 用在这里等于把盖子拆了（实测会变成跟着滚动的普通行）。
+  //   - 不许碰 `z-index`：宿主写死 7，它要压过正文；我们再写一个数只可能更小。
+  check(
+    'and it changes nothing but the blur',
+    !/background/.test(lid) && !/position:/.test(lid) && !/z-index/.test(lid),
+    lid.replace(/\s+/g, ' ').slice(0, 120),
+  );
+  check(
+    'only the expanded row is treated - collapsed, it sticks to nothing and covers nothing',
+    /\[class\$="_compactionRow"\]:has\(\[class\$="_compactionBody"\]\)/.test(base.css),
+  );
+  // 尾缀锚定，不是子串：`[class*="_compaction"]` 会把 row / body / title 一起选中
+  // （1.3.24 在 `_bubble` 上踩过同样的坑 —— 限宽壳被当成气泡又画了一遍）。
+  check(
+    'tail-anchored selectors only, never a substring match',
+    !/class\*="_compaction/.test(base.css),
+  );
+  // 换个 blur 值也要跟着走：这条读的是 `stickyHeadRecipe()`，不是写死的 32。
+  const loud = (await emit({ menuBlur: 20 })).css;
+  check(
+    'the lid follows the shared recipe when the blur slider moves',
+    blurOf(lidOf(loud)) !== '' &&
+      blurOf(lidOf(loud)) === blurOf(declsOf((/\[data-dockkit-strip\]::before \{([^}]*)\}/.exec(loud) || ['', ''])[1])) &&
+      blurOf(lidOf(loud)) !== blurOf(lid),
+    `default ${blurOf(lid)} -> menuBlur 20 gives ${blurOf(lidOf(loud))}`,
   );
   // Whole-window scope: the sidebar is glass there, so the opaque page must cover it too
   // or the page sits beside a see-through strip.

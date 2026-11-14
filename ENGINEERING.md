@@ -3288,3 +3288,103 @@ emit `'error'`。**EventEmitter 没有 `error` 监听器时的约定是 throw**�
 5. 双击 `修复费用弹窗玻璃.cmd`
 
 前三条都在插件里，后两条不欠 DSH 任何东西。
+
+---
+
+## 1.3.37 · 「compact · 已压缩…」那条吸顶盖：正文从盖子底下透出来
+
+### 用户报的是什么
+
+截图只有 1575×93 —— 刚好是那一条的上下沿。`compact · 已压缩 280 条历史记录（约 123633
+tokens）` 和紧跟的正文 `• Turn 2: …` 叠在一起，两层字都看得见、都读不清。用户的原话：
+**「compact 会压到下面的字，给这个加一层模糊」**。
+
+### 宿主原样
+
+`app.asar` 里那一段（`MessageList.module.css`）：
+
+```css
+.compactionRow:has(.compactionBody) .compactionButton {
+  z-index: 7; background: var(--dsw-alias-bg-base); border-radius: 0;
+  position: sticky; top: 0;
+}
+```
+
+一条 **24px 高的吸顶盖**。展开之后正文从它底下滚过去 —— 这本身是正常的 sticky 行为，
+问题出在底色：`bg-base` 被 `tokenCss` 按「对话底色」滑杆改成了
+`color-mix(in srgb, var(--dshbg-raw-base) 50%, transparent)`。50% 挡不住任何字，
+于是正文成了盖子的第二层文字。
+
+### 为什么是「加模糊」而不是「加底色」
+
+`bg-base` 那 50% 有一个副作用正好是我们要的：**盖子和上下左右的对话完全同色**。
+把它换成更实的颜色，24px 的上下沿会各出现一道硬边 —— 那是一条比原问题更显眼的新缝
+（1.3.30 在插件页表头上交过这笔学费）。真正能杀掉字的只有模糊，填充一个字节都不用动。
+
+所以这条规则**只有两行**：
+
+```css
+html[data-dshbg-on]
+  [class$="_compactionRow"]:has([class$="_compactionBody"]) [class$="_compactionButton"] {
+  -webkit-backdrop-filter: blur(32px) saturate(150%) !important;
+  backdrop-filter: blur(32px) saturate(150%) !important;
+}
+```
+
+`32` 不写死，来自 `stickyHeadRecipe(settings)` —— 和代码块表头、市场页吸顶栏、
+文档路径条同一份配方（`max(menuBlur*2, 32)`，封顶 64）。
+
+### 为什么不能用 `frostedBandCss()`
+
+它第一行就是 `position: relative !important`。那三条带子本来就不吸顶，`relative` 只是给
+`::before` 找包含块；用在这里**等于把盖子拆了**，那条会退回成一行普通内容、跟着一起滚走。
+所以这一条是手写的，而且断言里钉死了「除模糊之外一个字都不改」：不许 `background`、
+不许 `position`、不许 `z-index`（宿主写死 7，它要压过正文）。
+
+### 量出来是什么样
+
+夹具 `lab/repro-compaction-lid.html` 用的是从 `app.asar` 逐字抄下来的那几条宿主规则 + 同形状
+的 DOM，`?bf=1` 才打上上面的规则；探针 `lab/lid-probe.cjs` 用 CDP 截图后量
+**标题右边那一段**（标题只占左边一半，右半边盖子里没有自己写的字，进到那里的像素只可能
+来自从底下滚过去的正文）。
+
+量的是**横向相邻像素差的绝对值均值**（`detail`）—— 笔画就是高频，糊透了趋近 0。
+
+| 配置 | detail | peak | colors | sticky |
+|---|---|---|---|---|
+| 宿主原样（`bg-base` 50%） | **8.73** | 97.9 | 81 | 仍在 |
+| **+ `blur(32) saturate(150%)`** | **0.09** | 0.7 | 66 | 仍在 |
+| 宿主原样，但把底色也摘掉 | 17.49 | 195.5 | 134 | 仍在 |
+| 摘掉底色 + `blur(32)` | 0.17 | 1.0 | 98 | 仍在 |
+
+- 模糊吃掉 **99.0%** 的笔画能量（8.73 → 0.09）；
+- `bg-base` 那 50% 本来就白挡了一半（摘掉底色后基线从 8.73 涨到 17.49，正好一倍左右）；
+- 四行 `sticky` 全是 `true` —— `backdrop-filter` **没有**把吸顶拆掉（这才是这一版最大的风险，
+  不是「糊不糊」，是「糊了之后还吸不吸顶」）。
+
+对比图：`lab/lid-compare.png`。
+
+### 两次假的「通过」
+
+1. **第一次量出「模糊只吃掉 1.5%」**：夹具的滚动量被 `scrollTop` 钳在 168（下面填的内容不够高），
+   盖子根本没进入吸顶状态，量到的 24px 里只有它**自己**的标题字 —— 那当然不会被模糊影响。
+   判据是 `stuck=false`，现在已经打进输出里，以后一眼就能看出这次量的是不是真场景。
+2. **第二次量「吃掉 52%」**：改成量整条盖子，把标题自己的笔画算进了基线。0.09 这个数只有
+   在「盖子底下有正文、且量的地方没有自己的字」时才有意义，所以量的是右侧 62% 之后那一段。
+
+### 已知边界
+
+- 盖子的 `padding: 2px 0` 那两行仍然透 —— 太窄，糊与不糊都看不出来，为此改布局不值得。
+- 正文行的顶沿被盖子裁掉半行，是 sticky 本来的样子；这一版**没有**给正文加
+  `padding-top`（那会改宿主排版，而且只在展开态出现，滚到底会多出一块空白）。
+- 夹具证明的是「机制成立」，真机上的壁纸在对话底色之下，还要再叠一层 50% 的板 ——
+  那只会让额外模糊更不容易被看出来，不会反过来。
+
+### 新增断言（6 项，412 → 418）
+
+- `the compaction lid is found by its tail-anchored class name`
+- `it takes the same frost as the other bars, not a number of its own`（逐字等于标签栏那条）
+- `and it changes nothing but the blur`（不许 `background` / `position` / `z-index`）
+- `only the expanded row is treated …`
+- `tail-anchored selectors only, never a substring match`（`[class*=` 会把 row/body/title 一起选中）
+- `the lid follows the shared recipe when the blur slider moves`（`menuBlur: 20` 时跟着变，且仍等于标签栏）
