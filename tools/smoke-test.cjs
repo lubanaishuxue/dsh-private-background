@@ -125,10 +125,6 @@ function makeElement(tag) {
       const handler = el._on === undefined ? undefined : el._on[type];
       if (handler !== undefined) handler({ target: el, ...(props === undefined ? {} : props) });
     },
-    // 左栏开关在拿不到宿主服务时会去点宿主那颗按钮，所以"点了一次"必须是可观测的。
-    click() {
-      el._clicks = (el._clicks === undefined ? 0 : el._clicks) + 1;
-    },
     // 自定义属性的三个方法（见上面 `_vars` 那段）。写在 `style` 上而不是元素上，
     // 因为 `client.js` 调的是 `el.style.setProperty(...)`。
     style: {
@@ -215,12 +211,6 @@ function harness(settingsOverride, extra) {
       if (selector === 'body > [data-dshbg-stack]') {
         return body.children.find((el) => el.hasAttribute('data-dshbg-stack')) || null;
       }
-      // 左栏开关要读的三处位置（见 client.js 的 host sidebar 段）：外壳 frame 上的
-      // `data-sidebar-collapsed`，以及宿主自己那两颗按钮。哪个存在由测试决定 —— 真机上
-      // 同一时刻只有一颗在。
-      if (selector === '#root div:has(> [data-shell-overlay])') return extra && extra.frame ? extra.frame : null;
-      if (selector === '[data-sidebar-opener]') return extra && extra.opener ? extra.opener : null;
-      if (selector === '[data-sidebar-toggle]') return extra && extra.toggle ? extra.toggle : null;
       return null;
     },
     querySelectorAll() { return []; },
@@ -273,11 +263,6 @@ function harness(settingsOverride, extra) {
     slots: {
       inject(name, callback) { callback(); },
       register(options, component) { registered.push({ options, component }); return () => {}; },
-    },
-    // 宿主服务表。`ctx.layout` 是官方提供的左栏开关服务，`bind` 用 `reflect.get('layout',
-    // false)` 去拿 —— 拿不到就走"点宿主按钮"那条退路，所以这里按测试需要挂一个假服务。
-    reflect: {
-      get(name) { return name === 'layout' && extra && extra.layout ? extra.layout : undefined; },
     },
   };
 
@@ -2494,116 +2479,6 @@ async function main() {
   check('composer opacity control is on the page', blob.includes('输入框不透明度'));
   check('finish control is on the page', blob.includes('液态玻璃'));
   check('panel opacity control is still there', blob.includes('面板不透明度'));
-
-  // ------------------------------------------------------------------ left sidebar
-  /**
-   * 左栏开没开是**宿主的**状态：`ui-layout` 的 root store 里 `sidebar === 0` 就是收起，
-   * 宿主把它投影成 frame 上的 `data-sidebar-collapsed`。插件这边一个字节都不存 —— 存了
-   * 就有第二个真相，用户按一次 Ctrl+B 两边就分叉。下面这几条把三件事钉住：读的是谁、
-   * 写的是谁、以及"没有可切换的对象"时是什么样。
-   */
-  console.log('\nleft sidebar switch');
-  check('the switch is on the settings page', blob.includes('显示左侧栏'));
-  check('and it sits in its own section, not among the wallpaper controls', blob.includes('界面'));
-
-  const frameOf = (collapsed) => {
-    const frame = makeElement('div');
-    if (collapsed) frame.setAttribute('data-sidebar-collapsed', 'true');
-    return frame;
-  };
-  const collapsedRun = await emit({}, { frame: frameOf(true) });
-  check(
-    'a collapsed left column reads as off',
-    collapsedRun.window.__dshbgSidebar().shown === false,
-    JSON.stringify(collapsedRun.window.__dshbgSidebar()),
-  );
-  const openRun = await emit({}, { frame: frameOf(false) });
-  check('an expanded one reads as on', openRun.window.__dshbgSidebar().shown === true);
-  check(
-    'a screen with no shell offers nothing to switch',
-    (await emit({})).window.__dshbgSidebar().shown === null,
-  );
-  // 收起态才挂出来的那颗「展开」按钮是第二个证据：宿主换了外壳结构、frame 认错的时候，
-  // 光看属性会永远读成「显示中」，而这颗按钮在就一定是收起。
-  const strayRun = await emit({}, { frame: frameOf(false), opener: makeElement('button') });
-  check(
-    'the expand button outranks a frame that looks expanded',
-    strayRun.window.__dshbgSidebar().shown === false,
-  );
-
-  // 写入口：官方服务优先。
-  let toggles = 0;
-  const serviceRun = await emit({}, { frame: frameOf(false), layout: { toggleSidebar() { toggles += 1; } } });
-  serviceRun.window.__dshbgSidebar(false);
-  check('the official layout service is asked first', toggles === 1, `toggles=${toggles}`);
-  check('and the probe reports it had a service to ask', serviceRun.window.__dshbgSidebar().service === true);
-  // 点下去的那一两帧里宿主还没重绘：开关先按乐观值走，否则会先弹回去再弹回来。
-  const optimistic = serviceRun.window.__dshbgSidebar();
-  check(
-    'the switch moves one frame before the host repaints',
-    optimistic.painted === false && optimistic.shown === true,
-    JSON.stringify(optimistic),
-  );
-
-  // 幂等：宿主已经在那个位置，就一次也别翻 —— 盲翻的后果是「点一下没反应，点两下才回来」。
-  let idleToggles = 0;
-  const idleRun = await emit({}, { frame: frameOf(true), layout: { toggleSidebar() { idleToggles += 1; } } });
-  idleRun.window.__dshbgSidebar(false);
-  check('asking for the state it is already in touches nothing', idleToggles === 0, `toggles=${idleToggles}`);
-
-  // 退路：服务不在就点宿主自己那颗按钮，效果一样，都是宿主改自己的状态。
-  const collapseButton = makeElement('button');
-  const fallbackRun = await emit({}, { frame: frameOf(false), toggle: collapseButton });
-  fallbackRun.window.__dshbgSidebar(false);
-  check(
-    'without a service the host’s own button is clicked instead',
-    collapseButton._clicks === 1,
-    `clicks=${collapseButton._clicks}`,
-  );
-
-  // 一个字节都不落盘：这份设置是壁纸的，不是宿主的。
-  const quietRun = await emit({}, { frame: frameOf(false), layout: { toggleSidebar() {} } });
-  const stored = JSON.stringify([...quietRun.store]);
-  quietRun.window.__dshbgSidebar(false);
-  check('the switch writes nothing to the plugin’s own settings', JSON.stringify([...quietRun.store]) === stored);
-  const defaultsBlock = CODE.slice(CODE.indexOf('const DEFAULTS'), CODE.indexOf('const DEFAULTS') + 900);
-  check(
-    'and it never becomes a settings key',
-    !defaultsBlock.includes('sidebarShown') &&
-      !/PRESENTATION_KEYS = \[[^\]]*sidebarShown/.test(CODE) &&
-      !/GLOBAL_KEYS = \[[^\]]*sidebarShown/.test(CODE),
-    defaultsBlock.includes('sidebarShown') ? 'found in DEFAULTS' : 'found in a key group',
-  );
-
-  // 界面上的开关必须是这个状态，而不是一个本地初值。
-  const switchOf = (node) => {
-    let found = null;
-    const visit = (current) => {
-      if (found !== null || current === null || typeof current !== 'object') return;
-      if (Array.isArray(current)) {
-        current.forEach(visit);
-        return;
-      }
-      if (current.props !== undefined && current.props !== null && current.props.label === '显示左侧栏') {
-        found = current;
-        return;
-      }
-      if (current.props !== undefined && current.props !== null) Object.values(current.props).forEach(visit);
-      if (Array.isArray(current.children)) current.children.forEach(visit);
-    };
-    visit(node);
-    return found;
-  };
-  const offSwitch = switchOf(collapsedRun.registered[0].component({ view: 'page' }));
-  const onSwitch = switchOf(openRun.registered[0].component({ view: 'page' }));
-  check('the rendered switch follows the host, collapsed', offSwitch !== null && offSwitch.props.checked === false);
-  check('the rendered switch follows the host, expanded', onSwitch !== null && onSwitch.props.checked === true);
-  check(
-    'with no left column the switch is present but inert',
-    offSwitch !== null && offSwitch.props.disabled === false && switchOf((await emit({})).registered[0].component({ view: 'page' })).props.disabled === true,
-  );
-
-  check('the probe is reachable from the console', /window\.__dshbgSidebar = \(want\) =>/.test(CODE));
 
   // The sliders belong to one background now, and the page has to say so - otherwise the
   // first switch looks like the plugin lost the user's settings.
