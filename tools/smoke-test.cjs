@@ -267,16 +267,39 @@ function harness(settingsOverride, extra) {
   const pins = {
     unpinned: [],
     calls: [],
+    subscribes: 0,
+    listeners: new Set(),
+    // 宿主里这一行是「判定要不要改 → 改 → 通知订阅者」。桩里照抄这条链路：
+    // 测试要能模拟「用户在左栏点了图钉」，那是**不经过插件**的一次外部改动。
+    set(id, pinned) {
+      const has = pins.unpinned.includes(id);
+      // 和宿主同一条规则：请求与现状已经一致时什么都不做。
+      if (pinned !== has) return;
+      pins.unpinned = pinned ? pins.unpinned.filter((entry) => entry !== id) : [...pins.unpinned, id];
+      for (const listener of [...pins.listeners]) listener();
+    },
+    /** 模拟用户在左栏点「从左侧栏取消固定」。 */
+    unpin(id) {
+      pins.set(id, false);
+    },
   };
   const pinFace = {
     setPinned(id, pinned) {
       pins.calls.push([id, pinned]);
-      const has = pins.unpinned.includes(id);
-      // 和宿主同一条规则：请求与现状一致时什么都不做。
-      if (pinned !== has) return;
-      pins.unpinned = pinned ? pins.unpinned.filter((entry) => entry !== id) : [...pins.unpinned, id];
+      pins.set(id, pinned);
     },
-    hooks: { entryPins: { getSnapshot: () => pins.unpinned, subscribe: () => () => {} } },
+    hooks: {
+      entryPins: {
+        getSnapshot: () => pins.unpinned,
+        subscribe: (listener) => {
+          pins.subscribes += 1;
+          pins.listeners.add(listener);
+          return () => {
+            pins.listeners.delete(listener);
+          };
+        },
+      },
+    },
   };
   const ctx = {
     effect(fn) { const disposer = fn(); return typeof disposer === 'function' ? disposer : () => {}; },
@@ -2747,32 +2770,54 @@ async function main() {
   );
 
   // 宿主那边还有第二道闸：行被「取消固定」之后只进「更多」，重新注册也不会回到列表里。
-  // 「开关明明开着、按钮却看不见」就是这两道闸各管一半造成的，所以开的时候必须顺带固定回去。
-  base.pins.unpinned = ['custom-background'];
-  const callsBefore = base.pins.calls.length;
-  const repin = base.registered[0].component({ view: 'page' });
-  const repinSwitch = findSwitch(repin, '在左侧栏显示');
-  check('a folded row is the state the switch has to fix', repinSwitch !== null);
-  if (repinSwitch !== null) {
-    repinSwitch.props.onChange(false);
-    repinSwitch.props.onChange(true);
-  }
+  // 这两扇门其实是同一个决定 —— 在左栏点「取消固定」就等于关掉这个开关。
+  // 不承认这一点，设置页就会一直说「开着」，而界面上什么都没有（用户报的就是这个）。
+  const subscribesBefore = base.pins.subscribes;
+  base.pins.unpin('custom-background');
+  await new Promise((resolve) => setTimeout(resolve, 12));
+  const foldedPage = base.registered[0].component({ view: 'page' });
+  const foldedSwitch = findSwitch(foldedPage, '在左侧栏显示');
   check(
-    'turning the switch on un-folds the row the host hid in 「更多」',
-    base.pins.unpinned.length === 0,
-    base.pins.unpinned.join(','),
+    'closing the row from the sidebar turns the switch off',
+    foldedSwitch !== null && foldedSwitch.props.checked === false,
   );
   check(
+    'and the icon leaves with the fold',
+    !base.registered.some((entry) => entry.options.name === 'sidebar.panellist'),
+    base.registered.map((entry) => entry.options.name).join(','),
+  );
+  check(
+    'the fold is written down, not just painted',
+    String(base.store.get('dsh.custom-background.settings.v4') || '').includes('"sidebarEntry":false'),
+    String(base.store.get('dsh.custom-background.settings.v4')),
+  );
+  check(
+    'one listener, however many commits it lives through',
+    base.pins.subscribes === subscribesBefore,
+    `${subscribesBefore} -> ${base.pins.subscribes}`,
+  );
+
+  // 翻回去仍然是「注册 + 固定」两件事一起做，否则会回到「开关开着、按钮看不见」。
+  if (foldedSwitch !== null) foldedSwitch.props.onChange(true);
+  check(
+    'flipping it back on registers the icon again',
+    base.registered.some((entry) => entry.options.name === 'sidebar.panellist'),
+  );
+  check('and pins the row it just registered', base.pins.unpinned.length === 0, base.pins.unpinned.join(','));
+  check(
     'and it asks for the right id',
-    base.pins.calls
-      .slice(callsBefore)
-      .some(([id, pinned]) => id === 'custom-background' && pinned === true),
-    JSON.stringify(base.pins.calls.slice(callsBefore)),
+    base.pins.calls.some(([id, pinned]) => id === 'custom-background' && pinned === true),
+    JSON.stringify(base.pins.calls.slice(-3)),
   );
   const report = typeof base.window.__dshbgEntry === 'function' ? base.window.__dshbgEntry() : null;
   check(
     'the probe reports registered, pin-control available, and not folded',
     report !== null && report.enabled === true && report.pinControl === true && report.folded === false,
+    JSON.stringify(report),
+  );
+  check(
+    'and it says whether the plugin is listening to the host',
+    report !== null && report.watching === true,
     JSON.stringify(report),
   );
 

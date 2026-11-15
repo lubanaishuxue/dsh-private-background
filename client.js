@@ -172,7 +172,7 @@ window.__ModuleLoader__.load({
         fullWindowHint: '关掉时只有工作区换背景，左侧对话列表保持原样；打开则整窗铺满。',
         sidebar: '左侧栏',
         sidebarEntry: '在左侧栏显示「壁纸」按钮',
-        sidebarEntryHint: '关掉后左侧栏里那枚壁纸图标立即消失。设置页本身仍在「设置 → 插件」里，随时可以打开它把按钮要回来。',
+        sidebarEntryHint: '关掉后左侧栏里那枚壁纸图标立即消失。在左栏点它的「取消固定」也等于关掉这里 —— 两边是同一个开关。设置页本身仍在「设置 → 插件」里，随时可以把按钮要回来。',
         font: '字体颜色',
         fonts: { theme: '跟随主题', auto: '自动', light: '浅色', dark: '深色', custom: '自定义' },
         fontHint: '「自动」按背景实际明暗选黑或白；「跟随主题」不做任何改动。',
@@ -237,7 +237,7 @@ window.__ModuleLoader__.load({
         fullWindowHint: 'Off: only the work area changes and the sidebar keeps its own look. On: the wallpaper fills the window.',
         sidebar: 'Sidebar',
         sidebarEntry: 'Show the "Wallpaper" button in the sidebar',
-        sidebarEntryHint: 'Off takes the icon out of the sidebar at once. This page stays available under Settings → Plugins, so you can always turn it back on.',
+        sidebarEntryHint: 'Off takes the icon out of the sidebar at once - and unpinning it there turns this off too, because they are one switch. This page stays under Settings → Plugins, so you can always turn it back on.',
         font: 'Text colour',
         fonts: { theme: 'Theme', auto: 'Auto', light: 'Light', dark: 'Dark', custom: 'Custom' },
         fontHint: '"Auto" picks black or white from the background. "Theme" leaves text untouched.',
@@ -4823,8 +4823,12 @@ html[data-dshbg-on] select option:checked {
             unsubscribe();
             // The slot registration dies with the plugin fiber anyway; forgetting the handle
             // keeps `syncSidebarEntry` from "disposing" something already gone.
+            unwatchEntryPins();
+            if (entryPinsRetry !== 0) clearTimeout(entryPinsRetry);
+            entryPinsRetry = 0;
             entrySlots = null;
             entryDispose = null;
+            pinFace = null;
             marquee.dispose();
             composerMenu.dispose();
             hostPanel.dispose();
@@ -4873,9 +4877,21 @@ html[data-dshbg-on] select option:checked {
      *    registered, unregistered and registered again and still never appear. `showSidebarEntry`
      *    is what closes that second gate; without it the switch was technically working and
      *    visibly doing nothing.
+     * 5. **The host can move first.** Closing the row from the sidebar (the 「取消固定」 pin) is
+     *    the same decision this switch makes, arriving through the other door. Ignoring it is
+     *    how the switch ends up claiming "on" while the row is nowhere to be seen - so the pin
+     *    list is subscribed, and a fold writes the switch off. One decision, one stored answer,
+     *    two ways in; the reverse direction is not allowed to re-assert itself, or the two
+     *    would take turns undoing each other.
      */
     let entrySlots = null; // the `slots` service, captured once in `apply`
     let entryDispose = null; // live `sidebar.panellist` registration; null means hidden
+    let pinFace = null; // the host's `SidebarRootInjected` face, once found
+    let entryPinsSource = null; // the snapshot we are subscribed to; identity guards doubles
+    let entryPinsStop = null; // its unsubscribe
+    let foldWritePending = false; // a host fold is being turned into a settings write
+    let entryPinsRetry = 0; // timer handle for the load-order retry
+    let entryPinsTries = 0; // attempts spent on it
 
     /** Register the icon. Returns the disposer, or null when there is no service to ask. */
     function mountSidebarEntry() {
@@ -4910,6 +4926,10 @@ html[data-dshbg-on] select option:checked {
      * lookup simply finds nothing and the switch keeps working the way it used to.
      */
     function hostPinFace() {
+      // The face is a live object for the lifetime of the shell registration, so it is looked up
+      // once. `syncSidebarEntry` runs on every commit - i.e. on every pointer move of a slider -
+      // and a registry scan there would be paid for nothing.
+      if (pinFace !== null) return pinFace;
       if (entrySlots === null) return null;
       let entries = [];
       try {
@@ -4936,7 +4956,10 @@ html[data-dshbg-on] select option:checked {
         } catch (failure) {
           continue;
         }
-        if (face !== null && typeof face === 'object' && typeof face.setPinned === 'function') return face;
+        if (face !== null && typeof face === 'object' && typeof face.setPinned === 'function') {
+          pinFace = face;
+          return face;
+        }
       }
       return null;
     }
@@ -4977,7 +5000,94 @@ html[data-dshbg-on] select option:checked {
     /** `window.__dshbgEntry()` - one line to answer "is the button there, and who hid it". */
     function entryReport() {
       const face = hostPinFace();
-      return { enabled: entryDispose !== null, pinControl: face !== null, folded: hostFoldedEntry(face) };
+      return {
+        enabled: entryDispose !== null,
+        pinControl: face !== null,
+        folded: hostFoldedEntry(face),
+        watching: entryPinsSource !== null,
+      };
+    }
+
+    /**
+     * Subscribe to the host's pin list, once.
+     *
+     * The host's 「取消固定」 pin and this switch are the same decision; without this the two
+     * drift - the row disappears from the sidebar and the settings page keeps saying "on",
+     * which is what the user reported. `subscribe` is the host's own `ObservableSnapshot`, so
+     * the cost is one listener in a store that already exists.
+     */
+    function watchEntryPins() {
+      const face = hostPinFace();
+      const pins = face === null || face.hooks === undefined ? undefined : face.hooks.entryPins;
+      if (pins === undefined || pins === null || typeof pins.subscribe !== 'function') return false;
+      if (entryPinsSource === pins) return true;
+      unwatchEntryPins();
+      try {
+        const stop = pins.subscribe(onHostFold);
+        entryPinsStop = typeof stop === 'function' ? stop : null;
+        entryPinsSource = pins;
+      } catch (failure) {
+        console.error('[dsh-custom-background] watching the sidebar pins failed:', failure);
+        return false;
+      }
+      // A row that was already folded when the subscription went in still counts.
+      onHostFold();
+      return true;
+    }
+
+    function unwatchEntryPins() {
+      if (entryPinsStop !== null) {
+        try {
+          entryPinsStop();
+        } catch (failure) {
+          // A store that refuses to unsubscribe is not worth a broken teardown.
+        }
+      }
+      entryPinsStop = null;
+      entryPinsSource = null;
+    }
+
+    /**
+     * Keep trying until the sidebar exists.
+     *
+     * The pin list lives on the *shell's* sidebar registration, so whether it is reachable during
+     * this plugin's `apply` depends on module load order - and if nothing else commits afterwards,
+     * a one-shot attempt at startup can miss it and leave the switch silently unsynced. Twelve
+     * tries over five seconds is cheap, bounded, and stops the moment it lands.
+     */
+    function watchEntryPinsSoon() {
+      if (entryPinsSource !== null) return;
+      if (watchEntryPins()) return;
+      if (entryPinsTries >= 12) return;
+      entryPinsTries += 1;
+      entryPinsRetry = setTimeout(watchEntryPinsSoon, 400);
+    }
+
+    /**
+     * The host moved first: its pin took our row out of the list, so the switch follows.
+     *
+     * This is the direction that was missing. It is deliberately one-way - the fold writes the
+     * switch off and never the reverse - because two-way reconciliation between "the switch is
+     * on" and "the row is pinned" would have each side undoing the other on every change.
+     *
+     * The write is deferred out of the host's store notification: it ends in *unregistering*
+     * this entry, and doing that inside the sidebar's own snapshot update would have the host
+     * re-render from inside another store's notification.
+     */
+    function onHostFold() {
+      if (foldWritePending) return;
+      if (state.settings === null || state.settings.sidebarEntry === false) return;
+      if (hostFoldedEntry(hostPinFace()) !== true) return;
+      foldWritePending = true;
+      Promise.resolve().then(() => {
+        foldWritePending = false;
+        // `dispose()` drops the slots handle; anything queued after that must not touch it.
+        if (entrySlots === null) return;
+        // The user may have flipped the switch back within the same frame.
+        if (state.settings === null || state.settings.sidebarEntry === false) return;
+        if (hostFoldedEntry(hostPinFace()) !== true) return;
+        patchSettings({ sidebarEntry: false });
+      });
     }
 
     /**
@@ -4985,6 +5095,10 @@ html[data-dshbg-on] select option:checked {
      * every settings change - and does nothing at all unless the boolean actually moved.
      */
     function syncSidebarEntry() {
+      // Cheap when it is already done (identity check), and this is the one function guaranteed
+      // to keep running: the pin list only becomes reachable once the shell has registered its
+      // sidebar, which can be after this plugin's own `apply`.
+      watchEntryPins();
       const want = state.settings === null || state.settings.sidebarEntry !== false;
       if (want === (entryDispose !== null)) return;
       const previous = entryDispose;
@@ -5172,13 +5286,14 @@ html[data-dshbg-on] select option:checked {
         boot();
       }, []);
 
-      // The switch is the durable answer to "is the button in the sidebar", but the host keeps a
-      // session-level pin list of its own: folding a row into 「更多」 does not move the switch, so
-      // a session can end up with "switch on, row gone". Opening this page is exactly the moment
-      // the user is looking at that switch, so this is where the claim gets re-asserted -
+      // The switch and the sidebar's 「取消固定」 pin are the same decision, so:
+      // - switch on  -> make sure the row is actually pinned, not just registered (the host keeps
+      //   a session-level pin list of its own, and a folded row is invisible even when registered);
+      // - switch off -> nothing to pin; the watcher below owns the other direction.
       // `setPinned` is idempotent, so a page that is already right costs one early return.
       useEffect(() => {
         if (settings.sidebarEntry !== false) showSidebarEntry();
+        watchEntryPins();
       }, [settings.sidebarEntry]);
 
       useEffect(
@@ -5703,7 +5818,8 @@ html[data-dshbg-on] select option:checked {
       );
 
       // The icon, not the column. The column's own visibility belongs to DSH (Ctrl + B); this
-      // switch only decides whether *this plugin* contributes a row to it.
+      // switch only decides whether *this plugin* contributes a row to it. The row's own
+      // 「取消固定」 pin is the same decision from the sidebar's side - see `onHostFold`.
       sections.push(
         h(
           'div',
@@ -6007,6 +6123,9 @@ html[data-dshbg-on] select option:checked {
         entrySlots = ctx.slots;
         try {
           syncSidebarEntry();
+          // The pin list may only appear once the shell has registered its sidebar, which can be
+          // after this module loads - so keep knocking for a few seconds instead of once.
+          watchEntryPinsSoon();
           // 控制台 `__dshbgEntry()`：图标在不在，以及是谁把它按下去的（宿主固定在「更多」里）。
           window.__dshbgEntry = entryReport;
         } catch (failure) {

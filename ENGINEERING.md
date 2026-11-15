@@ -3790,3 +3790,110 @@ function runInject(entry: Pick<StoredEntry, 'inject'>, ...) {
 - 手动「取消固定」在本会话内即时生效（宿主的事）；再打开一次设置页、或拨一下开关，图标回来。
 - 拿不到注入面时（宿主换掉命名），开关仍能注册/撤销，只是不再声称自己固定住了 —— 探针会报
   `pinControl: false`，控制台而不是界面上。
+
+## 1.4.3 · 反方向：在左栏点「关闭」，设置页那个开关也得跟着关
+
+用户回执：
+
+> 然后如果我在左栏点击关闭，但是插件内部还是会显示开启。这个要同步
+
+### 1.4.2 只修了一半
+
+上一版处理的是「**开关 → 宿主**」：开的时候顺手把行固定回列表，因为宿主的 `unpinned`
+独立于注册表，注册了也可能看不见。但另一条路上什么都没做：「**宿主 → 开关**」。
+用户点图钉把行收进「更多」之后，`unpinned` 变了、行没了，而 `settings.sidebarEntry` 还是
+`true` —— 设置页于是理直气壮地显示「开」，界面上却什么都没有。
+
+两扇门本来就是同一个决定，只是从两个方向进来：
+
+| 入口 | 谁的动作 | 以前的结果 |
+|---|---|---|
+| 设置页那个开关 | 插件 | 注册 / 撤注册 + 固定 |
+| 左栏行上的图钉「取消固定」 | 宿主 | 只进 `unpinned`，插件不知道 |
+
+### 官方状态在哪：`hooks.entryPins`
+
+`SidebarRootInjected` 上本来就有这个快照（`ui-sidebar/src/client/contract/slots.ts`）：
+
+```ts
+hooks: {
+  /** Ids of unpinned panel launchers held in memory until plugin reload. */
+  entryPins: ObservableSnapshot<readonly string[]>
+  …
+}
+```
+
+`ObservableSnapshot` 就是 `getSnapshot()` + `subscribe(listener)`，和宿主组件用的同一个
+（`useEntryPins(ids => ids)`）。所以同步不需要轮询、不需要 `MutationObserver`：订阅它，
+一条监听挂在本来就存在的 store 上。
+
+### 为什么是单向
+
+`onHostFold()` 只做一件事：发现我们的 id 在 `unpinned` 里、而设置里还写着 `true`，就把设置
+写成 `false`。**绝不在同一时刻反过来把自己固定回去** —— 那是 1.4.2 的老行为，它和这条新逻辑
+会互相撤销：用户点图钉 → 我们 pin 回去 → 用户再点 → 死循环，而且每一轮都重绘一次列表。
+
+方向由触发者决定：设置变了就驱动宿主，宿主变了就写回设置。两边写的都是同一个值，所以
+不会来回震荡。
+
+### 为什么延后一个微任务
+
+写设置的终点是 `syncSidebarEntry()` → **撤掉自己这条注册**。而 `onHostFold` 是在宿主的
+`store.set` 通知里被调用的，在别人的 store 更新中间去改另一个 store（slot 注册表）会让
+侧栏在别人的通知栈里重渲染。所以 `patchSettings` 走 `Promise.resolve().then()`：
+一帧之内完成，对用户是不可见的，但不在宿主的栈里。
+
+### 语义：关 = 真的没有，不是「收进更多」
+
+可以选择「关 = 只 `setPinned(false)`，行留在「更多」」。没选它，因为：
+
+- 开关叫「在左侧栏显示壁纸按钮」，`关` 应该就是看不到；收进「更多」仍然在左侧栏里，只是折叠了一层，
+  下一个人看到会说「我关掉了它怎么还在」。
+- 留一条「在更多里」的中间态，等于给这个开关引入第三种状态，而这三种状态里有一种无法用复选框表达。
+
+代价写在边界里：想保留「在更多里但不在列表」的人，本插件不提供 —— 那是宿主图钉单独能做到的事，
+一旦经过这个开关就会变成彻底移除。
+
+### 订阅时机
+
+引脚面挂在**外壳**的 sidebar 注册上，本插件 `apply` 时它可能还没注册（模块加载顺序），
+而启动之后如果没有任何 commit，一次性尝试就会永远错过。所以：
+
+```js
+function watchEntryPinsSoon() {
+  if (entryPinsSource !== null) return;      // 已经订上
+  if (watchEntryPins()) return;              // 这一轮就成了
+  if (entryPinsTries >= 12) return;          // 12 × 400ms ≈ 5s，到点放弃
+  entryPinsTries += 1;
+  entryPinsRetry = setTimeout(watchEntryPinsSoon, 400);
+}
+```
+
+`watchEntryPins()` 内部用**快照对象的同一性**去重（`entryPinsSource === pins`），所以
+`syncSidebarEntry` 每次 commit 都调它也只会订一次 —— 拖滑杆时每帧多一次 `===`。
+`dispose` 里退订 + 清掉那个重试定时器。
+
+面本身（`hostPinFace()`）也加了缓存：它原本每次调用都去 `entriesOfSlot('sidebar')` 走一遍并
+逐个 `inject()`，那是给「每帧都调」准备的代码不该付的代价。
+
+### 断言（+6 → 453，ok 449 + skip 4）
+
+- `closing the row from the sidebar turns the switch off` —— 模拟用户点图钉（`pins.unpin()`
+  会真的通知订阅者），开关读回关
+- `and the icon leaves with the fold`
+- `the fold is written down, not just painted` —— `settings.v4` 里出现 `"sidebarEntry":false`
+- `one listener, however many commits it lives through` —— 订阅计数不涨
+- `flipping it back on registers the icon again` / `and pins the row it just registered`
+- `and it says whether the plugin is listening to the host` —— 探针多一个 `watching`
+
+桩那边改了两种形状：`pins` 从「一个数组」变成「改状态 + 通知」的迷你 store（宿主那条
+`pinned !== includes` 的早返回规则照抄，否则幂等判断测不出来），`entryPins.subscribe` 真的
+能订、能退。上一版那个 `subscribe: () => () => {}` 会让整条同步链在测试里静默失效 ——
+**桩不建模的那条路径，测试就永远看不见**，这是同一类错误第二次出现在这个功能上。
+
+### 已知边界
+
+- `关` 是彻底移除：列表和「更多」里都不留。想「留在更多里」的，这是做不到的。
+- 宿主不提供引脚面时（`pinControl: false`），开关照旧工作，但不会跟随图钉 —— 探针会明说。
+- 图钉的 `unpinned` 是内存态（宿主自己说的「until plugin reload」），所以本插件把它当成
+  **一次动作**而不是持久真相：它写进设置的是结果（false），不是那份内存表。
