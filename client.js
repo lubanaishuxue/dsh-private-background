@@ -98,6 +98,10 @@ window.__ModuleLoader__.load({
       // its inner root) and therefore reads darker than the same alpha elsewhere.
       sidebarFill: 40,
       fullWindow: false,
+      // The wallpaper icon in the sidebar's panel list. This is the plugin's own UI, so the
+      // plugin owns the answer - unlike the sidebar's own visibility, which belongs to DSH
+      // and must be read from the host rather than remembered here.
+      sidebarEntry: true,
       font: 'theme',
       fontColor: '#f7f8fa',
     };
@@ -166,6 +170,9 @@ window.__ModuleLoader__.load({
         scope: '作用范围',
         fullWindow: '同时应用到左侧对话栏',
         fullWindowHint: '关掉时只有工作区换背景，左侧对话列表保持原样；打开则整窗铺满。',
+        sidebar: '左侧栏',
+        sidebarEntry: '在左侧栏显示「壁纸」按钮',
+        sidebarEntryHint: '关掉后左侧栏里那枚壁纸图标立即消失。设置页本身仍在「设置 → 插件」里，随时可以打开它把按钮要回来。',
         font: '字体颜色',
         fonts: { theme: '跟随主题', auto: '自动', light: '浅色', dark: '深色', custom: '自定义' },
         fontHint: '「自动」按背景实际明暗选黑或白；「跟随主题」不做任何改动。',
@@ -228,6 +235,9 @@ window.__ModuleLoader__.load({
         scope: 'Scope',
         fullWindow: 'Also apply to the conversation sidebar',
         fullWindowHint: 'Off: only the work area changes and the sidebar keeps its own look. On: the wallpaper fills the window.',
+        sidebar: 'Sidebar',
+        sidebarEntry: 'Show the "Wallpaper" button in the sidebar',
+        sidebarEntryHint: 'Off takes the icon out of the sidebar at once. This page stays available under Settings → Plugins, so you can always turn it back on.',
         font: 'Text colour',
         fonts: { theme: 'Theme', auto: 'Auto', light: 'Light', dark: 'Dark', custom: 'Custom' },
         fontHint: '"Auto" picks black or white from the background. "Theme" leaves text untouched.',
@@ -306,7 +316,7 @@ window.__ModuleLoader__.load({
      * for the scope, the typeface and its colour - those describe the interface, and the
      * interface does not change when the wallpaper does.
      */
-    const GLOBAL_KEYS = ['glassBlur', 'menuBlur', 'fullWindow', 'font', 'fontColor'];
+    const GLOBAL_KEYS = ['glassBlur', 'menuBlur', 'fullWindow', 'sidebarEntry', 'font', 'fontColor'];
 
     const DEFAULT_PRESET = (() => {
       const preset = {};
@@ -386,6 +396,7 @@ window.__ModuleLoader__.load({
         glassBlur: clamp(from.glassBlur === undefined ? DEFAULTS.glassBlur : from.glassBlur, 0, 40),
         menuBlur: clamp(from.menuBlur === undefined ? DEFAULTS.menuBlur : from.menuBlur, 0, 320),
         fullWindow: from.fullWindow === true,
+        sidebarEntry: from.sidebarEntry !== false,
         font: fonts.includes(from.font) ? from.font : DEFAULTS.font,
         fontColor: /^#[0-9a-f]{6}$/i.test(String(from.fontColor)) ? String(from.fontColor) : DEFAULTS.fontColor,
       };
@@ -967,6 +978,7 @@ window.__ModuleLoader__.load({
       state = { ...next, layer: advanceLayer(state.layer, next) };
       if (settingsPatch !== undefined) writeRaw(state.raw);
       scheduleSettle();
+      syncSidebarEntry();
       emit();
     }
 
@@ -4808,6 +4820,10 @@ html[data-dshbg-on] select option:checked {
             disposed = true;
             stop();
             unsubscribe();
+            // The slot registration dies with the plugin fiber anyway; forgetting the handle
+            // keeps `syncSidebarEntry` from "disposing" something already gone.
+            entrySlots = null;
+            entryDispose = null;
             marquee.dispose();
             composerMenu.dispose();
             hostPanel.dispose();
@@ -4831,6 +4847,65 @@ html[data-dshbg-on] select option:checked {
         frame: document.querySelector(frameSelector()) !== null,
         columns: document.querySelectorAll(workAreaColumns().join(',')).length,
       };
+    }
+
+    // ------------------------------------------------------------- sidebar entry
+
+    /**
+     * The wallpaper icon in the sidebar's panel list, and the switch that decides whether it
+     * is there.
+     *
+     * Three things make this more than an `if` at startup:
+     *
+     * 1. **The host listens.** `ui-sidebar` subscribes to `sidebar.panellist` and rebuilds its
+     *    panel list from the result (`syncPanels` -> `createSnapshotStore`), so dropping a
+     *    registration at runtime removes the icon immediately. No reload, no stale row.
+     * 2. **The page stays.** Only the icon is withdrawn; the `main` registration is left alone
+     *    on purpose. Dropping it too would make the host's `retainMainPanels` reset the
+     *    selection back to the conversation - i.e. the switch would destroy the very page it is
+     *    being flipped on, mid-flip. An unreachable `main` entry costs one map slot; kicking the
+     *    user out of their own settings costs them the change they just made.
+     * 3. **The answer lives in settings.** This is the plugin's own UI, so unlike the sidebar's
+     *    own visibility (host state, read from the DOM) this one is stored and replayed.
+     */
+    let entrySlots = null; // the `slots` service, captured once in `apply`
+    let entryDispose = null; // live `sidebar.panellist` registration; null means hidden
+
+    /** Register the icon. Returns the disposer, or null when there is no service to ask. */
+    function mountSidebarEntry() {
+      if (entrySlots === null) return null;
+      return entrySlots.inject('sidebar.panellist', () =>
+        entrySlots.register(
+          {
+            name: 'sidebar.panellist',
+            id: PANEL_ID,
+            // After the host's own entries (plugins is 0), so the icon lands at the bottom of
+            // the list rather than pushing the built-ins down.
+            order: 20,
+            label: () => (currentLang() === 'zh' ? '壁纸' : 'Wallpaper'),
+          },
+          WallpaperIcon,
+        ),
+      );
+    }
+
+    /**
+     * Bring the registration in line with the switch. Called from `commit`, so it runs after
+     * every settings change - and does nothing at all unless the boolean actually moved.
+     */
+    function syncSidebarEntry() {
+      const want = state.settings === null || state.settings.sidebarEntry !== false;
+      if (want === (entryDispose !== null)) return;
+      const previous = entryDispose;
+      entryDispose = null;
+      try {
+        if (!want) previous();
+        else entryDispose = mountSidebarEntry();
+      } catch (failure) {
+        // A slot service that refuses to change must not take the click handler with it: the
+        // switch would look broken and the stack would point at React, not at the cause.
+        console.error('[dsh-custom-background] sidebar entry switch failed:', failure);
+      }
     }
 
     // ------------------------------------------------------------------------ ui
@@ -5521,6 +5596,22 @@ html[data-dshbg-on] select option:checked {
         ),
       );
 
+      // The icon, not the column. The column's own visibility belongs to DSH (Ctrl + B); this
+      // switch only decides whether *this plugin* contributes a row to it.
+      sections.push(
+        h(
+          'div',
+          { key: 'sidebar', className: 'dshbg-section' },
+          h('div', { className: 'dshbg-label' }, text.sidebar),
+          h(Switch, {
+            checked: settings.sidebarEntry !== false,
+            label: text.sidebarEntry,
+            hint: text.sidebarEntryHint,
+            onChange: (value) => patchSettings({ sidebarEntry: value }),
+          }),
+        ),
+      );
+
       const toneSwatch =
         settings.font === 'auto'
           ? h(
@@ -5781,16 +5872,17 @@ html[data-dshbg-on] select option:checked {
           console.error('[dsh-custom-background] config slot registration failed:', failure);
         }
 
-        // The sidebar entry. Same component as the plugin page - the panel *is* the config
-        // page, so there is one form to maintain and no second copy to drift.
+        // The panel page. Same component as the plugin page - the panel *is* the config page,
+        // so there is one form to maintain and no second copy to drift.
         //
-        // ⚠️ **These two registrations are one feature and must stay together.** The host
-        // keeps an icon in `sidebar.panellist` and, when it is clicked, looks the panel up
-        // in the root-scoped `main` keyed slot **by the same id**. A missing `main` entry
-        // does not render an empty page: `selectPanel` throws and the current selection is
-        // kept, so the symptom is an icon that does nothing at all, with nothing in the UI
-        // to say why. Registering only the icon is therefore worse than registering
-        // neither.
+        // ⚠️ The `main` entry and the icon are **one feature**: the host keeps an icon in
+        // `sidebar.panellist` and, when it is clicked, looks the panel up in the root-scoped
+        // `main` keyed slot **by the same id**. A missing `main` entry does not render an
+        // empty page - `selectPanel` throws and the current selection is kept, so the symptom
+        // is an icon that does nothing at all, with nothing in the UI to say why.
+        //
+        // That is why this half is registered unconditionally while the icon is not: the
+        // switch may withdraw the icon, but the page has to outlive it. See `syncSidebarEntry`.
         //
         // `view: 'page'` is what the component checks before it sets `data-dshbg-config`,
         // and that attribute is what lets the page be transparent so the wallpaper stays
@@ -5800,23 +5892,18 @@ html[data-dshbg-on] select option:checked {
           ctx.slots.inject('main', () =>
             ctx.slots.register({ name: 'main', key: PANEL_ID, inject: () => ({ view: 'page' }) }, WallpaperPanel),
           );
-          ctx.slots.inject('sidebar.panellist', () =>
-            ctx.slots.register(
-              {
-                name: 'sidebar.panellist',
-                id: PANEL_ID,
-                // After the host's own entries (plugins is 0), so the icon lands at the
-                // bottom of the list rather than pushing the built-ins down.
-                order: 20,
-                label: () => (currentLang() === 'zh' ? '壁纸' : 'Wallpaper'),
-              },
-              WallpaperIcon,
-            ),
-          );
+        } catch (failure) {
+          console.error('[dsh-custom-background] panel page registration failed:', failure);
+        }
+
+        // The icon, if the switch says so. `entrySlots` is what lets `syncSidebarEntry` (called
+        // from `commit`) add it back later without another trip through `apply`.
+        entrySlots = ctx.slots;
+        try {
+          syncSidebarEntry();
         } catch (failure) {
           console.error('[dsh-custom-background] sidebar entry registration failed:', failure);
         }
-
       },
     };
   },

@@ -3616,3 +3616,102 @@ header 就是 `[data-open]` 的直接子节点（组件 JSX 里 `data-open` 的 
 - 盖上盖子之后，宿主原来那条 `:hover` 的高亮底色被 `background: transparent !important`
   压掉了。表头也是这样，两处一致。
 - `.compactionRow` 那 `2px` 的上下 padding 仍然透 —— 太窄，糊与不糊都看不出来。
+
+## 1.4.1 · 设置页多一个「在左侧栏显示壁纸按钮」
+
+用户原话（第二轮，前一轮我做错了）：
+
+> 我没有让你设置开关左侧栏，我让你设置一个开关，用来控制壁纸这个按钮在不在左侧栏
+
+### 先说做错的那一版
+
+第一轮我把「左侧栏目给关了」读成了「左栏本身被收起来了」，于是去读宿主
+`layoutInfo.sidebar`、写 `ctx.layout.toggleSidebar()`，做了一个「显示左侧栏」的开关
+（`314e30d`）。那不是用户要的东西：他要的是**插件自己那枚图标**的开关。整条已经
+`git revert`（`15815b2`），没有留下任何残留 —— 这是正确的处理方式，而不是把它留着
+「反正也没坏」。多一个用户没要的开关，等于多一份要维护、要解释、会出错的表面。
+
+### 这次的题面其实很小，难点在「随时能撤」
+
+注册一个 `sidebar.panellist` 条目是一次性的 `apply` 里的动作。要让开关**不重载**就生效，
+必须先确认宿主会不会跟着变。翻 `ui-sidebar/src/client/index.ts`：
+
+```ts
+ctx.effect(() => ctx.slots.subscribe('sidebar.panellist', syncPanels), 'ui-sidebar: panel entries')
+```
+
+宿主订阅了这个 slot，`syncPanels` 把 `entriesOfSlot('sidebar.panellist')` 重新投影成
+snapshot store，侧栏照着它渲染。再看 `ui-renderer/src/client/registry.ts`：
+`ctx.slots.register()` 返回「幂等的 definition disposer」，`ctx.slots.inject()` 返回
+「撤掉等待 + 撤掉贡献」的 controller disposer。两件事凑在一起，结论是：
+**撤掉注册，图标当场消失**，不需要重启、也不会留下一条指向空气的行。
+
+所以实现就是握住这两个 disposer：
+
+```js
+let entrySlots = null;    // apply 里存下的 slots 服务
+let entryDispose = null;  // 活着的注册；null 表示「没有图标」
+
+function syncSidebarEntry() {
+  const want = state.settings === null || state.settings.sidebarEntry !== false;
+  if (want === (entryDispose !== null)) return;
+  if (!want) { entryDispose(); entryDispose = null; return; }
+  entryDispose = mountSidebarEntry();
+}
+```
+
+`commit()` 末尾调它 —— 所有设置变更都走 `commit`，所以在哪儿翻都一样；函数第一行就是
+「值没动就返回」，滑杆拖动时每帧一次也不过多一次布尔比较。
+
+### 只撤图标，不撤页面
+
+`main` 里那个页面注册**故意不动**。原因是宿主的：
+
+```ts
+const retainMainPanels = () => instance.actions.retainMainPanels(
+  ctx.slots.entries('main').flatMap(e => e.options.key === undefined ? [] : [e.options.key]))
+ctx.slots.subscribe('main', retainMainPanels)
+```
+
+它订阅的是 `main`，不是 `sidebar.panellist`。如果连页面一起撤，`retainMainPanels` 发现
+当前选中的 panel id 不在列表里，会把 `activePanelId` 归 null —— 也就是**弹回对话**。而这个
+开关就在那个页面上，用户按一下，页面当场消失：观感像崩溃，而且他再也看不到自己刚改的那一项。
+
+一个够不着的 `main` 条目只占 map 里一格；把人从他自己的设置页里踢出去，代价大得多。
+`sidebar.panellist` 与 `main` 用同一个 id 成对注册的约束没有变，只是「成对」现在指的是
+「图标可以不在，页面必须在」——这一点在 `apply` 的注释里写清楚了，免得下次有人顺手把两个
+一起收进 `if`。
+
+### 存，还是不存
+
+和左栏本身相反：左栏的显示与否是宿主状态，插件只读不存；这枚图标是**插件的 UI**，
+没有第二个真相可言，所以它就是一个普通的 `GLOBAL_KEYS` 项（`sidebarEntry`，默认 `true`）。
+
+默认 `true` 是有意为之：老配置里没有这个键，`from.sidebarEntry !== false` 让升级后的用户
+看到的还是原来那枚图标。`恢复默认` 会把它拨回 `true`，与其它全局键一致。
+
+### 断言（+16 → 439）
+
+- `the icon is simply not registered when the switch is off`
+- `but the page it opens stays registered, so the host keeps its selection`
+- `a settings file without the key keeps the icon`（老配置不受影响）
+- `the switch is on the settings page` / `and it starts on`
+- `flipping it off does not throw` / `and the icon goes away without a reload`
+- `while the page it opens is still there`
+- `the answer is written down rather than inferred`（`settings.v4` 里出现 `"sidebarEntry":false`）
+- `the page still renders the switch after the flip` / `and it now reads off`
+- `flipping it back puts the same entry back`（同一个 id）/ `and the count returns to three`
+- `a stored off reads back off` / `and turning it on in that instance registers the icon too`
+
+要跑这些，桩里的 `slots` 必须真的可撤：`inject` 把回调的返回值包成控制器 disposer，
+`register` 返回一个从 `registered` 里删掉自己条目的函数（并记住 `disposed`，幂等）。
+之前那个 `inject(name, cb) { cb() }` 什么都不返回，`entryDispose` 会变成 `undefined`，
+一关开关就 `undefined is not a function` —— 断言是照着宿主的契约写的，桩也得照着改。
+
+### 已知边界
+
+- 关掉之后，`main` 里那个页面还在（见上）。它不可达，也不占任何视觉空间；如果将来宿主改成
+  「选中项不在 `sidebar.panellist` 里就重置」，这条要重新评估。
+- 开关只管插件这一个条目。侧栏里别人的图标、宿主自己的面板，插件一概不碰。
+- 左栏整体收起时图标自然也看不见 —— 那是宿主的事（`Ctrl + B` 或左上角面板图标），插件不
+  保存它的状态，也不替它做决定。

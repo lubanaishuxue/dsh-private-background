@@ -261,8 +261,22 @@ function harness(settingsOverride, extra) {
   const ctx = {
     effect(fn) { const disposer = fn(); return typeof disposer === 'function' ? disposer : () => {}; },
     slots: {
-      inject(name, callback) { callback(); },
-      register(options, component) { registered.push({ options, component }); return () => {}; },
+      // 宿主的 `inject` 返回一个「撤掉等待 + 撤掉贡献」的 disposer；桩里两个都要能撤，
+      // 否则「关掉开关 → 图标消失」这条根本没法验证。
+      inject(name, callback) {
+        const disposer = callback();
+        return () => { if (typeof disposer === 'function') disposer(); };
+      },
+      register(options, component) {
+        const entry = { options, component, disposed: false };
+        registered.push(entry);
+        return () => {
+          if (entry.disposed) return;
+          entry.disposed = true;
+          const index = registered.indexOf(entry);
+          if (index !== -1) registered.splice(index, 1);
+        };
+      },
     },
   };
 
@@ -2602,6 +2616,104 @@ async function main() {
   check(
     'the glyph is drawn inline rather than imported',
     CODE.includes('function WallpaperIcon({ size })') && !/inject: \[[^\]]*ui-primitives/.test(CODE),
+  );
+
+  console.log('\nsidebar entry switch');
+  // 关掉的是**图标**，不是左栏。而且页面必须留着：宿主 `retainMainPanels` 在 `main` 注册
+  // 消失时会把选中项弹回对话，那样这个开关就会在按下的瞬间毁掉自己所在的页面。
+  const hidden = await emit({ mode: 'none', sidebarEntry: false });
+  const hiddenNames = hidden.registered.map((entry) => entry.options.name);
+  check(
+    'the icon is simply not registered when the switch is off',
+    !hiddenNames.includes('sidebar.panellist'),
+    hiddenNames.join(','),
+  );
+  check(
+    'but the page it opens stays registered, so the host keeps its selection',
+    hiddenNames.includes('main'),
+    hiddenNames.join(','),
+  );
+  check('and nothing else is dropped', hidden.registered.length === 2, `got ${hidden.registered.length}`);
+  // 老配置里没有这个键，用户不该一升级就发现图标自己没了。
+  check(
+    'a settings file without the key keeps the icon',
+    base.registered.some((entry) => entry.options.name === 'sidebar.panellist'),
+  );
+
+  /** 在渲染出来的元素树里按 props.label 找那个开关。 */
+  const findSwitch = (node, needle) => {
+    if (node === null || node === undefined || typeof node !== 'object') return null;
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const found = findSwitch(child, needle);
+        if (found !== null) return found;
+      }
+      return null;
+    }
+    if (node.props !== null && typeof node.props === 'object' && String(node.props.label || '').includes(needle)) {
+      return node;
+    }
+    const nested = [node.children, node.props === null ? null : Object.values(node.props || {})];
+    for (const group of nested) {
+      if (!Array.isArray(group)) continue;
+      for (const child of group) {
+        const found = findSwitch(child, needle);
+        if (found !== null) return found;
+      }
+    }
+    return null;
+  };
+
+  const switchNode = findSwitch(page, '在左侧栏显示');
+  check('the switch is on the settings page', switchNode !== null);
+  check('and it starts on', switchNode !== null && switchNode.props.checked === true);
+
+  // 真正要证明的是「不重载也立刻生效」：宿主订阅了 `sidebar.panellist`，注册被撤掉的
+  // 那一刻图标就没了。所以这里不是重新起实例，而是直接按设置页上那个开关。
+  let flipError = null;
+  try {
+    if (switchNode !== null) switchNode.props.onChange(false);
+  } catch (failure) {
+    flipError = failure;
+  }
+  check('flipping it off does not throw', flipError === null, flipError === null ? '' : String(flipError));
+  check(
+    'and the icon goes away without a reload',
+    !base.registered.some((entry) => entry.options.name === 'sidebar.panellist'),
+  );
+  check(
+    'while the page it opens is still there',
+    base.registered.some((entry) => entry.options.name === 'main'),
+  );
+  check(
+    'the answer is written down rather than inferred',
+    String(base.store.get('dsh.custom-background.settings.v4') || '').includes('"sidebarEntry":false'),
+    String(base.store.get('dsh.custom-background.settings.v4')),
+  );
+
+  // 翻回去必须回到同一个 id，否则点图标时宿主找不到面板（选择器是 id 对 id）。
+  const again = base.registered[0].component({ view: 'page' });
+  const againSwitch = findSwitch(again, '在左侧栏显示');
+  check('the page still renders the switch after the flip', againSwitch !== null);
+  check('and it now reads off', againSwitch !== null && againSwitch.props.checked === false);
+  if (againSwitch !== null) againSwitch.props.onChange(true);
+  check(
+    'flipping it back puts the same entry back',
+    base.registered.some(
+      (entry) => entry.options.name === 'sidebar.panellist' && entry.options.id === 'custom-background',
+    ),
+    base.registered.map((entry) => entry.options.name).join(','),
+  );
+  check('and the count returns to three', base.registered.length === 3, `got ${base.registered.length}`);
+
+  // 关着启动的实例，页面上那个开关也得读回「关」，而不是默认值。
+  const hiddenPage = hidden.registered[0].component({ view: 'page' });
+  const hiddenSwitch = findSwitch(hiddenPage, '在左侧栏显示');
+  check('a stored off reads back off', hiddenSwitch !== null && hiddenSwitch.props.checked === false);
+  if (hiddenSwitch !== null) hiddenSwitch.props.onChange(true);
+  check(
+    'and turning it on in that instance registers the icon too',
+    hidden.registered.some((entry) => entry.options.name === 'sidebar.panellist'),
   );
 
   console.log('\ncss syntax sanity');
