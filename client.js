@@ -166,6 +166,10 @@ window.__ModuleLoader__.load({
         scope: '作用范围',
         fullWindow: '同时应用到左侧对话栏',
         fullWindowHint: '关掉时只有工作区换背景，左侧对话列表保持原样；打开则整窗铺满。',
+        layout: '界面',
+        sidebarShown: '显示左侧栏',
+        sidebarShownHint: '就是这个界面自己的左栏（对话列表、任务、设置都在里面）。和 DSH 本身是同一个开关：按 Ctrl + B，或点左上角那颗面板图标，这里会跟着变。',
+        sidebarShownUnavailable: '这个界面里没有左栏，暂时没有可切换的对象。',
         font: '字体颜色',
         fonts: { theme: '跟随主题', auto: '自动', light: '浅色', dark: '深色', custom: '自定义' },
         fontHint: '「自动」按背景实际明暗选黑或白；「跟随主题」不做任何改动。',
@@ -228,6 +232,10 @@ window.__ModuleLoader__.load({
         scope: 'Scope',
         fullWindow: 'Also apply to the conversation sidebar',
         fullWindowHint: 'Off: only the work area changes and the sidebar keeps its own look. On: the wallpaper fills the window.',
+        layout: 'Layout',
+        sidebarShown: 'Show the left sidebar',
+        sidebarShownHint: "The shell's own left column - sessions, jobs and Settings live there. This is the same switch DSH uses: Ctrl + B or the panel icon at the top-left keeps it in step.",
+        sidebarShownUnavailable: 'This screen has no left sidebar, so there is nothing to switch.',
         font: 'Text colour',
         fonts: { theme: 'Theme', auto: 'Auto', light: 'Light', dark: 'Dark', custom: 'Custom' },
         fontHint: '"Auto" picks black or white from the background. "Theme" leaves text untouched.',
@@ -4691,6 +4699,9 @@ html[data-dshbg-on] select option:checked {
           }
           if (window.__dshbgHead === report) delete window.__dshbgHead;
           if (typeof window.__dshbgHeadGlass === 'function') delete window.__dshbgHeadGlass;
+          // 左栏开关的观察者也在这里收摊：它盯的是整棵树，插件被卸载后还留着就是白跑。
+          hostSidebar.dispose();
+          if (window.__dshbgSidebar !== undefined) delete window.__dshbgSidebar;
         },
       };
     }
@@ -4833,16 +4844,245 @@ html[data-dshbg-on] select option:checked {
       };
     }
 
+    // ------------------------------------------------------------------ host sidebar
+
+    /**
+     * 左栏开关：读宿主、写宿主，自己**一个字节都不存**。
+     *
+     * 「左栏显不显示」不是这份设置的字段 —— 它住在宿主 `ui-layout` 的 root store 里
+     * （`layoutInfo.sidebar === 0` 即收起），官方入口有两个：左栏头部那颗面板按钮，
+     * 和 `Ctrl + B`。插件如果另存一个布尔值，用户第二次点官方按钮两边就对不上了，
+     * 所以这里只做两件事：
+     *
+     *   - **读**：宿主把结论写在 frame 的 `data-sidebar-collapsed` 上，这是「现在到底
+     *     显不显示」唯一的事实来源。`[data-sidebar-opener]`（只在不显示时才挂出来的
+     *     那颗展开按钮）当第二个证据 —— 万一 frame 选错了，光看属性会永远读成「显示中」。
+     *   - **写**：优先走官方服务 `ctx.layout.toggleSidebar()`；服务不在（宿主没提供、
+     *     或者换了实现）就退化成点那颗官方按钮。两条路都是让宿主改自己的状态，插件不越权。
+     *
+     * 于是这个开关、官方按钮、快捷键是**同一个开关的三个入口**，不存在「以谁为准」。
+     * 宿主那边是瞬时状态（重启后左栏本来就是展开的），所以这里也没有「记住」的义务。
+     */
+    const SIDEBAR_COLLAPSED = 'data-sidebar-collapsed';
+
+    /** 收起后才挂出来的展开按钮：它的存在本身就是「现在是收起的」。 */
+    const SIDEBAR_OPENER = '[data-sidebar-opener]';
+
+    /** 展开时头部那颗收起按钮：服务拿不到时，点它等同于 `toggleSidebar()`。 */
+    const SIDEBAR_TOGGLE = '[data-sidebar-toggle]';
+
+    /** 乐观值最多活这么久。宿主一帧内就会重绘，700ms 只是给慢机器留的余量。 */
+    const SIDEBAR_SETTLE_MS = 700;
+
+    let sidebarLayout = null;
+    let sidebarFrame = null;
+    let sidebarShown = null;
+    let sidebarPrimed = false;
+    let sidebarWant = null;
+    let sidebarWantUntil = 0;
+    let sidebarDebounce = 0;
+    let sidebarSettle = 0;
+    let sidebarWatch = null;
+    const sidebarListeners = new Set();
+
+    /**
+     * frame 节点缓存。
+     *
+     * 宿主在流式输出时每吐一个 token 都会产生 DOM 变更，观察者也会跟着跑；每次重新
+     * `querySelector` 一个 `:has()` 选择器是这段代码里最贵的一次读，所以节点只找一次，
+     * 靠 `isConnected` 判断它有没有被换掉（O(1)，不碰样式不碰布局）。
+     */
+    function sidebarFrameNode() {
+      if (sidebarFrame !== null && sidebarFrame.isConnected !== false) return sidebarFrame;
+      sidebarFrame = typeof document.querySelector === 'function' ? document.querySelector(frameSelector()) : null;
+      return sidebarFrame;
+    }
+
+    /** 现在是显示还是收起；`null` = 这个界面里压根没有左栏（登录页、纯文档页）。 */
+    function readSidebarShown() {
+      // 先问那颗「收起时才有的展开按钮」：它一在就是收起，不依赖 frame 认得对不对。
+      if (typeof document.querySelector === 'function' && document.querySelector(SIDEBAR_OPENER) !== null) return false;
+      const frame = sidebarFrameNode();
+      if (frame === null) return null;
+      return !frame.hasAttribute(SIDEBAR_COLLAPSED);
+    }
+
+    /**
+     * 界面上该显示的值 = 乐观值（如果还在有效期内）或 DOM 事实。
+     *
+     * 乐观值解决的是一个具体的时序：点下去之后宿主还没重绘的那么一两帧，DOM 还在说旧
+     * 答案，开关会先弹回去再弹回来。宿主照办（或超时）之后乐观值立刻退场 —— 它只遮住
+     * 那一两帧，绝不参与「谁是对的」。
+     */
+    function sidebarValue() {
+      const dom = readSidebarShown();
+      if (sidebarWant !== null) {
+        if (dom === sidebarWant || Date.now() > sidebarWantUntil) sidebarWant = null;
+        else return sidebarWant;
+      }
+      return dom;
+    }
+
+    function refreshSidebar() {
+      sidebarPrimed = true;
+      const next = sidebarValue();
+      if (next === sidebarShown) return;
+      sidebarShown = next;
+      sidebarListeners.forEach((listener) => {
+        try {
+          listener();
+        } catch (failure) {
+          // 一个订阅者炸了不该带走其他订阅者，更不该带走开关本身。
+        }
+      });
+    }
+
+    /**
+     * 每 80ms 最多结算一次。
+     *
+     * 观察者盯的是整棵树（左栏的挂载点在好几个深度上，只盯 frame 会漏掉「按钮从无到有」
+     * 那一下），而流式输出时这等于每 token 一次回调。算一次状态要读一个属性加一次
+     * `querySelector`，80ms 的窗口把它压在每秒十几次，人眼分辨不出延迟。
+     */
+    function scheduleSidebar() {
+      if (sidebarDebounce !== 0) return;
+      sidebarDebounce = setTimeout(() => {
+        sidebarDebounce = 0;
+        refreshSidebar();
+      }, 80);
+    }
+
+    function watchSidebar() {
+      if (sidebarWatch !== null || typeof MutationObserver === 'undefined') return;
+      const target = document.documentElement || document.body;
+      if (!target) return;
+      sidebarWatch = new MutationObserver(scheduleSidebar);
+      sidebarWatch.observe(target, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: [SIDEBAR_COLLAPSED],
+      });
+    }
+
+    function unwatchSidebar() {
+      if (sidebarWatch !== null) {
+        sidebarWatch.disconnect();
+        sidebarWatch = null;
+      }
+      if (sidebarDebounce !== 0) clearTimeout(sidebarDebounce);
+      sidebarDebounce = 0;
+    }
+
+    /**
+     * 把左栏拨到想要的状态。
+     *
+     * 先读再写，而不是无条件 `toggle()`：这个开关和官方按钮共用一处状态，用户可能刚按过
+     * `Ctrl + B` 而我们的界面还没来得及重绘。拿「现在的 DOM」做一次幂等判断，比盲翻一次
+     * 可靠 —— 盲翻的后果是"点一下没反应，点两下才回来"。
+     */
+    function setSidebarShown(shown) {
+      const current = readSidebarShown();
+      if (current === null) return false;
+      if (current === shown) return true;
+      let asked = false;
+      if (sidebarLayout !== null) {
+        try {
+          sidebarLayout.toggleSidebar();
+          asked = true;
+        } catch (failure) {
+          // 服务在、但内部炸了 —— 退回点按钮，不让一次异常把开关变成哑巴。
+          asked = false;
+        }
+      }
+      if (!asked) {
+        // 官方按钮分两种：收起态只有那颗「展开」，展开态只有头部那颗「收起」。
+        const button = typeof document.querySelector === 'function' ? document.querySelector(shown ? SIDEBAR_OPENER : SIDEBAR_TOGGLE) : null;
+        if (button === null || typeof button.click !== 'function') return false;
+        button.click();
+      }
+      sidebarWant = shown;
+      sidebarWantUntil = Date.now() + SIDEBAR_SETTLE_MS;
+      if (sidebarSettle !== 0) clearTimeout(sidebarSettle);
+      sidebarSettle = setTimeout(() => {
+        sidebarSettle = 0;
+        refreshSidebar();
+      }, SIDEBAR_SETTLE_MS + 20);
+      refreshSidebar();
+      return true;
+    }
+
+    const hostSidebar = {
+      /** 绑宿主服务。拿不到就一直是 null —— 之后一律退化成点按钮。 */
+      bind(context) {
+        try {
+          const reflect = context && context.reflect;
+          const service = reflect && typeof reflect.get === 'function' ? reflect.get('layout', false) : null;
+          sidebarLayout = service && typeof service.toggleSidebar === 'function' ? service : null;
+        } catch (failure) {
+          sidebarLayout = null;
+        }
+        return sidebarLayout !== null;
+      },
+      subscribe(listener) {
+        sidebarListeners.add(listener);
+        watchSidebar();
+        // 订阅是「渲染之后」发生的，此时补一次值不会触发渲染；真正的刷新交给观察者。
+        // 这里刻意**不**通知 —— 订阅期间同步回调会让 React 在别人渲染的中途排一次更新。
+        if (!sidebarPrimed) {
+          sidebarPrimed = true;
+          sidebarShown = readSidebarShown();
+        }
+        return () => {
+          sidebarListeners.delete(listener);
+          if (sidebarListeners.size === 0) unwatchSidebar();
+        };
+      },
+      /**
+       * 第一次读发生在首次渲染，也就是任何订阅之前 —— 不在这里补一次，页面会先画成
+       * 「这个界面没有左栏」，下一帧才纠正过来。那一下闪烁正好出现在用户最注意的地方。
+       */
+      getSnapshot() {
+        if (!sidebarPrimed) {
+          sidebarPrimed = true;
+          sidebarShown = readSidebarShown();
+        }
+        return sidebarShown;
+      },
+      /** SSR 没有 DOM；这条路径在桌面端不会走到，给个稳定值即可。 */
+      getServerSnapshot() {
+        return null;
+      },
+      set: setSidebarShown,
+      /** 控制台探针：宿主此刻的状态、界面上画的值，以及写入走的哪条路。 */
+      report() {
+        return { shown: readSidebarShown(), painted: sidebarShown, service: sidebarLayout !== null };
+      },
+      dispose() {
+        unwatchSidebar();
+        if (sidebarSettle !== 0) clearTimeout(sidebarSettle);
+        sidebarSettle = 0;
+        sidebarListeners.clear();
+        sidebarFrame = null;
+        sidebarPrimed = false;
+        sidebarShown = null;
+        sidebarWant = null;
+      },
+    };
+
     // ------------------------------------------------------------------------ ui
 
     function Switch(props) {
-      const { checked, label, hint, onChange } = props;
+      const { checked, disabled, label, hint, onChange } = props;
       return h(
         'label',
-        { className: 'dshbg-switch' },
+        { className: 'dshbg-switch', 'data-disabled': String(disabled === true) },
         h('input', {
           type: 'checkbox',
           checked: checked === true,
+          // 没有可切换的对象时（比如当前界面根本没有左栏）开关留在原位但按不动，
+          // 比整块消失好 —— 消失会让人以为插件坏了。
+          disabled: disabled === true,
           onChange: (event) => onChange(event.target.checked),
         }),
         h('span', { className: 'dshbg-switch-track', 'data-on': String(checked === true) }),
@@ -4947,6 +5187,7 @@ html[data-dshbg-on] select option:checked {
 .dshbg-pick { padding: 0; cursor: pointer; }
 .dshbg-pick-name { display: block; position: absolute; left: 4px; right: 4px; bottom: 4px; padding: 1px 5px; border-radius: 6px; font-size: 10px; line-height: 1.4; color: #fff; background: rgb(0 0 0 / 55%); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; pointer-events: none; }
 .dshbg-switch { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.dshbg-switch[data-disabled="true"] { opacity: 0.55; cursor: default; }
 .dshbg-switch input { position: absolute; opacity: 0; pointer-events: none; }
 .dshbg-switch-track { position: relative; flex: none; width: 34px; height: 20px; margin-top: 1px; border-radius: 10px; background: var(--dsw-alias-bg-layer-3, rgb(0 0 0 / 18%)); transition: background 0.15s ease; }
 .dshbg-switch-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 8px; background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / 28%); transition: transform 0.15s ease; }
@@ -4995,6 +5236,19 @@ html[data-dshbg-on] select option:checked {
       // because a tile that stays in the list keeps the same URL and revoking it there would
       // blank a thumbnail that is still on screen.
       const browseUrls = useRef([]);
+
+      /**
+       * 左栏开没开，读的是宿主，不是这份设置。
+       *
+       * 它刻意不进 `snapshot`：那个快照是插件自己的 localStorage 文档，把宿主的状态混
+       * 进去，等于给同一个事实存两份并允许它们分叉 —— 用户按一次 `Ctrl + B` 就能把它
+       * 分成两半。所以这里订阅的是 DOM，写的是宿主，`patchSettings` 一次都不调。
+       */
+      const sidebarShown = useSyncExternalStore(
+        hostSidebar.subscribe,
+        hostSidebar.getSnapshot,
+        hostSidebar.getServerSnapshot,
+      );
 
       useEffect(() => {
         boot();
@@ -5162,6 +5416,26 @@ html[data-dshbg-on] select option:checked {
       const dragEnd = useCallback(() => {
         drag.current = null;
       }, []);
+
+      // 左栏开关摆在最前面：它管的是窗口，不是壁纸，所以不属于下面任何一段；而用户翻到
+      // 这一页，往往正是因为左栏被收起来了 —— 一个要滚到底才找得到的开关救不了这个场。
+      sections.push(
+        h(
+          'div',
+          { key: 'layout', className: 'dshbg-section' },
+          h('div', { className: 'dshbg-label' }, text.layout),
+          h(Switch, {
+            checked: sidebarShown === true,
+            disabled: sidebarShown === null,
+            label: text.sidebarShown,
+            hint: sidebarShown === null ? text.sidebarShownUnavailable : text.sidebarShownHint,
+            onChange: (value) => {
+              // 不落盘、不 patchSettings：这是让宿主改自己的状态，插件只是另一个入口。
+              setSidebarShown(value);
+            },
+          }),
+        ),
+      );
 
       sections.push(
         h(
@@ -5762,6 +6036,21 @@ html[data-dshbg-on] select option:checked {
     return {
       inject: ['slots'],
       apply(ctx) {
+        // 左栏开关要先把宿主服务拿到手：`ConfigPage` 一挂载就在读状态，晚一步就只能退化成
+        // 点按钮 —— 能用，但多一次 DOM 查找、也少一层"官方服务在"的判据。拿不到不算失败，
+        // `bind` 返回 false，开关照常工作。
+        try {
+          hostSidebar.bind(ctx);
+          // 控制台里 `__dshbgSidebar()` 看状态，`__dshbgSidebar(false)` 直接收起左栏 ——
+          // 左栏收没了又找不到宿主那颗按钮时，这是最后一条能自己走出来的路。
+          window.__dshbgSidebar = (want) => {
+            if (typeof want === 'boolean') setSidebarShown(want);
+            return hostSidebar.report();
+          };
+        } catch (failure) {
+          console.error('[dsh-custom-background] sidebar service lookup failed:', failure);
+        }
+
         // The two halves are isolated: a failure in either must never take the other
         // down, and neither may escape `apply` and break the WebUI module load.
         try {

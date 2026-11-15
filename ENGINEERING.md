@@ -3616,3 +3616,124 @@ header 就是 `[data-open]` 的直接子节点（组件 JSX 里 `data-open` 的 
 - 盖上盖子之后，宿主原来那条 `:hover` 的高亮底色被 `background: transparent !important`
   压掉了。表头也是这样，两处一致。
 - `.compactionRow` 那 `2px` 的上下 padding 仍然透 —— 太窄，糊与不糊都看不出来。
+
+## 1.4.0 · 设置页多一个「显示左侧栏」：读宿主、写宿主，自己一个字都不存
+
+用户原话：
+
+> 这个 dsh 新加的功能我随便乱点把左侧栏目给关了，能加一个开关，在这个插件的设置页面，用来控制是否在左栏显示的功能吗，记得同步 dsh 官方的是否显示
+
+「同步官方」是这道题的全部难点。**它不是「再加一个开关」，而是「同一个开关的第三个入口」** ——
+如果插件自己存一个 `sidebarShown` 布尔值，用户按一次 `Ctrl + B`，插件里那个值就和界面不一致了，
+而两边都"看起来"是对的。所以这里选了最不像功能、但唯一正确的做法：**不存**。
+
+### 左栏的状态住在哪
+
+宿主 `@deepseek-ai/dsh-client-ui-layout` 的 root store：
+
+```ts
+type LayoutInfo = { sidebar: number; narrowExpanded: boolean; ... }
+// layoutInfo.sidebar === 0 就是收起；窄屏下看的是 narrowExpanded 取反
+```
+
+`AppFrame` 把它投影成一个 DOM 属性（`dsh-client-ui-layout/src/client/AppFrame.tsx`）：
+
+```tsx
+<div className={css.frame} data-sidebar-collapsed={sidebarCollapsed || undefined} ...>
+```
+
+因为它是 `|| undefined`，展开时属性根本不存在 —— 判据是 `hasAttribute`，不是读值。
+
+### 读：两个证据，因为 frame 可能选错
+
+```js
+function readSidebarShown() {
+  if (document.querySelector('[data-sidebar-opener]') !== null) return false;
+  const frame = sidebarFrameNode();
+  if (frame === null) return null;   // 这个界面没有左栏（登录页 / 纯文档页）
+  return !frame.hasAttribute('data-sidebar-collapsed');
+}
+```
+
+`[data-sidebar-opener]` 是宿主「收起之后才挂出来」的展开按钮，它的存在本身就是收起。
+放在第一位是有意的：frame 选择器是**结构猜测**（`#root div:has(> [data-shell-overlay])`，
+壁纸那边也用它），宿主换一次外壳就可能猜错；猜错时只读属性会**永远**显示「显示中」，
+而这个按钮在就是收起 —— 两个证据里至少有一个不依赖猜测。
+
+⚠️ Windows 桌面版那颗按钮在**原生标题栏**里，不在 DOM 里：`shell.leading` 座位只在
+`drawer || (darwin && collapsed)` 时挂载。所以 Windows 上真正起作用的是那个属性。这不是缺陷，
+是它本来就该是主证据。
+
+### 写：`ctx.layout` 用 `reflect` 拿，不进 `inject`
+
+官方服务的形状（`ui-layout/src/client/service.ts`）：
+
+```ts
+interface ILayout { toggleSidebar(): void; selectPanel(id): void; ... }
+```
+
+拿它的两种方式，选了后者：
+
+| 方式 | 代价 |
+|---|---|
+| `export const inject = ['slots', 'layout']` | 布局服务不在时**整个插件**不加载 —— 壁纸跟着一起消失。为了一个开关赌上主功能 |
+| `ctx.reflect.get('layout', false)` | 拿不到就是 `undefined`，开关退化成点按钮。壁纸不受影响 |
+
+`reflect.get` 的 `strict: false`（第二个参数）是「不看 fiber 是否 ACTIVE，有实现就给」。
+`_getImpl` 走的是 `ctx[isolate]['layout']` 这个符号键，而 `provide()` 里做的第一件事就是
+`ctx.root[isolate][name] ??= Symbol(name)` —— 所以**没声明 inject 也读得到**，符号从 root 继承下来。
+（这一条是读 `@deepseek-ai/cordis/src/reflect.ts` 确认的，不是猜的。）
+
+### 写之前先读：幂等而不是盲翻
+
+```js
+const current = readSidebarShown();
+if (current === shown) return true;   // 已经在那儿了，一次也别翻
+```
+
+`toggleSidebar()` 是**翻**，不是**设**。用户在开关上点一下之前可能刚按过 `Ctrl + B`，而这一帧的
+DOM 还没重绘 —— 盲翻的结果是「点一下没反应，点两下才回来」。以「现在的 DOM」为准做一次幂等判断，
+比任何去重逻辑都便宜。
+
+### 乐观值：只遮一两帧，不参与「谁是对的」
+
+点下去之后宿主重绘之前，DOM 还在说旧答案。不处理的话开关会先弹回去、下一帧再弹回来。所以有一个
+`sidebarWant` + `SIDEBAR_SETTLE_MS = 700` 的窗口：宿主照办（DOM 追上）或超时，乐观值立刻退场。
+它**只影响画出来的那个值**，`readSidebarShown()` 永远读 DOM —— 探针里 `shown` 和 `painted` 是两个
+字段，就是为了让这个区别在控制台里也是可见的。
+
+### 观察者的成本
+
+盯的是整棵树（`childList + subtree`）：左栏的展开按钮挂载点在不同模式下深度不同，只盯 frame 会漏掉
+「按钮从无到有」那一下。而宿主流式输出时这等于每 token 一次回调，所以：
+
+- 80ms 防抖 —— 人眼分辨不出延迟，回调压到每秒十几次；
+- frame 节点缓存 + `isConnected` 判断（O(1)，不碰样式不碰布局），只在被换掉时重新 `querySelector`。
+
+`subscribe()` 里**只补值不通知**：订阅发生在渲染之后，同步回调会让 React 在别人渲染的中途排一次更新；
+React 订阅完本来就会自己再读一次快照。
+
+### 断言（`tools/smoke-test.cjs`，+17 项 → 440）
+
+- `a collapsed left column reads as off` / `an expanded one reads as on` —— 同一份设置，结论跟着宿主变
+- `a screen with no shell offers nothing to switch` —— `null`，不是 `false`
+- `the expand button outranks a frame that looks expanded` —— 第二证据压过选错的 frame
+- `the official layout service is asked first`
+- `the switch moves one frame before the host repaints` —— `painted === false && shown === true`
+- `asking for the state it is already in touches nothing` —— 幂等
+- `without a service the host’s own button is clicked instead` —— 退路真的点了
+- `the switch writes nothing to the plugin’s own settings` —— 前后 localStorage 逐字节相同
+- `and it never becomes a settings key` —— 不在 `DEFAULTS`，也不在任何一个 key 组
+- `with no left column the switch is present but inert` —— 在，但按不动
+
+为了让这些能跑，桩 DOM 补了三处：`document.querySelector` 认 frame 与两颗按钮（由 `extra` 决定
+谁存在）、元素上记 `_clicks`、`ctx.reflect.get` 按测试需要返回假服务。
+
+### 已知边界
+
+- 拿不到 `ctx.layout` **且**在 Windows 桌面版时，只能收起、不能展开 —— 那颗展开按钮在原生标题栏里，
+  DOM 里点不到。`set()` 这时返回 `false`，开关不假装自己成功。窄屏 drawer 模式下没这个问题。
+- 开关只出现在插件页，不在别处另开一个浮动入口。左栏收起来之后的官方救济入口是标题栏那颗按钮和
+  `Ctrl + B`；万一都找不到，控制台 `__dshbgSidebar(true)` 能拨回来。
+- 宿主那边是瞬时的（重启后左栏本来就是展开的），所以这个开关没有"记住上次"的义务 —— 有的话反而
+  会和宿主不一致。
