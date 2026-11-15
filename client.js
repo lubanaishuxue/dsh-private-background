@@ -4703,6 +4703,7 @@ html[data-dshbg-on] select option:checked {
           }
           if (window.__dshbgHead === report) delete window.__dshbgHead;
           if (typeof window.__dshbgHeadGlass === 'function') delete window.__dshbgHeadGlass;
+          if (window.__dshbgEntry === entryReport) delete window.__dshbgEntry;
         },
       };
     }
@@ -4855,7 +4856,7 @@ html[data-dshbg-on] select option:checked {
      * The wallpaper icon in the sidebar's panel list, and the switch that decides whether it
      * is there.
      *
-     * Three things make this more than an `if` at startup:
+     * Four things make this more than an `if` at startup:
      *
      * 1. **The host listens.** `ui-sidebar` subscribes to `sidebar.panellist` and rebuilds its
      *    panel list from the result (`syncPanels` -> `createSnapshotStore`), so dropping a
@@ -4867,6 +4868,11 @@ html[data-dshbg-on] select option:checked {
      *    user out of their own settings costs them the change they just made.
      * 3. **The answer lives in settings.** This is the plugin's own UI, so unlike the sidebar's
      *    own visibility (host state, read from the DOM) this one is stored and replayed.
+     * 4. **Registration is not visibility.** The sidebar folds rows the user has unpinned into
+     *    「更多」, and that list is host state kept beside the registry - so an entry can be
+     *    registered, unregistered and registered again and still never appear. `showSidebarEntry`
+     *    is what closes that second gate; without it the switch was technically working and
+     *    visibly doing nothing.
      */
     let entrySlots = null; // the `slots` service, captured once in `apply`
     let entryDispose = null; // live `sidebar.panellist` registration; null means hidden
@@ -4890,6 +4896,91 @@ html[data-dshbg-on] select option:checked {
     }
 
     /**
+     * The host's pin control.
+     *
+     * `sidebar.panellist` has **two** gates, not one: the slot registry decides whether an entry
+     * exists at all, and the sidebar's own pin list decides whether that entry is *shown* in the
+     * list or folded into 「更多」. Withdrawing and re-adding a registration therefore does not
+     * bring a folded row back - which is exactly how a switch that works can look dead.
+     *
+     * `setPinned` is not a service. It arrives as the shell registration's private inject face
+     * (`SidebarRootInjected`, `ui-sidebar/src/client/contract/slots.ts`), and `entriesOfSlot`
+     * hands back registrations together with their options - so the face is reachable through
+     * the public registry view, without reading host internals. If a future host renames it the
+     * lookup simply finds nothing and the switch keeps working the way it used to.
+     */
+    function hostPinFace() {
+      if (entrySlots === null) return null;
+      let entries = [];
+      try {
+        entries = entrySlots.entriesOfSlot('sidebar');
+      } catch (failure) {
+        return null;
+      }
+      for (const entry of entries) {
+        if (entry === null || entry === undefined) continue;
+        const options = entry.options;
+        // The host's `StoredEntry` keeps the inject face **on the entry**, not inside its
+        // options (`ui-renderer/src/client/scoped-slots.tsx` reads `entry.inject`); the options
+        // fallback is only there for a build that moves it back.
+        const inject =
+          typeof entry.inject === 'function'
+            ? entry.inject
+            : options === undefined || options === null
+              ? undefined
+              : options.inject;
+        if (typeof inject !== 'function') continue;
+        let face = null;
+        try {
+          face = inject();
+        } catch (failure) {
+          continue;
+        }
+        if (face !== null && typeof face === 'object' && typeof face.setPinned === 'function') return face;
+      }
+      return null;
+    }
+
+    /** Whether the host is holding our row in 「更多」. `null` when it cannot be known. */
+    function hostFoldedEntry(face) {
+      const pins = face === null || face === undefined || face.hooks === undefined ? undefined : face.hooks.entryPins;
+      if (pins === undefined || pins === null || typeof pins.getSnapshot !== 'function') return null;
+      try {
+        const unpinned = pins.getSnapshot();
+        return Array.isArray(unpinned) && unpinned.includes(PANEL_ID);
+      } catch (failure) {
+        return null;
+      }
+    }
+
+    /**
+     * Ask the host to show our row, and report what it says afterwards.
+     *
+     * `setPinned` is idempotent (it returns early when the answer is already right), so calling
+     * it on every mount is free. The return value is the point: `true` shown, `false` still
+     * folded away, `null` this host has no pin control - a switch that cannot check its own
+     * effect is what produced this bug in the first place.
+     */
+    function showSidebarEntry() {
+      const face = hostPinFace();
+      if (face === null) return null;
+      try {
+        face.setPinned(PANEL_ID, true);
+      } catch (failure) {
+        console.error('[dsh-custom-background] showing the sidebar entry failed:', failure);
+        return null;
+      }
+      const folded = hostFoldedEntry(face);
+      return folded === null ? true : !folded;
+    }
+
+    /** `window.__dshbgEntry()` - one line to answer "is the button there, and who hid it". */
+    function entryReport() {
+      const face = hostPinFace();
+      return { enabled: entryDispose !== null, pinControl: face !== null, folded: hostFoldedEntry(face) };
+    }
+
+    /**
      * Bring the registration in line with the switch. Called from `commit`, so it runs after
      * every settings change - and does nothing at all unless the boolean actually moved.
      */
@@ -4900,7 +4991,13 @@ html[data-dshbg-on] select option:checked {
       entryDispose = null;
       try {
         if (!want) previous();
-        else entryDispose = mountSidebarEntry();
+        else {
+          entryDispose = mountSidebarEntry();
+          // Registering is only half the job: the host may still be holding the row in 「更多」.
+          if (entryDispose !== null && showSidebarEntry() === false) {
+            console.error('[dsh-custom-background] the sidebar entry is registered but still folded away');
+          }
+        }
       } catch (failure) {
         // A slot service that refuses to change must not take the click handler with it: the
         // switch would look broken and the stack would point at React, not at the cause.
@@ -5074,6 +5171,15 @@ html[data-dshbg-on] select option:checked {
       useEffect(() => {
         boot();
       }, []);
+
+      // The switch is the durable answer to "is the button in the sidebar", but the host keeps a
+      // session-level pin list of its own: folding a row into 「更多」 does not move the switch, so
+      // a session can end up with "switch on, row gone". Opening this page is exactly the moment
+      // the user is looking at that switch, so this is where the claim gets re-asserted -
+      // `setPinned` is idempotent, so a page that is already right costs one early return.
+      useEffect(() => {
+        if (settings.sidebarEntry !== false) showSidebarEntry();
+      }, [settings.sidebarEntry]);
 
       useEffect(
         () => () => {
@@ -5901,6 +6007,8 @@ html[data-dshbg-on] select option:checked {
         entrySlots = ctx.slots;
         try {
           syncSidebarEntry();
+          // 控制台 `__dshbgEntry()`：图标在不在，以及是谁把它按下去的（宿主固定在「更多」里）。
+          window.__dshbgEntry = entryReport;
         } catch (failure) {
           console.error('[dsh-custom-background] sidebar entry registration failed:', failure);
         }

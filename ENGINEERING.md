@@ -3715,3 +3715,78 @@ ctx.slots.subscribe('main', retainMainPanels)
 - 开关只管插件这一个条目。侧栏里别人的图标、宿主自己的面板，插件一概不碰。
 - 左栏整体收起时图标自然也看不见 —— 那是宿主的事（`Ctrl + B` 或左上角面板图标），插件不
   保存它的状态，也不替它做决定。
+
+## 1.4.2 · 开关没生效：侧栏还有第二道闸
+
+用户回执：
+
+> 并没有生效，在现在的 dsh 版本，左侧栏会有一个按钮（图钉，悬停提示「从左侧栏取消固定」），
+> 一旦被这个关掉，怎么动这个开关都回不来
+
+### 两道闸，我只关了一道
+
+1.4.1 的模型是「注册 = 图标在」。宿主实际有两层：
+
+| 闸 | 谁拥有 | 关掉的效果 |
+|---|---|---|
+| `sidebar.panellist` 注册 | 插件（slot registry） | 条目不存在，列表和「更多」里都没有 |
+| 该条目的「固定」状态 | 宿主（`ui-sidebar/src/client/panel-pins.ts`，内存态） | 条目存在，但只出现在「更多」菜单里 |
+
+`SidebarRoot` 的渲染：
+
+```tsx
+{panels.filter(({ id }) => id === FIXED_PANEL_ID || !hasEntryActions || !unpinned.includes(id)).map(...)}
+```
+
+所以「取消固定」之后，我这边撤注册、再注册，`unpinned` 里那一条还在 —— 图标永远回不到列表里。
+开关本身每一行都执行了，屏幕上却什么都没发生。这就是「怎么动都回不来」。
+
+### 写入口在哪：`entry.inject()`，不是 `entry.options.inject`
+
+`setPinned` 不是服务，它是外壳注册的私有注入面（`SidebarRootInjected`）：
+
+```ts
+ctx.slots.register({ name: 'sidebar', locale: NS, children: {...}, inject: injectProps }, SidebarRoot)
+```
+
+`entriesOfSlot('sidebar')` 把注册项连同它的 `inject` 一起交出来，所以从公开的注册表视图就能拿到
+`setPinned`，不必读宿主内部对象。**关键是位置**：
+
+```ts
+// ui-renderer/src/client/scoped-slots.tsx
+function runInject(entry: Pick<StoredEntry, 'inject'>, ...) {
+  const inject = entry.inject        // 顶层，不在 options 里
+```
+
+我第一次写的是 `entry.options.inject` —— 而桩也照着我以为的形状写，于是 22 条断言全绿。
+这是本回合最值得记的一次：**桩照着实现的心理模型写，就等于没测。** 把桩改成宿主的真实形状
+（`{ options: { name }, inject }`）之后，代码也在同一位置改成两处都认，才真的能跑。
+
+### 现在怎么保证「开关开着 = 看得见」
+
+- `syncSidebarEntry()` 挂载条目后立刻 `setPinned(PANEL_ID, true)`（幂等：与现状一致就早返回）
+- 设置页每次挂载 / 开关每次变化也 re-assert 一次 —— 用户打开这一页，正是他在看这个开关的时刻；
+  「开关开着、行却在更多里」这种半截状态因此会自愈，不必先拨一下再拨回来
+- 返回值是**验证过的结论**，不是乐观值：`setPinned` 之后读 `hooks.entryPins.getSnapshot()`，
+  `true` = 在列表里，`false` = 仍被折叠，`null` = 这个宿主没有固定控件（那就退回旧行为，不假装）
+- `window.__dshbgEntry()` → `{ enabled, pinControl, folded }`：一句话回答「是没注册，还是被收进更多了」
+
+### 断言（+9 → 448，ok 444 + skip 4）
+
+- `turning the switch on un-folds the row the host hid in 「更多」`
+- `and it asks for the right id`
+- `the probe reports registered, pin-control available, and not folded`
+- `opening the page puts a folded row back on its own`
+- `a host without a pin control still gets the icon`
+- `and the probe admits there is no pin control rather than pretending`
+- `nothing was pinned on that host`
+- （另两条：开关在、页面渲染）
+
+为了跑这些，桩里加了宿主那道闸的模型（`pins.unpinned` + `pins.calls` + 与宿主同一条早返回规则），
+并把 `useEffect` 从空函数改成「当场跑一遍副作用体」—— 否则「打开页面就自愈」这条永远测不到。
+
+### 已知边界
+
+- 手动「取消固定」在本会话内即时生效（宿主的事）；再打开一次设置页、或拨一下开关，图标回来。
+- 拿不到注入面时（宿主换掉命名），开关仍能注册/撤销，只是不再声称自己固定住了 —— 探针会报
+  `pinControl: false`，控制台而不是界面上。

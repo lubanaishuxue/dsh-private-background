@@ -148,7 +148,9 @@ const ReactStub = {
   createElement: (type, props, ...children) => ({ type, props, children }),
   Fragment: 'Fragment',
   useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
-  useEffect: () => {},
+  // 副作用体当场跑一遍（cleanup 不跑）。React 是在提交后跑，桩里没有提交那一步；但「挂载时
+  // 把图标钉回去」这类行为只存在于 effect 里，一次都不跑就等于没测。
+  useEffect: (fn) => { fn(); },
   useCallback: (fn) => fn,
   useRef: (value) => ({ current: value }),
   useSyncExternalStore: (subscribe, getSnapshot) => getSnapshot(),
@@ -186,6 +188,7 @@ function harness(settingsOverride, extra) {
   const settings = { ...BASE_SETTINGS, ...settingsOverride };
   const seed = extra === undefined || extra.images === undefined ? null : extra.images;
   const reduced = extra !== undefined && extra.reducedMotion === true;
+  const noPinControl = extra !== undefined && extra.noPinControl === true;
   const head = makeElement('head');
   const documentElement = makeElement('html');
   const body = makeElement('body');
@@ -258,6 +261,23 @@ function harness(settingsOverride, extra) {
   const React = ReactStub;
 
   const registered = [];
+  // 宿主侧的第二道闸：`sidebar.panellist` 的行可以被「取消固定」，被取消的行不在列表里，
+  // 只在「更多」里。它是内存状态（`ui-sidebar/src/client/panel-pins.ts`），与 slot 注册彼此
+  // 独立 —— 所以「注册了」不等于「看得见」。桩里必须把它也建模，否则这条永远测不出来。
+  const pins = {
+    unpinned: [],
+    calls: [],
+  };
+  const pinFace = {
+    setPinned(id, pinned) {
+      pins.calls.push([id, pinned]);
+      const has = pins.unpinned.includes(id);
+      // 和宿主同一条规则：请求与现状一致时什么都不做。
+      if (pinned !== has) return;
+      pins.unpinned = pinned ? pins.unpinned.filter((entry) => entry !== id) : [...pins.unpinned, id];
+    },
+    hooks: { entryPins: { getSnapshot: () => pins.unpinned, subscribe: () => () => {} } },
+  };
   const ctx = {
     effect(fn) { const disposer = fn(); return typeof disposer === 'function' ? disposer : () => {}; },
     slots: {
@@ -276,6 +296,15 @@ function harness(settingsOverride, extra) {
           const index = registered.indexOf(entry);
           if (index !== -1) registered.splice(index, 1);
         };
+      },
+      // 外壳那条注册带着私有注入面（`SidebarRootInjected`），`setPinned` 就在里面。
+      // 形状照着宿主来：`StoredEntry.inject` 在**顶层**（`scoped-slots.tsx` 读的是
+      // `entry.inject`），不在 `options` 里 —— 桩要是照着自己以为的形状写，这条就白测了。
+      // `extra.noPinControl` 模拟「宿主换掉了这个面」——那时开关必须照常工作。
+      entriesOfSlot(name) {
+        if (name !== 'sidebar') return [];
+        if (noPinControl) return [];
+        return [{ options: { name: 'sidebar' }, inject: () => pinFace }];
       },
     },
   };
@@ -311,7 +340,7 @@ function harness(settingsOverride, extra) {
   vm.createContext(sandbox);
   vm.runInContext(CODE, sandbox, { filename: 'client.js' });
 
-  return { definition, ctx, registered, documentElement, head, body, window, windowListeners, store };
+  return { definition, ctx, registered, documentElement, head, body, window, windowListeners, store, pins };
 }
 
 const failures = [];
@@ -338,7 +367,7 @@ function skip(name, reason) {
 /** Apply the plugin with the given settings and return the emitted stylesheet. */
 async function emit(settingsOverride, extra) {
   const run = harness(settingsOverride, extra);
-  const { definition, ctx, registered, documentElement, head, body, window, windowListeners, store } = run;
+  const { definition, ctx, registered, documentElement, head, body, window, windowListeners, store, pins } = run;
 
   const exported = definition.factory((name) => {
     if (name === 'react') return ReactStub;
@@ -368,6 +397,7 @@ async function emit(settingsOverride, extra) {
     window,
     windowListeners,
     store,
+    pins,
     tags,
     css: tags.length > 0 ? tags[0].textContent : '',
   };
@@ -2715,6 +2745,58 @@ async function main() {
     'and turning it on in that instance registers the icon too',
     hidden.registered.some((entry) => entry.options.name === 'sidebar.panellist'),
   );
+
+  // 宿主那边还有第二道闸：行被「取消固定」之后只进「更多」，重新注册也不会回到列表里。
+  // 「开关明明开着、按钮却看不见」就是这两道闸各管一半造成的，所以开的时候必须顺带固定回去。
+  base.pins.unpinned = ['custom-background'];
+  const callsBefore = base.pins.calls.length;
+  const repin = base.registered[0].component({ view: 'page' });
+  const repinSwitch = findSwitch(repin, '在左侧栏显示');
+  check('a folded row is the state the switch has to fix', repinSwitch !== null);
+  if (repinSwitch !== null) {
+    repinSwitch.props.onChange(false);
+    repinSwitch.props.onChange(true);
+  }
+  check(
+    'turning the switch on un-folds the row the host hid in 「更多」',
+    base.pins.unpinned.length === 0,
+    base.pins.unpinned.join(','),
+  );
+  check(
+    'and it asks for the right id',
+    base.pins.calls
+      .slice(callsBefore)
+      .some(([id, pinned]) => id === 'custom-background' && pinned === true),
+    JSON.stringify(base.pins.calls.slice(callsBefore)),
+  );
+  const report = typeof base.window.__dshbgEntry === 'function' ? base.window.__dshbgEntry() : null;
+  check(
+    'the probe reports registered, pin-control available, and not folded',
+    report !== null && report.enabled === true && report.pinControl === true && report.folded === false,
+    JSON.stringify(report),
+  );
+
+  // 「开关开着、行却在更多里」这种半截状态不用等用户去拨开关：打开设置页就该被纠正 ——
+  // 那正是他要看这个开关的时刻。
+  const half = await emit({ mode: 'none' });
+  half.pins.unpinned = ['custom-background'];
+  const halfPage = half.registered[0].component({ view: 'page' });
+  check('opening the page puts a folded row back on its own', half.pins.unpinned.length === 0, half.pins.unpinned.join(','));
+  check('and the page still renders', halfPage !== null);
+
+  // 宿主把注入面换掉时（`setPinned` 不见了），开关必须照旧注册，只是不再声称自己固定住了。
+  const noPin = await emit({ mode: 'none' }, { noPinControl: true });
+  check(
+    'a host without a pin control still gets the icon',
+    noPin.registered.some((entry) => entry.options.name === 'sidebar.panellist'),
+  );
+  const noPinReport = typeof noPin.window.__dshbgEntry === 'function' ? noPin.window.__dshbgEntry() : null;
+  check(
+    'and the probe admits there is no pin control rather than pretending',
+    noPinReport !== null && noPinReport.pinControl === false && noPinReport.folded === null,
+    JSON.stringify(noPinReport),
+  );
+  check('nothing was pinned on that host', noPin.pins.calls.length === 0, String(noPin.pins.calls.length));
 
   console.log('\ncss syntax sanity');
   const open = (base.css.match(/\{/g) || []).length;
