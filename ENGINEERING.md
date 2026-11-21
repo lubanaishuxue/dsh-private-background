@@ -3897,3 +3897,166 @@ function watchEntryPinsSoon() {
 - 宿主不提供引脚面时（`pinControl: false`），开关照旧工作，但不会跟随图钉 —— 探针会明说。
 - 图钉的 `unpinned` 是内存态（宿主自己说的「until plugin reload」），所以本插件把它当成
   **一次动作**而不是持久真相：它写进设置的是结果（false），不是那份内存表。
+
+## 1.4.4 · 宿主 11-18 升级后的四处视觉回归 + 一个卡死的归因
+
+用户一次报了五条，附四张截图：
+
+> 1. 计划待审这个页面背景板没有加模糊
+> 2. 在右侧文本处理框出现的时候，左侧对话输入区会变成没有磨砂的
+> 3. 计划模式所生成的 md 文件还是没有正确处理成玻璃，只是黑色
+> 4. 在我输入的时候，打出 `/`，下方输入区会变透明
+> 5. 进入计划模式后，DS 调用 exit_plan_mode 时会卡死……点「要求修改」则会进去模式，持续无法处理任务
+
+**前提**：`D:/DeepSeek Harness/resources/app.asar` 的 mtime 是 **11-18 22:34**，而我 11-15 解出的
+源码是旧版。前三条里至少有两条是「宿主加了新节点，插件不认识」。
+
+## 问题 1 的根因不在「没加模糊」，在**一个被继承的 token**
+
+宿主的「计划待审」面板（`dsh-client-ui-user-questions/src/client/PlanReviewPanel.tsx`）：
+
+```tsx
+<div className={css.frame} data-plan-review-key={pending.key}>
+  <section className={css.card} aria-label={review.question}> …
+```
+
+```css
+.card { background: var(--dsw-specific-input-major); }
+```
+
+而插件 1.4.3 的实心模式是这么做的：
+
+```js
+html[data-dshbg-on] [data-composer-card] {
+  --dsw-specific-input-major: color-mix(… composerSurface% …) !important;
+}
+```
+
+**自定义属性是继承的。** 所以在「输入卡内部」的任何元素，只要用同一个 token，就一起变成了
+半透明 —— 包括这张计划卡。它不是「没加模糊」，是**根本没有底色**，正文直接透上来。
+
+这也解释了它为什么只在实心模式出现：玻璃模式走的是 `background-color`，没碰 token。
+
+修法有两个层次：
+
+1. **不再写这个 token。** 改成只对输入卡自己 `background: transparent`。
+   要调的是**一张卡**，不是「所有长得像输入的表面」—— 这是一个通用 token，借它来做局部修改
+   等于把影响面交给自己看不见。
+2. 计划卡与提问卡**共用一条规则**。两者 DOM 形状完全一样（`frame > section`），底色来源也一样，
+   所以 `QUESTION_CARDS = ['[data-question-key] > section', '[data-plan-review-key] > section']`。
+   两个 `data-*` 都是宿主写死在 JSX 字面量里的，不随类名哈希变。
+
+## 问题 2 与 4 是同一个根：输入卡不该采样背景
+
+`backdrop-filter` 的结果取决于**祖先链怎么合成**。1.4.3 的输入卡有两处依赖它：
+
+- 右栏一打开，中间列重新排版 → 采样面变了 → 「磨砂没了」；
+- `/` 菜单挂在卡**外面**（`bottom: calc(100% + 4px)`），卡上的 `backdrop-filter` 会建 backdrop root，
+  把菜单自己的模糊饿死。1.4.3 的绕法是「菜单一开就把卡的模糊摘掉」（`installComposerMenuGuard`
+  翻 `data-dshbg-menu`）—— 于是卡只剩 `composerSurface` 那点填充，屏幕上是「输入区变透明」。
+
+一个绕法引出一个新缺陷，说明绕的不是根因。改成和表头、吸顶盖同一套「搬壁纸」：
+
+```js
+html[data-dshbg-on] [data-composer-card]::before {  /* wallCopyDecls('--dshbg-composer', …) */
+html[data-dshbg-on] [data-composer-card]::after  {  /* 底色板：面板色 + composerSurface */ }
+```
+
+- `::before` 画壁纸那一份像素，不采样任何东西 → 布局怎么变都对；
+- `::after` 在**滤镜之外**叠底色板：卡背后是对话面板，所以「周围」= 壁纸 × 面板底色。
+  只贴壁纸会亮一大截（1.3.39 在盖子上量到 1.66 倍），这一层的道理与盖子完全相同；
+- `installComposerMenuGuard` 整条链路（含它那个全树观察者）**删除** —— 不再有需要让路的模糊。
+
+### 圆角：`inset()` 的 `round`
+
+原来的副本用矩形 `clip-path: inset(A B C D)` 裁到元素自己那块。表头和吸顶盖都是直角，
+输入卡是 20px 圆角 —— 矩形裁切会在四角露出壁纸的方角。
+
+所以 `wallCopyDecls()` 加了**第三个可选参数**：
+
+```js
+clip-path: inset(
+  …四个 calc()…
+  round var(--dshbg-composer-radius, var(--dsw-radius-xl, 20px))
+) !important;
+```
+
+表头与吸顶盖不传，输出与 1.3.39 逐字相同。半径由 `measureComposer()` 在**尺寸变化时**
+读一次 `border-top-left-radius` 写进变量（不是每帧读样式表）。
+
+## 问题 3：文件卡的底色挂在两个局部变量上
+
+宿主的 `PresentedFileCard`：
+
+```tsx
+<div className={css.file} data-presented-file>
+```
+
+```css
+.file       { background: var(--deliverable-fill) }
+.file:hover { background: var(--deliverable-hover) }
+```
+
+插件早就有 `[data-presented-file]` 这条选择器（`transcriptGlassCss`），但只给了
+`background-color: … !important`。宿主那两条会在 hover 的那一帧把画面换到**另一个变量**上，
+于是卡从玻璃跳回一块实心深灰。照 `[data-changed-files]` 的老办法，把两个变量一起放倒：
+
+```css
+[data-presented-file] {
+  --deliverable-fill: transparent !important;
+  --deliverable-hover: color-mix(in srgb, var(--dshbg-raw-label-0) 8%, transparent) !important;
+}
+```
+
+## 问题 5：只做了归因，没动代码 —— 这是刻意的
+
+截图的报错原文是：
+
+> The tool call was interrupted after it was recorded, but no result was durably recorded.
+
+这不是「渲染慢」，是**工具调用被中断后状态没有落盘**。插件拦不住宿主的工具状态机，
+所以本轮没有为它改任何一行代码 —— 把「关掉某个 CSS」当成修复，那是把症状盖住。
+
+归因方法写在这里，按顺序做：
+
+1. 设置页「背景类型 → 关闭」，重复「要求修改」5 次；
+2. 仍卡死 → 把插件目录移出 profile 再试（关壁纸不等于卸载：样式表与观察者还挂着）；
+3. 两步都不复现 → 才回来查那 4 个全树观察者。
+
+已知的相关事实（供排查用）：`PlanReviewPanel` 的「要求修改」调的是 `pending.dismiss()`，
+「同意执行」调的是 `pending.answer({…})` —— 两条路在宿主侧走的是不同的结算逻辑。
+
+## 诊断入口 `__dshbgProbe()`
+
+宿主换节点这类问题，读源码定不了：TSX 编出来的类名是哈希的，算出来的背景也可能被任何一条
+后来者盖掉。所以加了一个只读探针，一次回答三块：
+
+```
+__dshbgProbe()
+  composer       有没有、坐标写没写、自己与 6 层祖先里的 filter / transform / will-change / backdrop
+  planReview     在不在、**是不是在输入卡内部**（决定 token 是不是被继承）、解析后的 token 值
+  presentedFile  背景、--deliverable-fill、有没有吃到玻璃的 inset 环
+```
+
+全是 `getComputedStyle`，不写任何东西。
+
+## 断言：删掉的比加上的更值得记
+
+旧断言里有 11 条是**为旧实现写的**，两条特别说明：
+
+- `composer card paints its own frost` / `composer no longer depends on a pseudo-element` ——
+  正好反了。新实现**就是**靠伪元素，且**就是**不采样背景。留着它们会阻止正确的修复。
+- `the dock and the message box read the same blur knob` —— 输入卡已经没有 blur 可分享了。
+  改成反着钉：`cardBlur` 必须是空的，否则「右栏一开磨砂就没了」会跟着回来。
+
+新增 6 条（→ 459 ok + 4 skip = 463 项）：输入卡画的是壁纸副本、副本裁到圆角、底色板在滤镜外、
+菜单让路链路从样式表里消失、守卫函数不存在、计划卡与提问卡共用一条规则。
+
+## 已知边界
+
+- 输入卡在**视频壁纸**下画的是封面帧（和表头、吸顶盖一样）。会动的副本只做在表头上。
+- 输入卡高度变了要重测一次（`ResizeObserver` + 值比较）。最坏情况每帧四个 `setProperty`。
+- 计划卡能加 `backdrop-filter` 是因为它内部没有 portal 菜单；将来若挂了菜单，必须改成搬壁纸。
+- 本轮**没有做像素量测**：这台机器上没有可用的浏览器自动化，而搬壁纸的正确性依赖
+  `clip-path: inset(… round …)` 的真实渲染。`__dshbgProbe()` 与三个视觉断言的组合能覆盖
+  结构与语法，但「逐像素一致」这条结论要等真机截图。

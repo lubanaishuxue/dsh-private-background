@@ -1493,27 +1493,78 @@ html[data-dshbg-on] ${frameSelector()} > div:nth-of-type(2) {
     }
 
     /**
-     * The message box gets its own opacity too.
+     * The message box: clear the host's plate, and let `composerWallCss` paint under it.
      *
-     * `[data-composer-card]` is the element that paints `background: var(--dsw-specific-input-major)`,
-     * so overriding that one token *on that element* is enough - a custom property declared
-     * on an element applies to that element's own declarations as well, which is why no
-     * separate `background` rule is needed here.
+     * ⚠️ **1.4.4 起这里不再写 `--dsw-specific-input-major`。** 那正是「计划待审卡片透出正文」
+     * 的根因：自定义属性是**继承**的，而这个 token 是宿主的通用「输入类表面」底色 ——
+     * `PlanReviewPanel` 的 `.card` 也写着 `background: var(--dsw-specific-input-major)`。
+     * 把它改成 50% 半透明，改的就不是「这一张输入卡」，而是**卡片里所有用这个 token 的东西**。
+     * 要调的是这**一个元素**，所以改成 `background: transparent` 只作用于它自己。
      *
-     * This is the one surface where the wallpaper is least welcome: it sits directly under
-     * the text being typed, and a bright patch behind the placeholder makes it read as a
-     * rendering glitch rather than as a design choice.
+     * ⚠️ 也不再有任何 `backdrop-filter` —— 理由见 `composerWallCss`。
      */
     function composerCss(settings) {
-      // Glass mode paints the composer directly, so a second token override would just
-      // fight it. Solid mode keeps the token route.
-      if (settings.composerStyle === 'glass') return '';
-      const alpha = clamp(settings.composerSurface, 0, 100);
       return `
 html[data-dshbg-on] [data-composer-card] {
-  --dsw-specific-input-major: color-mix(in srgb, var(--dshbg-raw-input) ${alpha}%, transparent) !important;
+  position: relative !important;
+  isolation: isolate !important;
+  background: transparent !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 `;
+    }
+
+    /**
+     * 输入卡上的壁纸副本 —— 和表头、吸顶盖同一套（`wallCopyDecls`）。
+     *
+     * **为什么不 `backdrop-filter`**（这是 1.4.4 的全部来由）：
+     *
+     *  1. 右栏一打开，中间列被重新排版，卡的 backdrop 采样面跟着变 —— 屏幕上就是
+     *     「右侧面板出现时，左边的磨砂没了」。采样结果依赖祖先链的合成方式，这是不可靠的依赖。
+     *  2. `/` 菜单挂在这张卡**外面**（`bottom: calc(100% + 4px)`），卡上的 `backdrop-filter`
+     *     会建 backdrop root，把菜单自己的模糊饿死。1.4.3 的绕法是「菜单一开就把卡的模糊摘掉」，
+     *     于是卡只剩 `composerSurface` 那点填充 —— 用户看到的是「打 / 的时候输入区变透明」。
+     *
+     * 搬像素不采样任何东西：画的就是壁纸那一份像素，布局怎么变都对，菜单也不必再让路。
+     * 于是 `installComposerMenuGuard` 整条链路（连同它那个全树观察者）一起删掉了。
+     *
+     * 两层，和吸顶盖同因：
+     *   - `::before` 壁纸副本（`filter` 已含 blur/dim，与周围是同一批像素）
+     *   - `::after` 底色板：卡背后是**对话面板**，所以「周围」= 壁纸 × 面板底色；
+     *     只贴壁纸会亮一大截（1.3.39 在盖子上量到 1.66 倍）。这一层不参与滤镜，叠在模糊
+     *     之后，与面板自己的做法一致；上面再压 `composerSurface` 那档「输入框不透明度」，
+     *     因为这张卡本来就该比周围实一点 —— 它底下是正在输入的字。
+     */
+    function composerWallCss(settings) {
+      const fill = clamp(settings.composerSurface, 0, 100);
+      const glass = settings.composerStyle === 'glass';
+      const plate = `color-mix(in srgb, var(--dshbg-raw-input) ${fill}%, transparent)`;
+      return `
+html[data-dshbg-on] [data-composer-card]::before {${wallCopyDecls(
+        '--dshbg-composer',
+        'var(--dshbg-composer-h, 0px)',
+        'var(--dshbg-composer-radius, var(--dsw-radius-xl, 20px))',
+      )}
+}
+html[data-dshbg-on] [data-composer-card]::after {
+  content: "" !important;
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: -1 !important;
+  pointer-events: none !important;
+  border-radius: inherit !important;
+  background-image:
+    linear-gradient(${plate}, ${plate}),
+    linear-gradient(var(--dsw-alias-bg-base, transparent), var(--dsw-alias-bg-base, transparent)) !important;
+}
+${glass ? `html[data-dshbg-on] [data-composer-card] {
+  box-shadow:
+    inset 0 1px 0 0 rgb(255 255 255 / 0.10),
+    inset 0 0 0 1px color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent),
+    0 10px 30px -14px rgb(0 0 0 / 0.55) !important;
+}
+` : ''}`;
     }
 
     /**
@@ -1543,7 +1594,7 @@ html[data-dshbg-on] [data-composer-card] {
      * ⚠️ **Never put this on an ancestor of a menu.** `backdrop-filter` creates a backdrop
      * root, and a menu hanging outside that ancestor's box samples an empty area - its blur
      * silently does nothing. That is exactly what the composer card used to do to the `/`
-     * menu, which is why `composerGlassCss` hand-rolls the pane. Leaves are fine;
+     * menu, which is why `composerWallCss` hand-rolls the pane. Leaves are fine;
      * containers that own popovers are not.
      * ⚠️ **No `backdrop-filter` here at all** (v2.47.0). The wallpaper is already blurred at
      * the `html::before` layer, so this element would pay for a full backdrop snapshot per
@@ -1637,7 +1688,7 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_preview"]:has([class*="_previewRes
      * down to `transparent` / `none`.
      * ⚠️ `backdrop-filter` creates a backdrop root, and the `/` menu hangs *outside* the
      * composer card. If any ancestor of it carries a blur, the menu samples an empty area and
-     * its blur silently does nothing - no fill ratio can compensate. See `composerGlassCss`:
+     * its blur silently does nothing - no fill ratio can compensate. See `composerWallCss`:
      * the card gives its backdrop-filter up.
      * ⚠️ Fill and radius are a pair, not two knobs: more radius flattens the backdrop harder,
      * so less fill is needed.
@@ -1768,7 +1819,7 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
       //     earlier 86%-fill version hid the code by making the bar almost solid, which is
       //     exactly what the user rejected.
       //
-      // Same defaults as `composerGlassCss`, so the two cannot drift apart.
+      // Same defaults as `composerWallCss`, so the two cannot drift apart.
       const bannerFill = clamp(settings.composerSurface, 0, 100);
       const bannerBlur = menuBlurOf(settings);
       // A comma inside one item would leave its tail unprefixed, so these stay separate
@@ -1817,6 +1868,17 @@ ${prefixed('html[data-dshbg-on]', ['[class*="_bubble_"][data-side]'])} {
       // Separate array entries, never one comma-joined string: `prefixed()` prefixes each
       // *item*, so a comma inside an item would leave its tail unprefixed.
       const deliverable = ['[data-presented-file]', `[class$="_file"]:has(> [class$="_fileBody"])`];
+      // ---- 文件卡的底色挂在两个**局部变量**上（1.4.4）----
+      //
+      // 宿主的 `PresentedFileCard` 写的是：
+      //     .file        { background: var(--deliverable-fill) }
+      //     .file:hover  { background: var(--deliverable-hover) }
+      // 而 `--deliverable-fill` 默认就是 `--dsw-alias-card-fill`（暗色主题下一块实心深灰）。
+      // 光给这个元素写 `background-color: … !important` 是不够的：宿主那两条会在 hover 的
+      // 那一帧把画面换到另一个变量上，于是从玻璃跳回一块实心卡 —— 用户看到的就是「它一直
+      // 是块黑的」。所以照 `[data-changed-files]` 的老办法，把这两个变量一起放倒。
+      // 这条**不要**写成 CSS 里的块注释：这个项目在模板字符串里放 `/* */` 会同时踩两个坑
+      // （`no stray block comments` 断言，以及注释里的反引号会提前闭合模板字符串）。
       // The turn's changed-files card (`已编辑 N 个文件`). Its body paints
       // `--dsw-alias-bg-layer-1`, which is in the remix list, but its **header** paints
       // `--changes-fill`, which the host pins to `--dsw-static-neutral-850` in the dark
@@ -1868,6 +1930,10 @@ ${prefixed('html[data-dshbg-on]', [changed])} {
   --changes-fill: transparent !important;
   --changes-hover: color-mix(in srgb, var(--dshbg-raw-label-0) 8%, transparent) !important;
 }
+${prefixed('html[data-dshbg-on]', deliverable)} {
+  --deliverable-fill: transparent !important;
+  --deliverable-hover: color-mix(in srgb, var(--dshbg-raw-label-0) 8%, transparent) !important;
+}
 ${prefixed('html[data-dshbg-on]', blocks)} {
   --dsl-code-block-background: transparent !important;
   --dsl-code-block-banner-background-color: transparent !important;
@@ -1898,46 +1964,6 @@ ${prefixed('html[data-dshbg-on]',
 }
 ${prefixed('html[data-dshbg-on]', [inlineCode])} {
 ${glassChip()}
-}
-`;
-    }
-
-    /**
-     * The message box, on its own switch.
-     *
-     * `backdrop-filter` makes an element a backdrop root, and the `/` command menu is a
-     * descendant of this card that hangs *outside* its box (`bottom: calc(100% + 4px)`), so
-     * a blur here would starve the menu's own blur. Two attempts at dodging that - a
-     * `::before` with `z-index: -1`, and the same with `isolation` swapped for `z-index` -
-     * both rendered the fill and never the blur. So the blur lives on the card itself, which
-     * is the pattern the transcript cards prove works, and the menu is handled by state:
-     * `installComposerMenuGuard` flips `data-dshbg-menu` on `<html>` while a menu is open and
-     * the second rule below drops this card's blur for that moment. The menu then gets its
-     * own blur back; the composer keeps its density throughout.
-     *
-     * Density is the user's "输入框不透明度" (`composerSurface`), not the menu fill: this is
-     * the one surface with a caret on it, so how much wallpaper is acceptable under your own
-     * typing is its own dial - and it has to work in solid *and* glass mode, which is what
-     * the token route in `composerCss` and this rule now share.
-     */
-    function composerGlassCss(settings) {
-      if (settings.composerStyle !== 'glass') return '';
-      const blur = menuBlurOf(settings);
-      const fill = clamp(settings.composerSurface, 0, 100);
-      return `
-${prefixed('html[data-dshbg-on]', ['[data-composer-card]'])} {
-  position: relative !important;
-  background-color: color-mix(in srgb, var(--dshbg-raw-base) ${fill}%, transparent) !important;
-  -webkit-backdrop-filter: blur(${blur}px) saturate(160%) !important;
-  backdrop-filter: blur(${blur}px) saturate(160%) !important;
-  box-shadow:
-    inset 0 1px 0 0 rgb(255 255 255 / 0.10),
-    inset 0 0 0 1px color-mix(in srgb, var(--dshbg-raw-label-0) 16%, transparent),
-    0 10px 30px -14px rgb(0 0 0 / 0.55) !important;
-}
-${prefixed('html[data-dshbg-on][data-dshbg-menu]', ['[data-composer-card]'])} {
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
 }
 `;
     }
@@ -2493,11 +2519,26 @@ html[data-dshbg-on] [data-dshbg-lid]::after {
      *
      * 那条「圆角外面套一个直角」——真正的元凶见 `chatSurfaceCss` 里 `bubble` 数组下面
      * 关于 `_bubbleWidth` 的注释：`[class*="_bubble"]` 是子串匹配，把限宽壳也画了一遍。
+     *
+     * ---- 第二张同形状的卡：计划待审（1.4.4）----
+     *
+     * 宿主的 `PlanReviewPanel`（`dsh-client-ui-user-questions`）是**一模一样的形状**：
+     *
+     *   div.xxx_frame[data-plan-review-key] > section.xxx_card
+     *
+     * 而且它的 `.card` 也写着 `background: var(--dsw-specific-input-major)` —— 同一口锅。
+     * 1.4.3 及之前它不在这条规则里，于是背景取的是主题原值再被输入区的重混拉稀，
+     * 屏幕上就是「卡片那块什么都没有，正文从底下透出来」。
+     *
+     * 两个 `data-*` 都是宿主写死在 JSX 字面量里的（`data-question-key` / `data-plan-review-key`），
+     * 不随构建的类名哈希变，所以一条规则能同时管两种卡。
      */
+    const QUESTION_CARDS = ['[data-question-key] > section', '[data-plan-review-key] > section'];
+
     function questionCardCss(settings) {
       const { blur } = stickyHeadRecipe(settings);
       return `
-${prefixed('html[data-dshbg-on]', ['[data-question-key] > section'])} {
+${prefixed('html[data-dshbg-on]', QUESTION_CARDS)} {
   background-color: ${paneFill()} !important;
   -webkit-backdrop-filter: blur(${blur}px) saturate(150%) !important;
   backdrop-filter: blur(${blur}px) saturate(150%) !important;
@@ -3041,8 +3082,13 @@ ${restores}
      *   图、取景、滤镜、溢出量对所有消费方都是同一份，写在 `:root` 上让它们继承。
      * @param {string} paintHeight 这个元素「该露出多高」的 CSS 表达式。表头用宿主算的
      *   `--plugin-header-paint-height`（折叠动画要跟得上），吸顶盖用自己的高度。
+     * @param {string} [round] 可选：裁出来的矩形四角磨圆的半径（CSS 长度表达式）。
+     *   输入框卡片是圆角的，用矩形 `inset()` 裁会露出四个直角；`inset(… round R)`
+     *   让裁切边界自己带圆角。表头与吸顶盖不传，输出与 1.3.39 逐字相同。
      */
-    function wallCopyDecls(boxVar, paintHeight) {
+    function wallCopyDecls(boxVar, paintHeight, round) {
+      const corner = round === undefined || round === '' ? '' : `
+    round ${round}`;
       return `
   content: "" !important;
   position: absolute !important;
@@ -3065,7 +3111,7 @@ ${restores}
     calc(var(${boxVar}-y, 0px) + var(--dshbg-head-bleed, 0px))
     calc(100vw + var(--dshbg-head-bleed, 0px) - var(${boxVar}-x, 0px) - var(${boxVar}-w, 0px))
     calc(100vh + var(--dshbg-head-bleed, 0px) - var(${boxVar}-y, 0px) - ${paintHeight})
-    calc(var(${boxVar}-x, 0px) + var(--dshbg-head-bleed, 0px))
+    calc(var(${boxVar}-x, 0px) + var(--dshbg-head-bleed, 0px))${corner}
   ) !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;`;
@@ -3520,9 +3566,11 @@ html[data-dshbg-on] select option:checked {
         previewCardCss(settings),
         menuSurfaceCss(settings),
         tooltipGlassCss(settings),
-        composerGlassCss(settings),
-        // 必须在 `composerGlassCss` 之后：那张卡上「摘壳」的规则和它同特异性（都是
-        // `html[data-dshbg-on] [data-composer-card]`），只有顺序能决定谁赢。
+        // 输入卡：壁纸副本 + 底色板。必须排在 `composerCss` 之后（它先把宿主那层底清掉），
+        // 也要排在 `questionCardCss` 之前 —— 那张卡是输入卡的同款邻居，谁都不该被谁盖住。
+        composerWallCss(settings),
+        // 提问卡片 / 计划待审卡片。它们和输入卡同形状（`frame > section`），但配方不同：
+        // 这两张在**输入区里面**，背景必须是自己的，不能跟着输入框的稀薄度走。
         questionCardCss(settings),
         rightPanelGlassCss(settings),
         sidebarGlassCss(settings),
@@ -3788,52 +3836,6 @@ html[data-dshbg-on] select option:checked {
     }
 
     /**
-     * Keeps the composer's frost and the `/` menu's frost from cancelling each other.
-     *
-     * The command menu is rendered inside `[data-composer-card]` and hangs outside its box.
-     * A `backdrop-filter` on the card makes the card a backdrop root, so the menu would only
-     * sample what is painted inside that root - nothing - and its own blur would silently
-     * die. The two cannot be blurred at once, so this picks by state: while such a menu is
-     * open `<html>` carries `data-dshbg-menu` and the card drops its blur; the menu gets its
-     * own back. Closing it restores the composer.
-     */
-    function installComposerMenuGuard() {
-      if (typeof MutationObserver === 'undefined') return { sync() {}, dispose() {} };
-      const root = document.documentElement;
-      let timer = 0;
-      let disposed = false;
-
-      const sync = () => {
-        timer = 0;
-        if (disposed) return;
-        if (!root.hasAttribute('data-dshbg-on')) {
-          root.removeAttribute('data-dshbg-menu');
-          return;
-        }
-        const open = document.querySelector('[data-composer-card] [data-menu-material]') !== null;
-        if (open) root.setAttribute('data-dshbg-menu', '');
-        else root.removeAttribute('data-dshbg-menu');
-      };
-
-      const schedule = () => {
-        if (disposed || timer !== 0) return;
-        timer = setTimeout(sync, 120);
-      };
-
-      const observer = new MutationObserver(schedule);
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-      return {
-        sync,
-        dispose() {
-          disposed = true;
-          if (timer !== 0) clearTimeout(timer);
-          observer.disconnect();
-          root.removeAttribute('data-dshbg-menu');
-        },
-      };
-    }
-
-    /**
      * 宿主把一整页文档铺在窗口上时给 `<html>` 打标记，给 `hostPanelCss` 用。
      *
      * 认的是宿主自己的属性，不是长相：文档预览的外框挂着 `data-document-preview`
@@ -3951,6 +3953,12 @@ html[data-dshbg-on] select option:checked {
        * 取决于「还有没有别的地方在用那张封面」。声明放在这里是因为 `applyWall()` 会用到它。
        */
       let lidNodes = [];
+      /**
+       * 输入卡的选择器。放在这里而不是 `measureComposer` 旁边，是因为 `applyWall()`
+       * 也要用它（下面那条「封面退不退场」的判断需要一个「还有没有别的消费方」的答案），
+       * 而 `applyWall()` 定义在前。
+       */
+      const COMPOSER_SELECTOR = '[data-composer-card]';
 
       /**
        * 会动的壁纸（视频）在表头里的那份副本。
@@ -3985,7 +3993,8 @@ html[data-dshbg-on] select option:checked {
         //
         // 封面退场那条也跟着改了口径：视频副本画上来之后撤掉封面（省一块全屏 `blur()`），
         // 但**只要还有吸顶盖在，封面就得留着**。盖子上没有视频副本，它靠封面当画面。
-        const mutePoster = posterHidden && lidNodes.length === 0;
+        const mutePoster = posterHidden && lidNodes.length === 0
+          && document.querySelector(COMPOSER_SELECTOR) === null;
         for (let i = 0; i < HEAD_WALL_VARS.length; i += 1) {
           let value = wallVars === null ? undefined : wallVars[HEAD_WALL_VARS[i]];
           if (i === 0 && mutePoster) value = 'none';
@@ -4174,8 +4183,72 @@ html[data-dshbg-on] select option:checked {
        * 只在数值真的变了才写：滚动时 `paint()` 被频繁调用，而写同一个值也会让浏览器重算
        * 依赖这些变量的 `calc()`（`clip-path` 里有两个）。
        */
+      // ---------------------------------------------------------------- 输入框
+
+      /**
+       * 输入卡也要一份壁纸副本（`composerWallCss`），所以它的视口坐标得有人量。
+       *
+       * 量的是**宿主那张卡**：`[data-composer-card]` 是宿主给输入框自己的标记，
+       * 类名哈希怎么变都不影响它。
+       *
+       * 输入卡的高度是动态的（多行输入、附件行、计划待审卡出现都会把它撑高），
+       * 光靠 `resize` / `scroll` 不够 —— 那两条只在窗口和滚动时来。所以额外挂一个
+       * `ResizeObserver` 在卡上，尺寸一变就补一次。
+       *
+       * 圆角只在**尺寸变化时**读一次 `getComputedStyle`：它不是会单独变的东西，
+       * 而滚动时每帧读一次样式表就不划算了。读到之前伪元素用 `--dsw-radius-xl` 兜底。
+       */
+      const COMPOSER_BOX_VARS = [
+        '--dshbg-composer-x',
+        '--dshbg-composer-y',
+        '--dshbg-composer-w',
+        '--dshbg-composer-h',
+      ];
+      let composerBox = '';
+      let composerWatch = null;
+      let composerWatched = null;
+
+      const measureComposer = () => {
+        const card = document.querySelector(COMPOSER_SELECTOR);
+        if (card === null) {
+          composerBox = '';
+          if (composerWatch !== null) {
+            composerWatch.disconnect();
+            composerWatch = null;
+            composerWatched = null;
+          }
+          return;
+        }
+        // 宿主重渲染会换掉这个节点（React 不认识我们的伪元素，但认识自己的卡），
+        // 换了就重新挂观察者，否则新卡永远等不到第一次尺寸变化。
+        if (card !== composerWatched) {
+          if (composerWatch !== null) composerWatch.disconnect();
+          if (typeof ResizeObserver !== 'undefined') {
+            composerWatch = new ResizeObserver(() => requestMeasure());
+            composerWatch.observe(card);
+          }
+          composerWatched = card;
+        }
+        const box = card.getBoundingClientRect();
+        const next = [
+          Math.round(box.left * 10) / 10,
+          Math.round(box.top * 10) / 10,
+          Math.round(box.width * 10) / 10,
+          Math.round(box.height * 10) / 10,
+        ].join('|');
+        if (next === composerBox) return;
+        composerBox = next;
+        const values = next.split('|');
+        for (let i = 0; i < COMPOSER_BOX_VARS.length; i += 1) {
+          card.style.setProperty(COMPOSER_BOX_VARS[i], `${values[i]}px`);
+        }
+        const radius = getComputedStyle(card).borderTopLeftRadius;
+        if (radius !== '') card.style.setProperty('--dshbg-composer-radius', radius);
+      };
+
       const measure = () => {
-        // 吸顶盖先量：它和表头互不相干，但同一次 rAF 里干完，少一个监听器。
+        // 输入卡与吸顶盖都先量：三条线互不相干，但同一次 rAF 里干完，少两个监听器。
+        measureComposer();
         measureLids();
         if (marked === null) {
           headBox = '';
@@ -4606,6 +4679,81 @@ html[data-dshbg-on] select option:checked {
       window.__dshbgHead = report;
 
       /**
+       * `window.__dshbgProbe()` —— 把「这三块到底吃到了什么样式」一次性问出来。
+       *
+       * 存在的理由：1.4.4 修的四个视觉缺陷，有三个是**宿主换了节点**（计划待审面板是新的、
+       * 文件卡换了局部变量、输入卡多了邻居）。这类问题没法靠读源码确定——同一份 TSX 编出来的
+       * 类名是哈希的，而算出来的背景可能被任何一条后来者盖掉。所以留一个只读探针：
+       *
+       *   composer     输入卡：有没有、坐标写没写、自己与祖先链上的 filter/transform/backdrop
+       *   planReview   计划待审：在不在、**是不是在输入卡内部**（这决定 token 是不是被继承）、
+       *                解析后的 `--dsw-specific-input-major`
+       *   presentedFile 文件卡：背景、`--deliverable-fill`、有没有吃到玻璃的 inset 环
+       *
+       * 全是 `getComputedStyle`，不写任何东西，可以随时在控制台敲。
+       */
+      const probe = () => {
+        const describe = (node) => {
+          if (node === null) return null;
+          const style = getComputedStyle(node);
+          return {
+            tag: node.tagName.toLowerCase(),
+            background: style.backgroundColor,
+            backdrop: style.backdropFilter || style.webkitBackdropFilter || 'none',
+            borderRadius: style.borderTopLeftRadius,
+            shadow: style.boxShadow === 'none' ? 'none' : 'set',
+          };
+        };
+        /** 第一个会让 `backdrop-filter` 换采样面的祖先 —— 空数组就是干净的。 */
+        const suspects = (node) => {
+          const found = [];
+          let cursor = node === null ? null : node.parentElement;
+          while (cursor !== null && found.length < 6) {
+            const style = getComputedStyle(cursor);
+            const marks = [];
+            if (style.filter !== 'none') marks.push('filter');
+            if (style.transform !== 'none') marks.push('transform');
+            if (style.willChange !== 'auto') marks.push(`will-change(${style.willChange})`);
+            if ((style.backdropFilter || 'none') !== 'none') marks.push('backdrop');
+            if (marks.length !== 0) found.push(`${cursor.tagName.toLowerCase()}: ${marks.join(', ')}`);
+            cursor = cursor.parentElement;
+          }
+          return found;
+        };
+        // `:scope > section` 而不是 `.card`：类名是哈希的，结构不是。
+        const sectionOf = (frame) => (frame === null ? null : frame.querySelector(':scope > section'));
+        const card = document.querySelector(COMPOSER_SELECTOR);
+        const review = document.querySelector('[data-plan-review-key]');
+        const reviewSection = sectionOf(review);
+        const file = document.querySelector('[data-presented-file]');
+        return {
+          on: root.hasAttribute('data-dshbg-on'),
+          composer: {
+            found: card !== null,
+            box: composerBox,
+            style: describe(card),
+            suspects: suspects(card),
+          },
+          planReview: {
+            found: review !== null,
+            insideComposer: card !== null && review !== null && card.contains(review),
+            section: describe(reviewSection),
+            token: reviewSection === null
+              ? null
+              : getComputedStyle(reviewSection).getPropertyValue('--dsw-specific-input-major').trim(),
+          },
+          presentedFile: {
+            found: file !== null,
+            style: describe(file),
+            fill: file === null
+              ? null
+              : getComputedStyle(file).getPropertyValue('--deliverable-fill').trim(),
+          },
+        };
+      };
+      window.__dshbgProbe = probe;
+
+      /**
        * `window.__dshbgHeadGlass(false)` / `(true)` - hand this one bar back to the host, or
        * take it back, **without a restart**.
        *
@@ -4695,13 +4843,29 @@ html[data-dshbg-on] select option:checked {
           window.removeEventListener('scroll', requestMeasure, { capture: true });
           unmark();
           unmarkLids();
-          // 壁纸那四个数写在根上（表头和盖子共用），走的时候要一起带走 —— 否则关掉插件后
-          // 页面上还剩着一份几百 KB 的自定义属性。
+          // 输入卡上的四个坐标与圆角也是写上去的，一起带走（否则关掉插件后卡上还留着
+          // 一堆没人读的自定义属性；更糟的是重开时 `composerBox` 的缓存与它对不上）。
+          if (composerWatch !== null) {
+            composerWatch.disconnect();
+            composerWatch = null;
+            composerWatched = null;
+          }
+          composerBox = '';
+          const composerCard = document.querySelector(COMPOSER_SELECTOR);
+          if (composerCard !== null) {
+            for (let i = 0; i < COMPOSER_BOX_VARS.length; i += 1) {
+              composerCard.style.removeProperty(COMPOSER_BOX_VARS[i]);
+            }
+            composerCard.style.removeProperty('--dshbg-composer-radius');
+          }
+          // 壁纸那四个数写在根上（表头、盖子、输入卡共用），走的时候要一起带走 ——
+          // 否则关掉插件后页面上还剩着一份几百 KB 的自定义属性。
           for (let i = 0; i < HEAD_WALL_VARS.length; i += 1) {
             root.style.removeProperty(HEAD_WALL_VARS[i]);
             appliedWall[i] = null;
           }
           if (window.__dshbgHead === report) delete window.__dshbgHead;
+          if (window.__dshbgProbe === probe) delete window.__dshbgProbe;
           if (typeof window.__dshbgHeadGlass === 'function') delete window.__dshbgHeadGlass;
           if (window.__dshbgEntry === entryReport) delete window.__dshbgEntry;
         },
@@ -4717,7 +4881,6 @@ html[data-dshbg-on] select option:checked {
       document.head.appendChild(tag);
 
       const marquee = installTitleMarquee();
-      const composerMenu = installComposerMenuGuard();
       const hostPanel = installHostPanelGuard();
       const configHead = installConfigHead();
 
@@ -4763,9 +4926,6 @@ html[data-dshbg-on] select option:checked {
         // Turning the wallpaper off also drops the `text-overflow: clip` that the marquee
         // depends on, so the animations have to follow the stylesheet, not the setting.
         marquee.sync();
-        // Re-check the composer/menu trade whenever the sheet changes: a menu that stayed
-        // open across a settings change still needs the card's blur dropped.
-        composerMenu.sync();
         // Same for the "a host panel owns the window" marker: the preview can be closed
         // while a slider is being dragged, and the sheet has to follow it back.
         hostPanel.sync();
@@ -4830,7 +4990,6 @@ html[data-dshbg-on] select option:checked {
             entryDispose = null;
             pinFace = null;
             marquee.dispose();
-            composerMenu.dispose();
             hostPanel.dispose();
             configHead.dispose();
             tag.remove();

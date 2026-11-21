@@ -677,16 +677,32 @@ async function main() {
   check('conversation opacity moves independently', chatLow.css.includes('var(--dshbg-raw-base) 12%') && chatLow.css.includes('var(--dshbg-raw-base) 20%'));
 
   console.log('\ncomposer opacity');
-  // [data-composer-card] is the element that paints the message box, so overriding the
-  // input token on it covers the fill without a second background rule.
+  // 1.4.4 起输入卡**不再改写 `--dsw-specific-input-major`**。
+  //
+  // 那个 token 是继承的，而宿主的「计划待审」面板（`PlanReviewPanel` 的 `.card`）也写着
+  // `background: var(--dsw-specific-input-major)` —— 把它改成半透明，改的就不是「这一张
+  // 输入卡」，而是卡片里所有用这个 token 的东西，正文于是从计划卡底下透出来。
+  // 现在只清这一张卡自己的底色，不透明度落在 `::after` 的底色板上。
   const composerRule = /html\[data-dshbg-on\] \[data-composer-card\]\s*\{([^}]*)\}/.exec(base.css);
-  check('message box gets its own input token', composerRule !== null);
+  check('message box clears its own plate', composerRule !== null);
   if (composerRule !== null) {
-    check('uses the composer value, not the panel one', composerRule[1].includes('var(--dshbg-raw-input) 85%'), composerRule[1].trim().slice(0, 80));
+    check(
+      'and it uses a background rule, not the shared input token',
+      /background: transparent/.test(composerRule[1]) &&
+        !/--dsw-specific-input-major/.test(composerRule[1]),
+      composerRule[1].trim().slice(0, 80),
+    );
+    check(
+      'the input surface token is left alone for its other users',
+      !/\[data-composer-card\][^{]*\{[^}]*--dsw-specific-input-major/.test(base.css),
+    );
     check('composer override carries !important', /!important/.test(composerRule[1]));
   }
   const composerLow = await emit({ composerSurface: 30 });
-  check('composer opacity moves independently', composerLow.css.includes('var(--dshbg-raw-input) 30%'));
+  check(
+    'composer opacity moves independently',
+    composerLow.css.includes('var(--dshbg-raw-input) 30%, transparent'),
+  );
   check('panel input token still at its own value', composerLow.css.includes('var(--dshbg-raw-input) 28%'));
 
   console.log('\nliquid glass');
@@ -735,14 +751,17 @@ async function main() {
   // 把对话框自己的两个值读出来比对。写死 50/50 的话，用户一调滑杆这条就失去意义了。
   const composerFill = Number(
     (glass.css.match(
-      /\[data-composer-card\] \{\s*position: relative !important;\s*background-color: color-mix\(in srgb, var\(--dshbg-raw-base\) (\d+)%/,
+      /\[data-composer-card\]::after \{[\s\S]{0,500}?var\(--dshbg-raw-input\) (\d+)%/,
     ) || [])[1],
   );
-  const composerBlur = Number(
-    (glass.css.match(/\[data-composer-card\] \{[\s\S]{0,600}?backdrop-filter: blur\((\d+)px\)/) || [])[1],
-  );
   check('the banner reads the composer fill', composerFill > 0 && bannerDefault.fill === composerFill);
-  check('the banner reads the composer blur', composerBlur > 0 && bannerDefault.blur === composerBlur);
+  // 1.4.4 起输入卡不采样背景（搬壁纸），所以这里没有第二个 blur 可以和 banner 比 ——
+  // 该钉住的是「它真的一个 backdrop-filter 都没有」，那正是「右栏一开磨砂就没了」
+  // 和「打 / 之后输入区变透明」两个缺陷的共同根因。
+  check(
+    'the composer itself samples no backdrop at all',
+    !/\[data-composer-card\] \{[^}]*backdrop-filter: blur/.test(glass.css),
+  );
   const bannerTuned = bannerRule(
     (await emit({ composerStyle: 'glass', composerSurface: 72, menuBlur: 24 })).css,
   );
@@ -948,37 +967,42 @@ async function main() {
       base.css,
     ),
   );
-  // 输入框卡片：模糊画在卡片**自己身上**，菜单的冲突交给状态裁决。
+  // 输入框卡片：1.4.4 起走「搬壁纸」，不再采样背景。
   //
-  // 历史：先是「模糊挂 ::before + isolation」（填充渲染、模糊从没上屏），再是「::before +
-  // z-index: 0」（同样没上屏）。现在用转录区卡片验证过的那条路——元素自带 backdrop-filter——
-  // 并用 installComposerMenuGuard 在 `/` 菜单打开期间把卡片的模糊让出去，菜单才拿回自己的。
-  //
-  // 这条必须在「质感 = 液态玻璃」下测：实心模式压根不给卡片套玻璃配方。
+  // 历史：先是「模糊挂 ::before + isolation」（填充渲染、模糊从没上屏）→「元素自带
+  // backdrop-filter，菜单打开时把它摘掉」（右栏一开磨砂就没了、打 `/` 时输入区变透明）
+  // → 现在是 `::before` 画一份壁纸副本、`::after` 压一块底色板。两次失败共享同一个前提：
+  // `backdrop-filter` 的结果取决于祖先链怎么合成，而输入卡周围的布局是会变的。
   const glassy = await emit({ composerStyle: 'glass' });
   check(
-    'composer card paints its own frost',
-    /\[data-composer-card\] \{[^}]*var\(--dshbg-raw-base\) 85%[\s\S]{0,400}?backdrop-filter: blur\(12px\) saturate\(160%\)/.test(
+    'composer card paints the wallpaper itself',
+    /\[data-composer-card\]::before \{[^}]*--dshbg-composer-x[\s\S]{0,1200}?background-image: var\(--dshbg-head-img/.test(
+      glassy.css,
+    ),
+  );
+  check(
+    'and the copy is cut to the card own rounded box',
+    /\[data-composer-card\]::before \{[^}]*clip-path: inset\([\s\S]{0,500}?round var\(--dshbg-composer-radius/.test(
       glassy.css,
     ),
   );
   check(
     'composer density comes from its own slider',
-    (await emit({ composerStyle: 'glass', composerSurface: 40 })).css.includes('var(--dshbg-raw-base) 40%, transparent'),
-  );
-  check(
-    'composer hands its blur to the menu while a menu is open',
-    /html\[data-dshbg-on\]\[data-dshbg-menu\] \[data-composer-card\] \{[^}]*backdrop-filter: none/.test(
-      glassy.css,
+    (await emit({ composerStyle: 'glass', composerSurface: 40 })).css.includes(
+      'var(--dshbg-raw-input) 40%, transparent',
     ),
   );
   check(
-    'the menu guard watches for a menu inside the composer',
-    CODE.includes("document.querySelector('[data-composer-card] [data-menu-material]')"),
+    'the plate sits in its own layer, not inside the copy filter',
+    /\[data-composer-card\]::after \{[^}]*border-radius: inherit !important;[\s\S]{0,500}?linear-gradient/.test(
+      glassy.css,
+    ),
   );
+  check('the menu trade-off is gone from the stylesheet', !/data-dshbg-menu/.test(glassy.css));
   check(
-    'composer no longer depends on a pseudo-element',
-    !/\[data-composer-card\]::before/.test(glassy.css),
+    'and so is the guard that used to mediate it',
+    // 只钉函数本身：`[data-menu-material]` 仍是宿主菜单的合法标记，`menuSurfaceCss` 还在用它。
+    !/function installComposerMenuGuard/.test(CODE),
   );
   // 右侧侧边栏：玻璃铺在 panel 根上（它自己本来一点底色都没有，可见的面在更下层），
   // 下面几层 dockkit 必须停止画底色，否则盖住玻璃。
@@ -1190,10 +1214,13 @@ async function main() {
   };
   const dockBlur = blurOfRule(frostedTwice.css, '\\[data-composer-dock\\]');
   const cardBlur = blurOfRule(frostedTwice.css, '\\[data-composer-card\\]');
+  check('the dock reads the menu blur knob', dockBlur === '27', `dock ${dockBlur}`);
+  // 1.4.4 起输入卡不采样背景，所以「和它同一个 blur」这句话不再成立 —— 反过来钉：
+  // 它必须**没有** blur，否则「右栏一开磨砂就没了」会跟着回来。
   check(
-    'the dock and the message box read the same blur knob',
-    dockBlur === '27' && cardBlur === '27',
-    `dock ${dockBlur} / card ${cardBlur}`,
+    'while the message box has no blur to share any more',
+    !cardBlur,
+    `card ${cardBlur}`,
   );
   // 「回到最下面」那颗圆钮浮在正文上面，所以用比 pane 重的填充，并且要留住投影 ——
   // 换掉 box-shadow 就等于把宿主给的 --dsw-elevation-panel 弄丢了，它会看起来贴在纸上。
@@ -2103,7 +2130,9 @@ async function main() {
   // 因此还写了「摘掉输入框两层壳」的规则 —— 那两张壳根本不是它的祖先，规则一次都没
   // 匹配过。真凶在 `question card + dock strip` 那一段：`[class*="_bubble"]` 子串命中
   // 限宽壳 `_bubbleWidth`。假的修法已经删掉，别再加回来。
-  const qCard = /\[data-question-key\] > section \{[^}]*\}/.exec(base.css)?.[0] ?? '';
+  // 两条选择器现在写在同一个规则里（`QUESTION_CARDS`），中间隔着逗号和第二个前缀，
+  // 所以用 `[^{]*` 把那段一并吃进来。
+  const qCard = /\[data-question-key\] > section[^{]*\{([^}]*)\}/.exec(base.css)?.[1] ?? '';
   check('the question card owns its own surface', qCard.includes('background-color'));
   check(
     'and it frosts the wallpaper instead of inheriting the input token',
@@ -2117,6 +2146,43 @@ async function main() {
     'and nothing is stood down behind it - the composer-shell theory was wrong',
     !base.css.includes(':has([data-question-key])'),
   );
+  // 1.4.4：同一张卡的孪生兄弟 —— 宿主的「计划待审」面板（`PlanReviewPanel`）形状完全一样
+  // （`frame > section`），底色也取自 `--dsw-specific-input-major`。它以前不在这条规则里，
+  // 于是卡自己没背景、正文从底下透出来。
+  const reviewCard = /\[data-plan-review-key\] > section[^{]*\{([^}]*)\}/.exec(base.css)?.[1] ?? '';
+  check('the plan review card is covered at all', reviewCard.length > 0);
+  check(
+    'and it gets the same wallpaper frost, not the input token',
+    reviewCard.includes('backdrop-filter: blur(') && reviewCard.includes('22%'),
+  );
+  check(
+    'the two cards share one rule instead of two drifting copies',
+    /\[data-question-key\] > section,[\s\S]{0,160}?\[data-plan-review-key\] > section \{/.test(base.css),
+  );
+  // 1.4.4 的诊断入口。宿主换节点时，「这三块到底吃到了什么样式」不能再靠读 TSX 猜 ——
+  // 类名是哈希的，算出来的背景也可能被任何一条后来者盖掉。
+  check('the probe is installed', typeof base.window.__dshbgProbe === 'function');
+  if (typeof base.window.__dshbgProbe === 'function') {
+    let probed = null;
+    let threw = null;
+    try {
+      probed = base.window.__dshbgProbe();
+    } catch (failure) {
+      threw = failure;
+    }
+    check('and it never throws just because a surface is not on screen', threw === null, String(threw));
+    check(
+      'it answers for all three surfaces in one call',
+      probed !== null && probed.composer !== undefined && probed.planReview !== undefined
+        && probed.presentedFile !== undefined,
+    );
+    check(
+      'it reports absence instead of inventing a reading',
+      probed !== null && probed.planReview.found === false
+        && probed.planReview.insideComposer === false,
+      JSON.stringify(probed === null ? null : probed.planReview),
+    );
+  }
 
   console.log('\ntext colour');
   // Theme mode must leave the label tokens alone. The caption symbols are a separate
