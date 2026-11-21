@@ -4052,6 +4052,88 @@ __dshbgProbe()
 新增 6 条（→ 459 ok + 4 skip = 463 项）：输入卡画的是壁纸副本、副本裁到圆角、底色板在滤镜外、
 菜单让路链路从样式表里消失、守卫函数不存在、计划卡与提问卡共用一条规则。
 
+---
+
+# 1.4.5 · 「一直往上滑，输入框停在半空」—— 先造尺子，不改代码
+
+用户只给了一句话和一张图：「一直往上滑会变这样」。这一版**没有动任何视觉**，因为从截图里
+读不出一条能定位的结论 —— 读得出来的只有几何，而几何指向的每一条路都通向不同的修复。
+
+## 从截图里能量到什么
+
+图片 1920×1231（设备像素，DPR 未知）。用相邻行差分找出硬边（`PIL` + 逐行 RGB 差），
+再按区域裁切放大：
+
+- 会话列的内容止于 y≈700（≈57% 处），**下面 40% 只有壁纸**，没有 DOM 内容；
+- 输入卡和它下面的统计条（dock）都在这个 57% 的盒子里，**贴着那个盒子的底**；
+- 左栏（含底部的「DSH 控制台」「更多」）一直铺到图片底边 —— 所以窗口是整张图，
+  短的是**中间这一列**，不是窗口。
+
+也就是说：不是「输入框浮起来了」，是**列自己变短了**，而输入框老老实实待在这个短列的底上。
+宿主的 `.composerSeat` 是 `position: sticky; bottom: 0; margin-top: auto`，这两条都会让它贴住
+**自己所在滚动盒**的底 —— 滚动盒短了，它就跟着短。
+
+## 为什么不在这一版里直接改
+
+两条候选原因在截图里长得一模一样：
+
+| 假设 | 说明 | 修复在哪 |
+| --- | --- | --- |
+| H1 列高 | `.root { height: 100% }` 这条链断了（`#root`/`body` 无高度时 `100%` 退化成 auto），列按内容收缩 | 宿主，或插件碰了 html/body |
+| H2 滚动容器 | 插件让某个祖先变成了滚动容器（`overflow` 不是 `clip`），sticky 的参照物换了对象 | 插件 |
+
+插件侧的证据是**反着的**：`client.js` 里没有任何一处写真实元素的 `transform` / `top` / `height`
+/ `margin` / `position`（grep 过），CSS 里影响布局的只有输入卡自己的 `position: relative`
+（宿主 `.card` 本来就写着同一条）。所以 H1 概率更高 —— 但「概率更高」不是修复依据，
+猜错一次就是再让用户重开一次 DSH。
+
+**尺子比猜测便宜**：与其改一版赌对，不如把「高度去哪了」变成一次可粘贴的读数。
+
+## 做了什么
+
+`__dshbgProbe()` 增加一段 `layout`：
+
+```
+layout.viewport   w / h / docH / dpr / **visualViewport.scale**
+layout.card       输入卡的 pos / display / flex / height / maxHeight / overflowY / top / bottom / scrollTop / clientH / scrollH
+layout.chain      从输入卡父节点往上 10 层，每层同一组读数 + `data-phase`
+```
+
+三点说明：
+
+- **`visualViewport.scale` 必须单独抄**。页面一旦缩放，`100vh` 和「看得见的高度」就分家，
+  而 `innerHeight` 会把这件事藏起来 —— 这正是 H1 最容易被漏掉的那条路。
+- **`scrollH` / `clientH` 一起抄**。H2 的指纹是某个祖先的 `scrollH > clientH` 且 `overflowY`
+  是 `auto`；只看 `height` 看不出来。
+- **`data-phase` 也抄**。宿主的 `.composerSeat` 那三条 `sticky` / `margin-top: auto` /
+  `z-index: 9` 全部挂在 `.root[data-phase='active']` 下面 —— 阶段不是 `active`，这三条一条都不生效，
+  症状和列变短完全一样。
+
+再加一条快捷键 **`Ctrl + Alt + Shift + D`**：把 `JSON.stringify(__dshbgProbe(), null, 1)` 写进
+剪贴板，并弹一块自己的小浮层告诉你复制成功了。理由是**上一版 `__dshbgHead` 要了三次才拿到数据，
+最后一次拿到的是手机拍屏** —— 而拍屏里读不出 `scrollHeight`。要走 DevTools 的诊断等于没做。
+组合键带 `Alt + Shift` 是为了不和宿主的 `Ctrl + 单字母` 撞；监听挂在**捕获阶段**，因为宿主的
+编辑器会吃掉 `keydown`，冒泡到不了 `window`；`dispose()` 里一并摘掉。
+
+## 判归属只要两步（写在这里，免得下次又想不起来）
+
+1. **关掉壁纸开关再看**。列还是短的 → H1（宿主），插件不背。
+2. 开关是绿的但列依然短：把插件从 profile 里移开 → 列正常了才是插件的问题。
+
+## lab 工具链的两次修正（11-18 宿主换过 asar 头部）
+
+- `lab/asar-get.cjs` / `asar-grep.cjs` 全线报 `Unexpected non-whitespace character after JSON`：
+  新版 asar 的头部长度字段**大于** JSON 实际长度，缓冲区尾部是对齐用的 NUL。修法是把到最后一个
+  `}` 为止的内容交给 `JSON.parse`，而 `base = 16 + jsonSize` 保持不变（数据起点没动）。
+- 从 Git Bash 传 asar 内路径（`/dsh/node_modules/...`）会被 MSYS 转成 `D:/...`，必须
+  `MSYS_NO_PATHCONV=1`，否则拿到的是 `not found: D:`。
+
+## 断言（+4 → 463 ok + 4 skip = 467 项）
+
+`layout.chain` 存在且是数组、`layout.viewport` 里有 `zoom`、快捷键字符串存在、
+`dispose()` 里摘了监听。前两条钉的是「诊断带没带够数」，后两条钉的是「别为了诊断反手抢键」。
+
+
 ## 已知边界
 
 - 输入卡在**视频壁纸**下画的是封面帧（和表头、吸顶盖一样）。会动的副本只做在表头上。

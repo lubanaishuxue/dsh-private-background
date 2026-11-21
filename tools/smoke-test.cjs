@@ -2182,7 +2182,25 @@ async function main() {
         && probed.planReview.insideComposer === false,
       JSON.stringify(probed === null ? null : probed.planReview),
     );
+    // 1.4.5：截图能看出「输入框停在半空」，但看不出高度去了哪儿 —— 只有祖先链上的
+    // position/flex/height/overflow/scrollHeight 能回答，所以探针必须把它一起带出来。
+    check(
+      'and it carries the layout chain, so "where did the height go" is answerable',
+      probed !== null && probed.layout !== undefined && Array.isArray(probed.layout.chain),
+    );
+    check(
+      'the layout report leads with the viewport, so page zoom cannot hide',
+      probed !== null && probed.layout.viewport !== undefined
+        && 'zoom' in probed.layout.viewport && 'h' in probed.layout.viewport,
+    );
   }
+  // 诊断的最后一公里：要用户「开 DevTools、敲一行、复制」就等于没做。快捷键必须存在，
+  // 而且要在 dispose 里摘掉 —— 插件关掉之后还抢键就是另一个 bug。
+  check('one shortcut copies the report, instead of asking for DevTools', CODE.includes("'KeyD'"));
+  check(
+    'and that shortcut is released on dispose',
+    CODE.includes("removeEventListener('keydown', onProbeKey"),
+  );
 
   console.log('\ntext colour');
   // Theme mode must leave the label tokens alone. The caption symbols are a separate

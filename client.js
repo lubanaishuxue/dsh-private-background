@@ -4720,14 +4720,68 @@ html[data-dshbg-on] select option:checked {
           }
           return found;
         };
+        /**
+         * 一个盒子在**布局上**是什么样 —— 只有这几个数能回答「高度去哪了」。
+         *
+         * 1.4.5 加它的原因：用户报「一直往上滑，输入框就停在半空、下面一大片空」。这现象
+         * 可能是宿主的列高，也可能是插件把某个祖先变成了滚动容器，两者在截图里长得一模一样
+         * —— 靠看图猜不出 `scrollHeight`。所以把「输入卡往上到 body 的整条祖先链」的
+         * position / flex / height / overflow / scrollTop 全抄下来。
+         */
+        const frameOf = (node) => {
+          if (node === null || node === undefined) return null;
+          const style = getComputedStyle(node);
+          const box = node.getBoundingClientRect();
+          const cls = typeof node.className === 'string' ? node.className : '';
+          return {
+            tag: node.tagName.toLowerCase(),
+            cls: cls.slice(0, 48),
+            pos: style.position,
+            display: style.display,
+            flex: `${style.flexGrow}/${style.flexShrink}/${style.flexBasis}`,
+            height: style.height,
+            maxHeight: style.maxHeight,
+            overflowY: style.overflowY,
+            zIndex: style.zIndex,
+            top: Math.round(box.top),
+            bottom: Math.round(box.bottom),
+            h: Math.round(box.height),
+            scrollTop: Math.round(node.scrollTop),
+            clientH: node.clientHeight,
+            scrollH: node.scrollHeight,
+            phase: node.getAttribute('data-phase'),
+          };
+        };
         // `:scope > section` 而不是 `.card`：类名是哈希的，结构不是。
         const sectionOf = (frame) => (frame === null ? null : frame.querySelector(':scope > section'));
         const card = document.querySelector(COMPOSER_SELECTOR);
         const review = document.querySelector('[data-plan-review-key]');
         const reviewSection = sectionOf(review);
         const file = document.querySelector('[data-presented-file]');
+        // 祖先链：从输入卡的父节点往上，一直到 body（不含）。10 层足够盖住
+        // root → body → scrollBody → viewArea → composerSeat 这段。
+        const chain = [];
+        let cursor = card === null ? null : card.parentElement;
+        while (cursor !== null && cursor !== document.body && chain.length < 10) {
+          chain.push(frameOf(cursor));
+          cursor = cursor.parentElement;
+        }
+        const view = window.visualViewport;
         return {
           on: root.hasAttribute('data-dshbg-on'),
+          // 页面缩放会让 `100vh` 和真正看得见的高度分家，而「输入框停在半空」正是那个症状的
+          // 第一嫌疑 —— `visualViewport.scale` 是唯一诚实的读数（`innerHeight` 不会告诉你）。
+          layout: {
+            viewport: {
+              w: window.innerWidth,
+              h: window.innerHeight,
+              docH: document.documentElement.clientHeight,
+              dpr: window.devicePixelRatio,
+              zoom: view === null || view === undefined ? null : Math.round(view.scale * 1000) / 1000,
+            },
+            card: frameOf(card),
+            chain,
+          },
           composer: {
             found: card !== null,
             box: composerBox,
@@ -4752,6 +4806,63 @@ html[data-dshbg-on] select option:checked {
         };
       };
       window.__dshbgProbe = probe;
+
+      /**
+       * `Ctrl + Alt + Shift + D` —— 把 `__dshbgProbe()` 的结果直接塞进剪贴板。
+       *
+       * 为什么要有这个：让用户「打开 DevTools、切换到 Console、敲一行、复制」，是这个项目里
+       * 最贵的一次往返 —— 上一版 `__dshbgHead` 要了三回才拿到数据，最后拿到的还是手机拍屏，
+       * 而照片里读不出 `scrollHeight` 和 `visualViewport.scale`。诊断必须做到「按一下、粘过来」。
+       *
+       * 组合键带 Alt + Shift，是为了不和宿主的任何快捷键撞（宿主的都是 Ctrl + 单字母）。
+       * 提示用自己的一块浮层，不借宿主的 Toast —— 那个要 React 上下文，从这层拿不到。
+       */
+      const flash = (text) => {
+        const box = document.createElement('div');
+        box.setAttribute('data-dshbg-flash', '');
+        box.textContent = text;
+        box.style.cssText = [
+          'position:fixed', 'left:50%', 'bottom:32px', 'transform:translateX(-50%)',
+          'z-index:2147483000', 'padding:8px 14px', 'border-radius:999px',
+          'font:13px/1.4 system-ui,-apple-system,sans-serif', 'color:#fff',
+          'background:rgb(20 20 24 / 0.92)', 'box-shadow:0 8px 24px rgb(0 0 0 / 0.4)',
+          'pointer-events:none', 'max-width:70vw', 'white-space:nowrap',
+          'overflow:hidden', 'text-overflow:ellipsis',
+        ].join(';');
+        document.body.appendChild(box);
+        setTimeout(() => box.remove(), 2400);
+      };
+      const copyProbe = () => {
+        let text = '';
+        try {
+          text = JSON.stringify(probe(), null, 1);
+        } catch (error) {
+          flash(`诊断读取失败：${error.message}`);
+          return;
+        }
+        const nav = window.navigator;
+        if (nav.clipboard !== undefined && nav.clipboard !== null
+          && typeof nav.clipboard.writeText === 'function') {
+          nav.clipboard.writeText(text).then(
+            () => flash('诊断信息已复制，直接粘过去'),
+            () => {
+              console.log(text);
+              flash('复制被拒绝，已打到控制台');
+            },
+          );
+          return;
+        }
+        console.log(text);
+        flash('剪贴板不可用，已打到控制台');
+      };
+      const onProbeKey = (event) => {
+        if (!event.ctrlKey || !event.altKey || !event.shiftKey) return;
+        if (event.code !== 'KeyD' && event.key !== 'd' && event.key !== 'D') return;
+        event.preventDefault();
+        copyProbe();
+      };
+      // 捕获阶段：宿主的编辑器会吃掉 keydown，冒泡到不了 window。
+      window.addEventListener('keydown', onProbeKey, true);
 
       /**
        * `window.__dshbgHeadGlass(false)` / `(true)` - hand this one bar back to the host, or
@@ -4868,6 +4979,9 @@ html[data-dshbg-on] select option:checked {
           if (window.__dshbgProbe === probe) delete window.__dshbgProbe;
           if (typeof window.__dshbgHeadGlass === 'function') delete window.__dshbgHeadGlass;
           if (window.__dshbgEntry === entryReport) delete window.__dshbgEntry;
+          window.removeEventListener('keydown', onProbeKey, true);
+          const flashed = document.querySelectorAll('[data-dshbg-flash]');
+          for (let i = 0; i < flashed.length; i += 1) flashed[i].remove();
         },
       };
     }
